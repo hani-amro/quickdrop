@@ -15,6 +15,34 @@
       "when": 1783701160639,
       "tag": "0001_rls_policies",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1783703652617,
+      "tag": "0002_phase1_data_model",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1783703694270,
+      "tag": "0003_phase1_protections",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1783703858988,
+      "tag": "0004_counters",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1783703860544,
+      "tag": "0005_counters_rls",
+      "breakpoints": true
     }
   ]
 }

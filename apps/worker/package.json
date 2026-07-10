@@ -6,11 +6,13 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx watch src/main.ts",
-    "start": "node dist/main.js"
+    "start": "node dist/main.js",
+    "test": "vitest run"
   },
   "dependencies": {
     "@quickdrop/db": "workspace:*",
     "@quickdrop/shared": "workspace:*",
+    "@quickdrop/telegram": "workspace:*",
     "bullmq": "^5.34.0",
     "drizzle-orm": "^0.44.0",
     "ioredis": "^5.11.1",
@@ -19,6 +21,7 @@
   "devDependencies": {
     "@types/node": "^24.0.0",
     "tsx": "^4.19.0",
-    "typescript": "^5.8.0"
+    "typescript": "^5.8.0",
+    "vitest": "^3.0.0"
   }
 }

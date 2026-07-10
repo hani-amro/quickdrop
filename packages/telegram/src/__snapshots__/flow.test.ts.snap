@@ -1,0 +1,18 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`orderCard > renders an Arabic RTL card with escaped code and status label 1`] = `
+"<b>🧾 طلب ⁦#1042⁩</b>
+الحالة: <b>قيد المراجعة</b>
+أجرة التوصيل: <b>⁦‏١٥٬٠٠٠ ل.س.‏⁩</b>"
+`;
+
+exports[`quoteCard (§4.4: السعر مفصّلاً قبل التأكيد) > shows only non-zero components plus the total 1`] = `
+"<b>🧮 تفاصيل السعر</b>
+المسافة التقريبية: ⁦4.2 كم⁩
+الأجرة الأساسية: ⁦‏٢٬٠٠٠ ل.س.‏⁩
+أجرة المسافة: ⁦‏٣٬٥٠٠ ل.س.‏⁩
+زيادة الذروة: ⁦‏١٬١٠٠ ل.س.‏⁩
+<b>الإجمالي: ⁦‏٦٬٦٠٠ ل.س.‏⁩</b>
+
+تأكيد الطلب؟ 👇"
+`;

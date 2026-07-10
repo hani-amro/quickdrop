@@ -5,6 +5,8 @@ import { Queue } from "bullmq";
 import { Redis } from "ioredis";
 import { loadEnv, type ApiEnv } from "./env.js";
 import { HealthController } from "./health/health.controller.js";
+import { OrdersController } from "./orders/orders.controller.js";
+import { OrdersService } from "./orders/orders.service.js";
 import { TelegramGatewayController } from "./telegram-gateway/gateway.controller.js";
 import { TelegramGatewayService } from "./telegram-gateway/gateway.service.js";
 
@@ -14,7 +16,7 @@ export const REDIS = "REDIS";
 export const TG_QUEUE = "TG_QUEUE";
 
 @Module({
-  controllers: [HealthController, TelegramGatewayController],
+  controllers: [HealthController, OrdersController, TelegramGatewayController],
   providers: [
     { provide: ENV, useFactory: (): ApiEnv => loadEnv() },
     {
@@ -33,6 +35,7 @@ export const TG_QUEUE = "TG_QUEUE";
       inject: [REDIS],
     },
     TelegramGatewayService,
+    OrdersService,
   ],
 })
 export class AppModule implements OnApplicationShutdown {

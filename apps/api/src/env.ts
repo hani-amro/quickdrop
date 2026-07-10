@@ -11,6 +11,10 @@ const envSchema = z.object({
   MASTER_KEY: z
     .string()
     .regex(/^[0-9a-f]{64}$/i, "MASTER_KEY must be 64 hex chars (32 bytes)"),
+  // أمان مؤقت لمسارات D15 (/api/orders): Authorization: Bearer = هذا التوكن —
+  // openssl rand -hex 32. staff auth الحقيقي (جلسات + argon2id §10.2) لاحقاً.
+  // غيابه = المسارات ترد 503 (معطَّلة بصوت عالٍ)، لا فتح مفتوح.
+  STAFF_API_TOKEN: z.string().min(32).optional(),
 });
 
 export type ApiEnv = z.infer<typeof envSchema>;

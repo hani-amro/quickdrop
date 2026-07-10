@@ -81,6 +81,9 @@ importers:
       '@quickdrop/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@quickdrop/telegram':
+        specifier: workspace:*
+        version: link:../../packages/telegram
       bullmq:
         specifier: ^5.34.0
         version: 5.79.3
@@ -103,6 +106,9 @@ importers:
       typescript:
         specifier: ^5.8.0
         version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@24.13.3)(tsx@4.23.0)
 
   packages/db:
     dependencies:
@@ -156,12 +162,21 @@ importers:
 
   packages/telegram:
     dependencies:
+      '@quickdrop/db':
+        specifier: workspace:*
+        version: link:../db
       '@quickdrop/shared':
         specifier: workspace:*
         version: link:../shared
+      drizzle-orm:
+        specifier: ^0.44.0
+        version: 0.44.7(@types/pg@8.20.0)(pg@8.22.0)
       grammy:
         specifier: ^1.36.0
         version: 1.44.0
+      zod:
+        specifier: ^3.24.0
+        version: 3.25.76
     devDependencies:
       '@types/node':
         specifier: ^24.0.0

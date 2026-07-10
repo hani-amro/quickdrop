@@ -10,8 +10,11 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@quickdrop/db": "workspace:*",
     "@quickdrop/shared": "workspace:*",
-    "grammy": "^1.36.0"
+    "drizzle-orm": "^0.44.0",
+    "grammy": "^1.36.0",
+    "zod": "^3.24.0"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
