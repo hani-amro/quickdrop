@@ -1,0 +1,21 @@
+{
+  "name": "quickdrop",
+  "private": true,
+  "packageManager": "pnpm@11.5.2",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "db:generate": "pnpm --filter @quickdrop/db generate",
+    "db:migrate": "pnpm --filter @quickdrop/db migrate",
+    "db:check-rls": "pnpm --filter @quickdrop/db check-rls",
+    "tenant:provision": "pnpm --filter @quickdrop/api provision-tenant --"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.0",
+    "typescript": "^5.8.0"
+  }
+}
