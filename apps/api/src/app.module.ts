@@ -3,6 +3,8 @@ import { createDb, type DbHandle } from "@quickdrop/db";
 import { TG_UPDATES_QUEUE } from "@quickdrop/shared";
 import { Queue } from "bullmq";
 import { Redis } from "ioredis";
+import { DriversController } from "./drivers/drivers.controller.js";
+import { DriversService } from "./drivers/drivers.service.js";
 import { loadEnv, type ApiEnv } from "./env.js";
 import { HealthController } from "./health/health.controller.js";
 import { OrdersController } from "./orders/orders.controller.js";
@@ -16,7 +18,7 @@ export const REDIS = "REDIS";
 export const TG_QUEUE = "TG_QUEUE";
 
 @Module({
-  controllers: [HealthController, OrdersController, TelegramGatewayController],
+  controllers: [HealthController, OrdersController, DriversController, TelegramGatewayController],
   providers: [
     { provide: ENV, useFactory: (): ApiEnv => loadEnv() },
     {
@@ -36,6 +38,7 @@ export const TG_QUEUE = "TG_QUEUE";
     },
     TelegramGatewayService,
     OrdersService,
+    DriversService,
   ],
 })
 export class AppModule implements OnApplicationShutdown {

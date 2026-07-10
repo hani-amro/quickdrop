@@ -1,0 +1,41 @@
+@import "tailwindcss";
+
+/* D12/§10.1 — RTL-first: خط النظام العربي + الأرقام tabular-nums دائماً.
+   كل التخطيط بيوتيليتيز منطقية (ps/pe/ms/me/start/end) — لا خصائص فيزيائية. */
+:root {
+  --font-arabic: "Segoe UI", Tahoma, "Noto Naskh Arabic UI", "Noto Sans Arabic", "Geeza Pro", system-ui, sans-serif;
+}
+
+body {
+  font-family: var(--font-arabic);
+  font-variant-numeric: tabular-nums; /* §10.1: الأرقام دائماً tabular-nums */
+  background-color: #f8fafc;
+  color: #0f172a;
+}
+
+/* §10.1 — خرق SLA بصري: طلب بلا إسناد > 5 دقائق = صف أحمر نابض.
+   الموزّع يمسح بعينه، لا يقرأ. */
+@keyframes sla-pulse {
+  0%,
+  100% {
+    background-color: #fee2e2;
+    box-shadow: 0 0 0 1px rgb(220 38 38 / 0.4);
+  }
+  50% {
+    background-color: #fecaca;
+    box-shadow: 0 0 0 3px rgb(220 38 38 / 0.8);
+  }
+}
+
+.sla-breach {
+  animation: sla-pulse 1.3s ease-in-out infinite;
+}
+
+/* إتاحة: بلا حركة عند تفضيل تقليل الحركة — يبقى التمييز اللوني الثابت */
+@media (prefers-reduced-motion: reduce) {
+  .sla-breach {
+    animation: none;
+    background-color: #fecaca;
+    box-shadow: 0 0 0 2px rgb(220 38 38 / 0.8);
+  }
+}

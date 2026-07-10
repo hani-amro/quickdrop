@@ -32,6 +32,9 @@ export const tenants = pgTable("tenants", {
   trialEndsAt: timestamp("trial_ends_at", { withTimezone: true, mode: "date" }),
   suspendedReason: text("suspended_reason"),
   etaCorrectionBp: integer("eta_correction_bp").notNull().default(12000),
+  // §8.1 v1.1: حصة السائق من أجرة التوصيل بالـ basis points — 10000 = كامل الأجرة للسائق
+  // (المكتب يربح من عمولة/اشتراك لاحقاً)؛ كل معدلات المال أعمدة لكل مستأجر لا ثوابت (§9)
+  driverFeeShareBp: integer("driver_fee_share_bp").notNull().default(10000),
   botTokenEncrypted: bytea("bot_token_encrypted"),
   botUsername: text("bot_username"),
   botWebhookSecret: text("bot_webhook_secret"),

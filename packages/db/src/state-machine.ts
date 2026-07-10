@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
-import type { OrderActorType, OrderStatus } from "@quickdrop/shared";
+import { computeDeliveryLedger, type OrderActorType, type OrderStatus } from "@quickdrop/shared";
 import { writeOutbox } from "./outbox.js";
-import { orderEvents, orders, type Order } from "./schema/index.js";
+import { ledgerEntries, orderEvents, orders, tenants, type Order } from "./schema/index.js";
 import type { Tx } from "./with-tenant.js";
 
 // §5 v1.1 — آلة حالة الطلب. كل تغيير حالة بالنظام يمر من transition() الوحيدة:
@@ -99,6 +99,8 @@ export async function transition(
     actor: { type: OrderActorType; id?: string };
     meta?: Record<string, unknown>;
     driverId?: string;
+    /** الفخ 18: المُحصَّل فعلياً عند التسليم — غيابه = التحصيل الكامل (cod_amount). */
+    codReceived?: bigint;
   },
 ): Promise<Order> {
   // §5: قفل الصف إلزامي — يحسم السباقات (الزبون يلغي والسائق يقبل بنفس اللحظة:
@@ -135,6 +137,19 @@ export async function transition(
     failedReason = reason;
   }
 
+  // §8.1 v1.1 — عند التسليم: المُحصَّل الفعلي (الفخ 18) وقيود الدفتر بنفس الترانزاكشن
+  let codReceived: bigint | undefined;
+  if (args.to === "delivered") {
+    if (!order.driverId) {
+      // §16.12: طلب يُسلَّم بلا سائق مُسنَد = فساد حالة يستحق صوتاً عالياً
+      throw new Error(`transition: order ${args.orderId} reached delivered without a driver_id`);
+    }
+    codReceived = args.codReceived ?? order.codAmount;
+    if (codReceived < 0n) {
+      throw new RangeError("transition: codReceived must be non-negative");
+    }
+  }
+
   const now = new Date(); // D6: يُخزَّن TIMESTAMPTZ بتوقيت UTC
 
   const updated = await tx
@@ -143,6 +158,7 @@ export async function transition(
       status: args.to,
       updatedAt: now,
       ...(args.to === "delivered" ? { deliveredAt: now } : {}),
+      ...(codReceived !== undefined ? { codReceived } : {}),
       ...(driverId !== undefined ? { driverId } : {}),
       ...(failedReason !== undefined ? { failedReason } : {}),
     })
@@ -165,6 +181,36 @@ export async function transition(
     actorId: args.actor.id ?? null,
     meta: args.meta ?? null,
   });
+
+  // §8.1 v1.1 — قيود الدفتر بنفس ترانزاكشن انتقال delivered (D13: cod + goods + fee).
+  // الرصيد = SUM لا عمود؛ append-only — التصحيح قيد adjustment جديد (§8.2).
+  if (args.to === "delivered" && codReceived !== undefined && order.driverId) {
+    const tenantRows = await tx
+      .select({ driverFeeShareBp: tenants.driverFeeShareBp })
+      .from(tenants)
+      .where(eq(tenants.id, order.tenantId))
+      .limit(1);
+    const tenant = tenantRows[0];
+    if (!tenant) {
+      throw new Error(`transition: tenant ${order.tenantId} not found for ledger write`);
+    }
+    const entries = computeDeliveryLedger(
+      { priceTotal: order.priceTotal, goodsAmount: order.goodsAmount, codReceived },
+      tenant.driverFeeShareBp,
+    );
+    if (entries.length > 0) {
+      await tx.insert(ledgerEntries).values(
+        entries.map((entry) => ({
+          tenantId: order.tenantId,
+          driverId: order.driverId!,
+          orderId: order.id,
+          entryType: entry.entryType,
+          amount: entry.amount,
+          createdBy: args.actor.id ?? null,
+        })),
+      );
+    }
+  }
 
   // D9: لا نداء تيليغرام داخل الترانزاكشن — صف outbox بنفس الترانزاكشن،
   // والإرسال الفعلي بعد الالتزام عبر العامل (§12)

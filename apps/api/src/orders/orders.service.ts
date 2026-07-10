@@ -1,38 +1,62 @@
 import {
-  BadRequestException,
+  ConflictException,
   Inject,
   Injectable,
   NotFoundException,
-  ServiceUnavailableException,
-  UnauthorizedException,
   UnprocessableEntityException,
 } from "@nestjs/common";
 import {
+  InvalidTransitionError,
   NoPricingRuleError,
+  assignManually,
   createOrder,
+  drivers,
+  offers,
+  orderEvents,
   orders,
   quoteForTenant,
-  tenants,
+  transition,
   users,
   withTenant,
   type DbHandle,
   type Quote,
+  type Tx,
 } from "@quickdrop/db";
-import { ORDER_STATUSES, SERVICES, secretsEqual, type OrderStatus } from "@quickdrop/shared";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import {
+  ORDER_STATUSES,
+  SERVICES,
+  type OfferStatus,
+  type OrderActorType,
+  type OrderStatus,
+  type Service,
+} from "@quickdrop/shared";
+import { and, desc, eq, isNull, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { z } from "zod";
 import { DB, ENV } from "../app.module.js";
+import {
+  assertStaffToken,
+  parseOr400,
+  resolveActiveTenant,
+  slugSchema,
+  uuidSchema,
+  type ActiveTenant,
+} from "../common/staff-http.js";
 import type { ApiEnv } from "../env.js";
-import { componentsToStrings, normalizePhoneE164, type PriceComponentStrings } from "./orders.util.js";
+import {
+  PROMISE_MARGIN_MINUTES,
+  componentsToStrings,
+  computePromisedAt,
+  normalizePhoneE164,
+  type PriceComponentStrings,
+} from "./orders.util.js";
 
 // §10.1 D15 — REST شاشة إنشاء الطلب اليدوي (زبون التلفون/الواتساب — النمط الأشيع بالسوق).
 // §11: كل مدخل HTTP يمر بـ Zod؛ الرفض 400 برسالة عامة والتفاصيل باللوغ فقط.
 // أمان مؤقت: Authorization: Bearer = STAFF_API_TOKEN من env — staff auth الحقيقي
 // (جلسات + argon2id §10.2) يُبنى لاحقاً؛ غياب التوكن من env = 503، لا فتح مفتوح.
 
-// —— Zod schemas (§11: الحدود) ——
-
-const slugSchema = z.string().regex(/^[a-z0-9-]{2,32}$/); // نفس قيد provision-tenant
+// —— Zod schemas (§11: الحدود) —— slugSchema/uuidSchema مشتركة من common/staff-http
 
 const pointSchema = z.object({
   lat: z.number().gte(-90).lte(90),
@@ -96,6 +120,21 @@ const listQuerySchema = z.object({
   status: z.preprocess((v) => (v === "" ? undefined : v), z.enum(ORDER_STATUSES).optional()),
 });
 
+const detailQuerySchema = z.object({ tenantSlug: slugSchema });
+
+const confirmBodySchema = z.object({ tenantSlug: slugSchema });
+
+// §5 — إلغاء المكتب بسبب مسمّى إلزاماً (يُسجَّل بـ order_events.meta وعمود cancel_reason)
+const cancelBodySchema = z.object({
+  tenantSlug: slugSchema,
+  reason: z.string().trim().min(2).max(500),
+});
+
+const assignBodySchema = z.object({
+  tenantSlug: slugSchema,
+  driverId: uuidSchema,
+});
+
 // —— أشكال الاستجابة (كل مال string — D5) ——
 
 export interface QuoteResponse {
@@ -126,6 +165,73 @@ export interface CreateOrderResponse {
 
 export interface ListOrdersResponse {
   orders: OrderSummary[];
+}
+
+// §3 — order_events سجل append-only: عرض للتدقيق باللوحة الجانبية
+export interface OrderEventView {
+  id: string;
+  fromStatus: OrderStatus | null;
+  toStatus: OrderStatus;
+  actorType: OrderActorType;
+  actorId: string | null;
+  meta: unknown;
+  createdAt: string;
+}
+
+// §6.2 — عرض جولة الإسناد الحالية (الموزّع يرى من عُرض عليه وماذا رد)
+export interface OfferView {
+  id: string;
+  driverId: string;
+  driverName: string | null;
+  status: OfferStatus;
+  round: number;
+  expiresAt: string;
+  respondedAt: string | null;
+  createdAt: string;
+}
+
+// §10.1 — تفاصيل اللوحة الجانبية: الطلب + آخر 20 حدثاً + عروض الجولة الحالية
+export interface OrderDetailResponse {
+  order: {
+    id: string;
+    publicCode: string;
+    service: Service;
+    status: OrderStatus;
+    customer: { name: string | null; phone: string | null };
+    driver: { id: string; name: string | null } | null;
+    pickupText: string | null;
+    dropoffText: string | null;
+    recipientPhone: string | null;
+    notes: string | null;
+    weightG: number | null;
+    distanceM: number | null;
+    routeDurationS: number | null;
+    price: PriceComponentStrings; // D5: كل مال string
+    goodsAmount: string;
+    codAmount: string;
+    codReceived: string | null;
+    cancelReason: string | null;
+    failedReason: string | null;
+    scheduledAt: string | null;
+    promisedAt: string | null;
+    deliveredAt: string | null;
+    createdAt: string;
+    updatedAt: string;
+  };
+  events: OrderEventView[];
+  currentRoundOffers: OfferView[];
+}
+
+export interface ConfirmOrderResponse {
+  order: { id: string; publicCode: string; status: OrderStatus; promisedAt: string | null };
+}
+
+export interface CancelOrderResponse {
+  order: { id: string; publicCode: string; status: OrderStatus; cancelReason: string };
+}
+
+export interface AssignOrderResponse {
+  order: { id: string; status: OrderStatus; driverId: string };
 }
 
 function toQuoteResponse(quote: Quote): QuoteResponse {
@@ -247,6 +353,309 @@ export class OrdersService {
     };
   }
 
+  // §10.1 — تفاصيل الطلب للوحة الجانبية. §16.10: لا N+1 — ثلاث قوائم = ثلاثة
+  // استعلامات مسطّحة (join واحد لكل قائمة) داخل ترانزاكشن واحدة (لقطة متسقة).
+  async detail(authorization: string | undefined, id: string, query: unknown): Promise<OrderDetailResponse> {
+    this.assertStaffToken(authorization);
+    const orderId = this.parseOr400(uuidSchema, id, "orders_detail_id");
+    const input = this.parseOr400(detailQuerySchema, query, "orders_detail");
+    const tenant = await this.resolveActiveTenant(input.tenantSlug);
+
+    // اسم السائق يمر بجدول users مرة ثانية (drivers.user_id) — alias إلزامي
+    const driverUsers = alias(users, "driver_users");
+
+    return withTenant(this.handle.db, tenant.id, async (tx) => {
+      const orderRows = await tx
+        .select({
+          id: orders.id,
+          publicCode: orders.publicCode,
+          service: orders.service,
+          status: orders.status,
+          driverId: orders.driverId,
+          pickupText: orders.pickupText,
+          dropoffText: orders.dropoffText,
+          recipientPhone: orders.recipientPhone,
+          notes: orders.notes,
+          weightG: orders.weightG,
+          distanceM: orders.distanceM,
+          routeDurationS: orders.routeDurationS,
+          priceBase: orders.priceBase,
+          priceDistance: orders.priceDistance,
+          priceWeight: orders.priceWeight,
+          priceSurge: orders.priceSurge,
+          priceMinAdjustment: orders.priceMinAdjustment,
+          priceDiscount: orders.priceDiscount,
+          priceTotal: orders.priceTotal,
+          goodsAmount: orders.goodsAmount,
+          codAmount: orders.codAmount,
+          codReceived: orders.codReceived,
+          cancelReason: orders.cancelReason,
+          failedReason: orders.failedReason,
+          scheduledAt: orders.scheduledAt,
+          promisedAt: orders.promisedAt,
+          deliveredAt: orders.deliveredAt,
+          createdAt: orders.createdAt,
+          updatedAt: orders.updatedAt,
+          customerName: users.firstName,
+          customerPhone: users.phoneE164,
+          driverName: driverUsers.firstName,
+        })
+        .from(orders)
+        .innerJoin(users, and(eq(users.tenantId, orders.tenantId), eq(users.id, orders.customerId)))
+        .leftJoin(drivers, and(eq(drivers.tenantId, orders.tenantId), eq(drivers.id, orders.driverId)))
+        .leftJoin(driverUsers, and(eq(driverUsers.tenantId, orders.tenantId), eq(driverUsers.id, drivers.userId)))
+        .where(and(eq(orders.id, orderId), isNull(orders.deletedAt))) // D10: soft delete لا يظهر
+        .limit(1);
+      const row = orderRows[0];
+      if (!row) {
+        throw new NotFoundException("not found"); // §11: رسالة عامة
+      }
+
+      // آخر 20 حدثاً — الأحدث أولاً؛ فهرس (tenant_id, order_id)
+      const eventRows = await tx
+        .select({
+          id: orderEvents.id,
+          fromStatus: orderEvents.fromStatus,
+          toStatus: orderEvents.toStatus,
+          actorType: orderEvents.actorType,
+          actorId: orderEvents.actorId,
+          meta: orderEvents.meta,
+          createdAt: orderEvents.createdAt,
+        })
+        .from(orderEvents)
+        .where(eq(orderEvents.orderId, orderId))
+        .orderBy(desc(orderEvents.createdAt))
+        .limit(20);
+
+      // عروض الجولة الحالية (= أعلى round للطلب) مع اسم السائق — استعلام واحد §16.10
+      const offerRows = await tx
+        .select({
+          id: offers.id,
+          driverId: offers.driverId,
+          driverName: users.firstName,
+          status: offers.status,
+          round: offers.round,
+          expiresAt: offers.expiresAt,
+          respondedAt: offers.respondedAt,
+          createdAt: offers.createdAt,
+        })
+        .from(offers)
+        .innerJoin(drivers, and(eq(drivers.tenantId, offers.tenantId), eq(drivers.id, offers.driverId)))
+        .innerJoin(users, and(eq(users.tenantId, drivers.tenantId), eq(users.id, drivers.userId)))
+        .where(
+          and(
+            eq(offers.orderId, orderId),
+            sql`${offers.round} = (SELECT max(o2.round) FROM offers o2 WHERE o2.tenant_id = ${offers.tenantId} AND o2.order_id = ${offers.orderId})`,
+          ),
+        )
+        .orderBy(desc(offers.createdAt));
+
+      return {
+        order: {
+          id: row.id,
+          publicCode: row.publicCode,
+          service: row.service,
+          status: row.status,
+          customer: { name: row.customerName, phone: row.customerPhone },
+          driver: row.driverId !== null ? { id: row.driverId, name: row.driverName } : null,
+          pickupText: row.pickupText,
+          dropoffText: row.dropoffText,
+          recipientPhone: row.recipientPhone,
+          notes: row.notes,
+          weightG: row.weightG,
+          distanceM: row.distanceM,
+          routeDurationS: row.routeDurationS,
+          // D5: bigint→string عند حافة الـ JSON — نفس محوّل quote (مصدر واحد)
+          price: componentsToStrings({
+            base: row.priceBase,
+            distance: row.priceDistance,
+            weight: row.priceWeight,
+            surge: row.priceSurge,
+            minAdjustment: row.priceMinAdjustment,
+            discount: row.priceDiscount,
+            total: row.priceTotal,
+          }),
+          goodsAmount: String(row.goodsAmount),
+          codAmount: String(row.codAmount),
+          codReceived: row.codReceived !== null ? String(row.codReceived) : null,
+          cancelReason: row.cancelReason,
+          failedReason: row.failedReason,
+          scheduledAt: row.scheduledAt?.toISOString() ?? null,
+          promisedAt: row.promisedAt?.toISOString() ?? null,
+          deliveredAt: row.deliveredAt?.toISOString() ?? null,
+          createdAt: row.createdAt.toISOString(),
+          updatedAt: row.updatedAt.toISOString(),
+        },
+        events: eventRows.map((e) => ({
+          id: e.id,
+          fromStatus: e.fromStatus,
+          toStatus: e.toStatus,
+          actorType: e.actorType,
+          actorId: e.actorId,
+          meta: e.meta,
+          createdAt: e.createdAt.toISOString(),
+        })),
+        currentRoundOffers: offerRows.map((o) => ({
+          id: o.id,
+          driverId: o.driverId,
+          driverName: o.driverName,
+          status: o.status,
+          round: o.round,
+          expiresAt: o.expiresAt.toISOString(),
+          respondedAt: o.respondedAt?.toISOString() ?? null,
+          createdAt: o.createdAt.toISOString(),
+        })),
+      };
+    });
+  }
+
+  // §5/§7 — تأكيد المكتب: transition(confirmed بفاعل staff) وبنفس الترانزاكشن
+  // لقطة الوعد promised_at (WHERE promised_at IS NULL — لا تُعاد كتابتها أبداً).
+  async confirm(authorization: string | undefined, id: string, body: unknown): Promise<ConfirmOrderResponse> {
+    this.assertStaffToken(authorization);
+    const orderId = this.parseOr400(uuidSchema, id, "orders_confirm_id");
+    const input = this.parseOr400(confirmBodySchema, body, "orders_confirm");
+    const tenant = await this.resolveActiveTenant(input.tenantSlug);
+
+    try {
+      const result = await withTenant(this.handle.db, tenant.id, async (tx) => {
+        // 404 لمعرّف غير موجود قبل transition — transition ترمي Error عاماً (باغ داخلي)
+        // بينما المعرّف هنا مدخل مستخدم = حالة عمل (D10: المحذوف ناعماً غير موجود).
+        await this.assertOrderExists(tx, orderId);
+
+        // D8 — عبر transition() حصراً: تكتب order_events + outbox بنفس الترانزاكشن
+        const order = await transition(tx, { orderId, to: "confirmed", actor: { type: "staff" } });
+
+        // §7 — لقطة الوعد: now + المدة × eta_correction_bp/10000 + هامش 10 دقائق.
+        // eta_correction_bp من tenants (استثناء RLS مسمّى — جاء مع resolveActiveTenant).
+        // routeDurationS يُحسب دائماً عند الإنشاء؛ ?? 0 حارس دفاعي (طلب بلا مسار →
+        // الوعد = الهامش وحده، أفضل من فشل التأكيد كله).
+        const promisedAt = computePromisedAt(
+          new Date(), // D6: UTC
+          order.routeDurationS ?? 0,
+          tenant.etaCorrectionBp,
+          PROMISE_MARGIN_MINUTES,
+        );
+        const updated = await tx
+          .update(orders)
+          .set({ promisedAt, updatedAt: new Date() })
+          .where(and(eq(orders.id, orderId), isNull(orders.promisedAt))) // لقطة — لا كتابة فوق موجود
+          .returning({ promisedAt: orders.promisedAt });
+
+        // صفر صفوف = الوعد مثبَّت سلفاً (لا يحدث بمسار v1 لكن العقد "لا تُعاد كتابتها")
+        return { order, promisedAt: updated[0]?.promisedAt ?? order.promisedAt };
+      });
+
+      // §13: لوغ منظّم بحقول ثابتة — بلا PII
+      console.log(
+        JSON.stringify({
+          action: "order_confirmed",
+          tenant_id: tenant.id,
+          order_id: result.order.id,
+          actor: "staff",
+          status: result.order.status,
+        }),
+      );
+
+      return {
+        order: {
+          id: result.order.id,
+          publicCode: result.order.publicCode,
+          status: result.order.status,
+          promisedAt: result.promisedAt?.toISOString() ?? null,
+        },
+      };
+    } catch (error) {
+      throw this.mapTransitionError(error);
+    }
+  }
+
+  // §5 — إلغاء المكتب: transition(cancelled_by_office بفاعل staff، السبب بالـ meta)
+  // + بنفس الترانزاكشن UPDATE cancel_reason (عمود عادي، ليس حالة).
+  async cancel(authorization: string | undefined, id: string, body: unknown): Promise<CancelOrderResponse> {
+    this.assertStaffToken(authorization);
+    const orderId = this.parseOr400(uuidSchema, id, "orders_cancel_id");
+    const input = this.parseOr400(cancelBodySchema, body, "orders_cancel");
+    const tenant = await this.resolveActiveTenant(input.tenantSlug);
+
+    try {
+      const order = await withTenant(this.handle.db, tenant.id, async (tx) => {
+        await this.assertOrderExists(tx, orderId);
+        const updatedOrder = await transition(tx, {
+          orderId,
+          to: "cancelled_by_office",
+          actor: { type: "staff" },
+          meta: { reason: input.reason }, // §3: order_events يحمل السبب للتدقيق
+        });
+        await tx
+          .update(orders)
+          .set({ cancelReason: input.reason, updatedAt: new Date() })
+          .where(eq(orders.id, orderId));
+        return updatedOrder;
+      });
+
+      // §13 — بلا السبب باللوغ: نص حر قد يحمل PII؛ محفوظ بالقاعدة للتدقيق
+      console.log(
+        JSON.stringify({
+          action: "order_cancelled_by_office",
+          tenant_id: tenant.id,
+          order_id: order.id,
+          actor: "staff",
+          status: order.status,
+        }),
+      );
+
+      return {
+        order: {
+          id: order.id,
+          publicCode: order.publicCode,
+          status: order.status,
+          cancelReason: input.reason,
+        },
+      };
+    } catch (error) {
+      throw this.mapTransitionError(error);
+    }
+  }
+
+  // §10.1 — الإسناد اليدوي: القرار كله داخل ترانزاكشن assignManually (D16: أقفال
+  // بالقاعدة، packages/db/src/dispatch.ts)؛ هنا فقط ترجمة النتيجة إلى HTTP —
+  // Optimistic UI بالداشبورد يتراجع صراحةً على أي 4xx (§10.1)، والرسائل عامة (§11).
+  async assign(authorization: string | undefined, id: string, body: unknown): Promise<AssignOrderResponse> {
+    this.assertStaffToken(authorization);
+    const orderId = this.parseOr400(uuidSchema, id, "orders_assign_id");
+    const input = this.parseOr400(assignBodySchema, body, "orders_assign");
+    const tenant = await this.resolveActiveTenant(input.tenantSlug);
+
+    // أمان مؤقت: لا هوية موظف مع التوكن الثابت — staffId يُملأ مع staff auth §10.2
+    const result = await assignManually(this.handle.db, tenant.id, orderId, input.driverId);
+    switch (result.outcome) {
+      case "accepted":
+      case "already_yours": {
+        // already_yours = مُسند لهذا السائق أصلاً: نجاح idempotent (§16.7 — ضغطة مكررة)
+        console.log(
+          JSON.stringify({
+            action: "order_assigned_manually",
+            tenant_id: tenant.id,
+            order_id: orderId,
+            actor: "staff",
+            driver_id: input.driverId,
+            outcome: result.outcome,
+          }),
+        );
+        return { order: { id: orderId, status: "assigned", driverId: input.driverId } };
+      }
+      case "taken":
+        // مُسند لسائق آخر (سباق مع قبول/dispatch) — 409 والداشبورد تحدّث اللوحة
+        throw new ConflictException("order is already assigned");
+      case "expired":
+        // حالة الطلب لا تسمح، أو السائق بلا وردية/سعة (D14) — رسالة عامة §11
+        throw new ConflictException("order or driver is not assignable right now");
+      case "not_found":
+        throw new NotFoundException("not found");
+    }
+  }
+
   // D15 — البحث بفهرس (tenant_id, phone_e164) ضمن دور customer؛ غير موجود = إنشاء
   // بـ telegram_user_id NULL (زبون تلفون). سباق إنشاء متزامن لنفس الرقم قد يخلق
   // صفين (لا قيد فريد على الهاتف) — مقبول بشاشة يدوية؛ الدمج قرار تشغيلي لاحق.
@@ -280,48 +689,42 @@ export class OrdersService {
     });
   }
 
-  // استثناء RLS مسمّى (§2.4): البحث بالـ slug قبل معرفة المستأجر — نفس نمط بوابة الـ webhook
-  private async resolveActiveTenant(slug: string): Promise<{ id: string }> {
-    const rows = await this.handle.db
-      .select({ id: tenants.id, status: tenants.status })
-      .from(tenants)
-      .where(eq(tenants.slug, slug))
-      .limit(1);
-    const tenant = rows[0];
-    if (!tenant || tenant.status === "suspended" || tenant.status === "churned") {
-      // §11/§14: رسالة عامة — لا نميّز "غير موجود" عن "موقوف" للخارج
-      throw new NotFoundException("not found");
-    }
-    return { id: tenant.id };
+  // استثناء RLS مسمّى (§2.4) — التنفيذ المشترك بـ common/staff-http (يعيد أيضاً
+  // eta_correction_bp للقطة الوعد §7)
+  private resolveActiveTenant(slug: string): Promise<ActiveTenant> {
+    return resolveActiveTenant(this.handle.db, slug);
   }
 
+  // التخويل المؤقت المشترك (Bearer STAFF_API_TOKEN) — common/staff-http
   private assertStaffToken(authorization: string | undefined): void {
-    const configured = this.env.STAFF_API_TOKEN;
-    if (configured === undefined) {
-      // إن غاب STAFF_API_TOKEN من env: المسار معطَّل بصوت عالٍ — ممنوع الفتح المفتوح
-      throw new ServiceUnavailableException("staff API is not configured");
-    }
-    const bearer = authorization?.match(/^Bearer\s+(\S+)$/)?.[1];
-    if (bearer === undefined || !secretsEqual(bearer, configured)) {
-      // §4.1: مقارنة ثابتة الزمن — لا === على أسرار؛ ورسالة عامة (§11)
-      throw new UnauthorizedException();
+    assertStaffToken(this.env.STAFF_API_TOKEN, authorization);
+  }
+
+  // §11 — الرفض 400 برسالة عامة — common/staff-http
+  private parseOr400<S extends z.ZodTypeAny>(schema: S, data: unknown, action: string): z.output<S> {
+    return parseOr400(schema, data, action);
+  }
+
+  // معرّف من المستخدم: غير موجود (أو محذوف ناعماً D10) = 404 حالة عمل، لا باغ.
+  // قراءة بلا قفل — transition تعيد القراءة FOR UPDATE وتحسم السباقات (§5).
+  private async assertOrderExists(tx: Tx, orderId: string): Promise<void> {
+    const existing = await tx
+      .select({ id: orders.id })
+      .from(orders)
+      .where(and(eq(orders.id, orderId), isNull(orders.deletedAt)))
+      .limit(1);
+    if (!existing[0]) {
+      throw new NotFoundException("not found"); // الرمي داخل الترانزاكشن = rollback نظيف
     }
   }
 
-  // §11 — الرفض 400 برسالة عامة؛ التفاصيل (مسارات الحقول بلا قيم — لا PII) باللوغ فقط
-  private parseOr400<S extends z.ZodTypeAny>(schema: S, data: unknown, action: string): z.output<S> {
-    const parsed = schema.safeParse(data);
-    if (!parsed.success) {
-      console.warn(
-        JSON.stringify({
-          action,
-          outcome: "validation_failed",
-          issues: parsed.error.issues.map((i) => ({ path: i.path.join("."), code: i.code })),
-        }),
-      );
-      throw new BadRequestException("invalid request");
+  // §5 — انتقال غير مسموح (تأكيد مؤكَّد، إلغاء بعد الإسناد...) = تعارض حالة (409)
+  // برسالة عامة؛ أي خطأ آخر يُعاد رميه كما هو — §16.12: لا ابتلاع.
+  private mapTransitionError(error: unknown): unknown {
+    if (error instanceof InvalidTransitionError) {
+      return new ConflictException("order state does not allow this action");
     }
-    return parsed.data;
+    return error;
   }
 
   // لا قاعدة تسعير فعّالة للخدمة/المنطقة (§3 pricing_rules) — خطأ أعمال مفهوم للداشبورد

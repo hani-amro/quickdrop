@@ -40,6 +40,38 @@ function toAsciiDigits(s: string): string {
   });
 }
 
+// §7 — لقطة الوعد: promised_at تُثبَّت لحظة confirmed ولا تُعاد كتابتها أبداً
+// (نفس فلسفة unit_price_snapshot)، وعليها يُبنى ضمان الوقت (§9).
+// المعادلة: now + route_duration_s × (eta_correction_bp / 10000) + هامش ثابت.
+// eta_correction_bp عمود لكل مستأجر (§7: يبدأ 12000 = ×1.2 ويُعاد حسابه أسبوعياً).
+
+/** §7 — هامش الوعد فوق الـ ETA المصحَّح: 10 دقائق (قرار المهمة — يصير عمود إعدادات لاحقاً). */
+export const PROMISE_MARGIN_MINUTES = 10;
+
+/**
+ * دالة نقية (بلا Date.now ولا قاعدة) — قابلة لاختبار الوحدات مباشرة.
+ * مدخل خارج النطاق = باغ مستدعٍ → RangeError صاخب (§16.12)، لا وعد افتراضي صامت.
+ */
+export function computePromisedAt(
+  now: Date,
+  routeDurationS: number,
+  etaCorrectionBp: number,
+  marginMinutes: number,
+): Date {
+  if (!Number.isFinite(routeDurationS) || routeDurationS < 0) {
+    throw new RangeError(`computePromisedAt: routeDurationS must be a non-negative finite number, got ${routeDurationS}`);
+  }
+  if (!Number.isInteger(etaCorrectionBp) || etaCorrectionBp <= 0) {
+    throw new RangeError(`computePromisedAt: etaCorrectionBp must be a positive integer, got ${etaCorrectionBp}`);
+  }
+  if (!Number.isFinite(marginMinutes) || marginMinutes < 0) {
+    throw new RangeError(`computePromisedAt: marginMinutes must be a non-negative finite number, got ${marginMinutes}`);
+  }
+  // ثواني مصحَّحة → ميلي ثانية مقرَّبة (لا bigint هنا — هذا وقت لا مال؛ النطاقات آمنة لـ Number)
+  const correctedMs = Math.round((routeDurationS * etaCorrectionBp * 1000) / 10_000);
+  return new Date(now.getTime() + correctedMs + marginMinutes * 60_000);
+}
+
 // E.164: + ثم 8..15 خانة لا تبدأ بصفر. لا استنتاج نداء محلي (09… → +963؟) —
 // افتراض بلد واحد خطأ بنظام متعدد المستأجرين؛ الإدخال دولي صراحةً (+ أو 00).
 const E164_RE = /^\+[1-9]\d{7,14}$/;

@@ -1,0 +1,1 @@
+ALTER TABLE "tenants" ADD COLUMN "driver_fee_share_bp" integer DEFAULT 10000 NOT NULL;

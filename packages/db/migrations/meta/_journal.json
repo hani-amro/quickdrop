@@ -43,6 +43,13 @@
       "when": 1783703860544,
       "tag": "0005_counters_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1783709114887,
+      "tag": "0006_driver_fee_share",
+      "breakpoints": true
     }
   ]
 }

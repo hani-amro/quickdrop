@@ -355,6 +355,121 @@ export async function acceptOffer(
 }
 
 /**
+ * §10.1 — الإسناد اليدوي من الموزّع: نفس انضباط acceptOffer (D16: القاعدة هي
+ * السلطة، كل قرار من صفوف مقفولة) لكن بلا صف عرض — الموزّع هو المُطلِق.
+ * ترانزاكشن واحدة: اقفل صف الطلب FOR UPDATE (لازم confirmed وبلا سائق) ←
+ * اقفل صف السائق وتحقق status='online' والسعة D14 ← transition(assigned بفاعل
+ * staff — D8، يكتب orders.driver_id وorder_events وoutbox بنفس الترانزاكشن) ←
+ * علّم عروض الطلب pending → expired + outbox 'offer.superseded' (تعديل بطاقات
+ * السائقين "استُلم الطلب" بعد الالتزام — D9).
+ *
+ * ترتيب الأقفال: order → driver → offers. عروض pending تُقفَل بـ SKIP LOCKED —
+ * عرض مقفول = acceptOffer متزامن يمسك قفل عرضه (offer→order) وينتظر قفل الطلب
+ * الذي بيدنا؛ انتظارُه هنا deadlock مؤكد. نتخطاه بأمان: سيستيقظ بعد التزامنا،
+ * يرى driver_id مكتوباً → 'taken'، وعرضه المعلّق يعلّمه handleOfferTimeout لاحقاً.
+ *
+ * النتائج تعيد استخدام AcceptResult (§6.2): مُسند لغيره → 'taken'؛ حالة غير
+ * confirmed أو سائق بلا وردية/سعة → 'expired' ("غير قابل للإسناد الآن")؛
+ * طلب/سائق غير موجود (أو محجوب بـ RLS) → 'not_found' — من API حالة عمل (404)
+ * لا باغ، لأن المعرّف مدخل مستخدم لا صف مضمون كوجود العرض بمهمة timeout.
+ */
+export async function assignManually(
+  db: Db,
+  tenantId: string,
+  orderId: string,
+  driverId: string,
+  staffId?: string,
+): Promise<AcceptResult> {
+  return withTenant(db, tenantId, async (tx) => {
+    const orderRows = await tx.select().from(orders).where(eq(orders.id, orderId)).for("update");
+    const order = orderRows[0];
+    if (!order) {
+      return { outcome: "not_found" } as const;
+    }
+    if (order.deletedAt !== null) {
+      return { outcome: "not_found" } as const; // D10: المحذوف ناعماً غير موجود للعمليات
+    }
+    if (order.driverId !== null) {
+      // مُسند فعلاً: لنفس السائق = نجاح idempotent (§16.7 — الموظف يضغط مرتين)؛ لغيره = 'taken'.
+      return order.driverId === driverId
+        ? ({ outcome: "already_yours" } as const)
+        : ({ outcome: "taken" } as const);
+    }
+    if (order.status !== "confirmed") {
+      // §5: الإسناد (اليدوي أو الآلي) من confirmed حصراً — أي حالة أخرى = "لم يعد قابلاً للإسناد".
+      return { outcome: "expired" } as const;
+    }
+
+    // —— D14: اقفل صف السائق ثم افحص الوردية والسعة (نفس acceptOffer — §5:
+    // سباق إسنادين/محرك dispatch على نفس السائق يحسمه قفل صفه). ——
+    const driverRows = await tx.select().from(drivers).where(eq(drivers.id, driverId)).for("update");
+    const driver = driverRows[0];
+    if (!driver) {
+      return { outcome: "not_found" } as const;
+    }
+    if (driver.status !== "online") {
+      // §6.1: وردية مغلقة — الإسناد اليدوي لا يتجاوز شرط online (لا فشل صامت لاحقاً).
+      return { outcome: "expired" } as const;
+    }
+    const countRows = await tx
+      .select({ n: sql<number>`count(*)`.mapWith(Number) })
+      .from(orders)
+      .where(
+        and(
+          eq(orders.driverId, driverId),
+          inArray(orders.status, [...DRIVER_ACTIVE_ORDER_STATUSES]),
+          isNull(orders.deletedAt), // D10
+        ),
+      );
+    const activeCount = countRows[0]?.n;
+    if (activeCount === undefined) {
+      throw new Error("assignManually: capacity count query returned no row"); // §16.12
+    }
+    if (activeCount >= driver.maxConcurrentOrders) {
+      return { outcome: "expired" } as const; // سعته ممتلئة (D14) — الموزّع يختار غيره
+    }
+
+    // D8: تغيير الحالة عبر transition() حصراً — meta.manual يميّز الإسناد اليدوي بسجل order_events.
+    await transition(tx, {
+      orderId: order.id,
+      to: "assigned",
+      actor: { type: "staff", ...(staffId !== undefined ? { id: staffId } : {}) },
+      meta: { manual: true },
+      driverId,
+    });
+
+    // §6.2: عروض الطلب المعلّقة تُعلَّم expired — SKIP LOCKED (انظر تعليق الترتيب أعلاه).
+    const now = new Date(); // D6: UTC
+    const pendingOffers = await tx
+      .select({ id: offers.id, driverId: offers.driverId })
+      .from(offers)
+      .where(and(eq(offers.orderId, order.id), eq(offers.status, "pending")))
+      .for("update", { skipLocked: true });
+    if (pendingOffers.length > 0) {
+      await tx
+        .update(offers)
+        .set({ status: "expired", updatedAt: now })
+        .where(
+          and(
+            inArray(
+              offers.id,
+              pendingOffers.map((o) => o.id),
+            ),
+            eq(offers.status, "pending"), // حزام فوق القفل — الصفوف مقفولة بيدنا أصلاً
+          ),
+        );
+      await writeOutbox(tx, tenantId, "offer.superseded", {
+        orderId: order.id,
+        offerIds: pendingOffers.map((o) => o.id),
+        driverIds: pendingOffers.map((o) => o.driverId),
+      });
+    }
+
+    return { outcome: "accepted", orderId: order.id } as const;
+  });
+}
+
+/**
  * §6.2 — رفض صريح من السائق: UPDATE مشروط ذرّي (القراءة والكتابة بعبارة واحدة
  * تأخذ قفل الصف — §16.11). rowcount 0 = سباق بريء (انتهت مهلته/قُبل الطلب لغيره
  * قبل وصول الضغطة) — ليس خطأً، والحقيقة محفوظة بالصفوف؛ بطاقة السائق تُحدَّث
