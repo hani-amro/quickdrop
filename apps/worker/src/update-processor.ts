@@ -1,7 +1,24 @@
-import { tenants, webhookUpdates, withTenant, type Db } from "@quickdrop/db";
-import type { TgUpdateJob } from "@quickdrop/shared";
-import { decryptBotToken, getBotForTenant, registerCustomerFlow, type Bot, type ConvRedis } from "@quickdrop/telegram";
-import { and, eq } from "drizzle-orm";
+import {
+  acceptOffer,
+  driverLocations,
+  drivers,
+  rejectOffer,
+  tenants,
+  webhookUpdates,
+  withTenant,
+  type Db,
+} from "@quickdrop/db";
+import { makePoint, toPostgisWkt, type TgUpdateJob } from "@quickdrop/shared";
+import {
+  computeIsSuspect,
+  decryptBotToken,
+  getBotForTenant,
+  registerCustomerFlow,
+  registerDriverFlow,
+  type Bot,
+  type ConvRedis,
+} from "@quickdrop/telegram";
+import { and, desc, eq, sql } from "drizzle-orm";
 
 // §4.1(3-5) — معالجة تحديث من الـ inbox: اقرأ الصف (idempotent) ← فك تشفير توكن
 // المستأجر ← bot من الـ LRU ← handleUpdate ← علّم processed.
@@ -19,6 +36,74 @@ export interface UpdateProcessorDeps {
   redis: ConvRedis;
   /** §4.2: MASTER_KEY (32 بايت) لفك تشفير bot_token_encrypted. */
   masterKey: Buffer;
+}
+
+/**
+ * §7 v1.1 — نقطة موقع سائق (live location عبر بوت السائق):
+ * INSERT driver_locations + فحص is_suspect **عند الإدخال** (§3: سرعة > 150 كم/س أو
+ * قفزة > 2كم بأقل من 10 ثوان مقارنةً بآخر نقطة)، ثم تحديث drivers.last_point/last_point_at
+ * **فقط إذا** recorded_at أحدث من المخزّن (التحديثات تصل خارج الترتيب — لا ترتدّ بالنقطة
+ * للخلف) **وليست** مشبوهة. كله ترانزاكشن withTenant واحدة — D9: لا نداء تيليغرام هنا.
+ */
+export async function recordDriverLocation(
+  deps: UpdateProcessorDeps,
+  tenantId: string,
+  driverId: string,
+  point: { lat: number; lng: number },
+  recordedAt: Date,
+): Promise<void> {
+  const suspect = await withTenant(deps.appDb, tenantId, async (tx) => {
+    // §16.11 — قراءة-ثم-كتابة على drivers.last_point/last_point_at: قفل صف السائق؛
+    // يسلسل أيضاً نبضتين متزامنتين لنفس السائق فلا تتسابقان على «آخر نقطة».
+    const lockedRows = await tx
+      .select({ id: drivers.id, lastPointAt: drivers.lastPointAt })
+      .from(drivers)
+      .where(eq(drivers.id, driverId))
+      .for("update");
+    const driver = lockedRows[0];
+    if (!driver) {
+      throw new Error(`recordDriverLocation: driver ${driverId} not found`); // §16.12: فشل صاخب
+    }
+
+    // آخر نقطة مسجّلة للمقارنة — القراءة الهندسية بـ SQL صريح (ST_X/ST_Y)، لا WKB خام عبر الـ ORM
+    const prevRows = await tx
+      .select({
+        lat: sql<number>`ST_Y(${driverLocations.point}::geometry)`,
+        lng: sql<number>`ST_X(${driverLocations.point}::geometry)`,
+        recordedAt: driverLocations.recordedAt,
+      })
+      .from(driverLocations)
+      .where(eq(driverLocations.driverId, driverId))
+      .orderBy(desc(driverLocations.recordedAt))
+      .limit(1);
+    const prev = prevRows[0] ?? null;
+
+    // §3 — منطق صافٍ مُختبَر بـ @quickdrop/telegram: المشبوهة تُخزَّن وتُنبِّه فقط، لا رفض صامت
+    const { isSuspect, speedKmh } = computeIsSuspect(prev, { lat: point.lat, lng: point.lng, recordedAt });
+
+    const wkt = toPostgisWkt(makePoint(point.lat, point.lng)); // الفخ 6/D7: WKT بترتيب lng lat
+    await tx.insert(driverLocations).values({ tenantId, driverId, point: wkt, recordedAt, speedKmh, isSuspect });
+
+    // §7 v1.1 — last_point فقط إذا أحدث وغير مشبوهة (المشبوهة لا تُغذّي geofence ولا last_point §3)
+    if (!isSuspect && (driver.lastPointAt === null || recordedAt.getTime() > driver.lastPointAt.getTime())) {
+      await tx
+        .update(drivers)
+        .set({ lastPoint: wkt, lastPointAt: recordedAt, updatedAt: new Date() })
+        .where(eq(drivers.id, driverId));
+    }
+
+    // TODO §7 geofence (مهمة زميل لاحقة): عند كل نقطة غير مشبوهة لسائق لديه طلبات نشطة —
+    //   §5: picked_up → in_transit تلقائياً بفاعل system عند أول نقطة غير مشبوهة بعد الاستلام؛
+    //   §7: ST_DWithin(dropoff, point, 150) لنقطتين متتاليتين → arrived بفاعل system (idempotent)؛
+    //   والنشر عبر Redis pub/sub → Socket.IO room tenant:{id}:map.
+    return isSuspect;
+  });
+
+  if (suspect) {
+    // §3: النقطة المشبوهة ترفع تنبيهاً للموزّع بدل الرفض الصامت — v1: لوغ منظّم (§13)؛
+    // التنبيه البصري بالداشبورد يصل مع شاشة الخريطة (Socket.IO).
+    console.warn(JSON.stringify({ action: "driver_location_suspect", tenantId, driverId, recordedAt: recordedAt.toISOString() }));
+  }
 }
 
 async function markProcessed(deps: UpdateProcessorDeps, tenantId: string, rowId: string): Promise<void> {
@@ -71,17 +156,29 @@ export async function processUpdate(deps: UpdateProcessorDeps, job: TgUpdateJob)
   }
   const token = decryptBotToken(tenant.botTokenEncrypted, deps.masterKey);
 
-  // 3) bot من الـ LRU (§4.1-4) — bot.init() مرة واحدة، وتسجيل تدفق الزبون عند الإنشاء الأول
+  // 3) bot من الـ LRU (§4.1-4) — bot.init() مرة واحدة، وتسجيل التدفقين عند الإنشاء الأول.
+  // ترتيب التسجيل مقصود: تدفق السائق أولاً — معالجات مواقعه تمرّر next() لغير السائقين
+  // فيصل موقع الزبون لتدفق إنشاء الطلب، بينما معالج مواقع الزبون لا يمرّر؛ التسجيل
+  // بعده كان سيُسقط مواقع السائقين (live location — §7/الفخ 9).
   const bot = await getBotForTenant({
     tenantId: job.tenantId,
     token,
-    onCreate: (created) =>
+    onCreate: (created) => {
+      registerDriverFlow(created, {
+        db: deps.appDb,
+        tenantId: job.tenantId,
+        // §6.2 D16 — القبول/الرفض ترانزاكشنات قاعدة بأقفال صفوف (dispatch.ts) — العقد الملزم
+        acceptOffer: (offerId, driverId) => acceptOffer(deps.appDb, job.tenantId, offerId, driverId),
+        rejectOffer: (offerId, driverId) => rejectOffer(deps.appDb, job.tenantId, offerId, driverId),
+        onLocation: (driverId, point, recordedAt) => recordDriverLocation(deps, job.tenantId, driverId, point, recordedAt),
+      });
       registerCustomerFlow(created, {
         db: deps.appDb,
         redis: deps.redis,
         tenantId: job.tenantId,
         currency: tenant.currency,
-      }),
+      });
+    },
   });
 
   // 4) D9: handleUpdate (يرسل رسائل تيليغرام) خارج أي ترانزاكشن قاعدة بيانات

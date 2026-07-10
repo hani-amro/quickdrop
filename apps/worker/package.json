@@ -15,6 +15,7 @@
     "@quickdrop/telegram": "workspace:*",
     "bullmq": "^5.34.0",
     "drizzle-orm": "^0.44.0",
+    "grammy": "^1.36.0",
     "ioredis": "^5.11.1",
     "zod": "^3.24.0"
   },

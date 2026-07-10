@@ -1,8 +1,10 @@
-import { createDb, webhookUpdates } from "@quickdrop/db";
+import { createDb, offers, webhookUpdates } from "@quickdrop/db";
 import {
+  DISPATCH_QUEUE,
   NOTIFICATIONS_QUEUE,
   parseEnv,
   TG_UPDATES_QUEUE,
+  type DispatchJob,
   type NotificationJob,
   type TgUpdateJob,
 } from "@quickdrop/shared";
@@ -10,6 +12,8 @@ import { Queue, Worker } from "bullmq";
 import { eq } from "drizzle-orm";
 import { Redis } from "ioredis";
 import { z } from "zod";
+import { createDispatchProcessor, DISPATCH_JOB_OPTS, offerTimeoutJobId } from "./dispatch-worker.js";
+import { createNotificationsProcessor, offerTimeoutDelayMs } from "./notifications-consumer.js";
 import { startOutboxPoller } from "./outbox-poller.js";
 import { processUpdate, type UpdateProcessorDeps } from "./update-processor.js";
 
@@ -26,15 +30,17 @@ const env = parseEnv(
 const appDb = createDb(env.DATABASE_URL); // كتابات داخل withTenant حصراً (§2.3)
 const scanDb = createDb(env.DATABASE_URL_WORKER); // مسح عابر للمستأجرين — قراءة فقط
 const redis = new Redis(env.REDIS_URL, { maxRetriesPerRequest: null });
+const masterKey = Buffer.from(env.MASTER_KEY, "hex");
 const queue = new Queue(TG_UPDATES_QUEUE, { connection: redis });
 const notificationsQueue = new Queue<NotificationJob>(NOTIFICATIONS_QUEUE, { connection: redis });
+const dispatchQueue = new Queue<DispatchJob>(DISPATCH_QUEUE, { connection: redis });
 
 // معالجة التحديثات (بوت الزبون §4.3/§4.4) — المنطق بـ update-processor.ts
 const updateProcessorDeps: UpdateProcessorDeps = {
   appDb: appDb.db,
   scanDb: scanDb.db,
   redis,
-  masterKey: Buffer.from(env.MASTER_KEY, "hex"),
+  masterKey,
 };
 
 // §12 — الطوابير ليست مصدر حقيقة: عند الإقلاع أعد بناء المهام الفائتة من القاعدة.
@@ -57,8 +63,31 @@ async function rescanPending(): Promise<void> {
   }
 }
 
+// §12/§6.2 — نفس المبدأ لمُهل العروض: Redis بيضيع؛ offers.expires_at بالقاعدة لا.
+// عند الإقلاع أعد جدولة مهلة كل عرض pending (jobId 'ot:{offerId}' يمنع الازدواج مع
+// المجدول أصلاً)؛ عرض فات موعده → delay 0، وhandleOfferTimeout يقفل ويتحقق من
+// expires_at قبل أي فعل (D16) — إعادة الجدولة آمنة التكرار دائماً.
+async function rescanPendingOffers(): Promise<void> {
+  const pendingOffers = await scanDb.db
+    .select({ id: offers.id, tenantId: offers.tenantId, expiresAt: offers.expiresAt })
+    .from(offers)
+    .where(eq(offers.status, "pending"));
+  const now = new Date();
+  for (const offer of pendingOffers) {
+    await dispatchQueue.add(
+      "offer-timeout",
+      { kind: "offer-timeout", tenantId: offer.tenantId, offerId: offer.id },
+      { ...DISPATCH_JOB_OPTS, jobId: offerTimeoutJobId(offer.id), delay: offerTimeoutDelayMs(offer.expiresAt, now) },
+    );
+  }
+  if (pendingOffers.length > 0) {
+    console.log(JSON.stringify({ action: "rescan_offers_enqueued", count: pendingOffers.length }));
+  }
+}
+
 async function main(): Promise<void> {
   await rescanPending();
+  await rescanPendingOffers();
 
   // D9/§12 — بعد إعادة بناء الفائت: شغّل عامل التقاط الـ outbox (كل ثانية → طابور الإشعارات)
   const outboxPoller = startOutboxPoller({ scanDb: scanDb.db, appDb: appDb.db, queue: notificationsQueue });
@@ -78,21 +107,20 @@ async function main(): Promise<void> {
     );
   });
 
-  // D9 — مستهلك الإشعارات: placeholder يسجّل JSON فقط؛ الإرسال الفعلي لتيليغرام وحدة
-  // زميلة لاحقة. جاهز للـ idempotency: التسليم at-least-once (§12) — مفتاح إزالة
-  // التكرار = outboxId، والمرسل الفعلي يجب أن يتحقق "هل أُرسل هذا outboxId؟" قبل النداء.
+  // D9/§12 — مستهلك الإشعارات الحقيقي (notifications-consumer.ts): تيليغرام بعد الالتزام
+  // حصراً، at-least-once — كل الأفعال آمنة التكرار (تفاصيل الـ idempotency برأس الملف).
+  const processNotification = createNotificationsProcessor({
+    appDb: appDb.db,
+    scanDb: scanDb.db,
+    redis,
+    masterKey,
+    dispatchQueue,
+  });
   const notificationsWorker = new Worker<NotificationJob>(
     NOTIFICATIONS_QUEUE,
     async (job) => {
       // §16.12: لا ابتلاع أخطاء — أي رمي هنا يعيد الجدولة عبر BullMQ backoff
-      console.log(
-        JSON.stringify({
-          action: "notification_placeholder",
-          outboxId: job.data.outboxId,
-          tenantId: job.data.tenantId,
-          topic: job.data.topic,
-        }),
-      );
+      await processNotification(job.data);
     },
     { connection: redis, concurrency: 10 },
   );
@@ -109,13 +137,38 @@ async function main(): Promise<void> {
     );
   });
 
+  // §6/D16 — عامل الإسناد (dispatch-worker.ts): القرارات بترانزاكشنات القاعدة، هنا تنسيق فقط
+  const processDispatch = createDispatchProcessor({ appDb: appDb.db, dispatchQueue });
+  const dispatchWorker = new Worker<DispatchJob>(
+    DISPATCH_QUEUE,
+    async (job) => {
+      // §16.12: لا ابتلاع أخطاء — الرمي يعيد الجدولة عبر BullMQ backoff
+      await processDispatch(job.data);
+    },
+    { connection: redis, concurrency: 10 },
+  );
+
+  dispatchWorker.on("failed", (job, error) => {
+    console.error(
+      JSON.stringify({
+        action: "job_failed",
+        queue: DISPATCH_QUEUE,
+        jobId: job?.id,
+        attempts: job?.attemptsMade,
+        message: error.message,
+      }),
+    );
+  });
+
   // §12 — إغلاق نظيف: استنزف الجاري قبل الخروج، وإلا كل deploy بيقتل مهام بنصها
   const shutdown = async (): Promise<void> => {
     await outboxPoller.stop(); // أولاً: أوقف إنتاج مهام جديدة وانتظر الدورة الجارية
     await worker.close();
     await notificationsWorker.close();
+    await dispatchWorker.close();
     await queue.close();
     await notificationsQueue.close();
+    await dispatchQueue.close();
     redis.disconnect();
     await appDb.close();
     await scanDb.close();
@@ -124,7 +177,9 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => void shutdown());
   process.on("SIGINT", () => void shutdown());
 
-  console.log(JSON.stringify({ action: "worker_started", queues: [TG_UPDATES_QUEUE, NOTIFICATIONS_QUEUE] }));
+  console.log(
+    JSON.stringify({ action: "worker_started", queues: [TG_UPDATES_QUEUE, NOTIFICATIONS_QUEUE, DISPATCH_QUEUE] }),
+  );
 }
 
 main().catch((error: unknown) => {

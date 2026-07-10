@@ -5,3 +5,4 @@ export * from "./state-machine.js";
 export * from "./pricing.js";
 export * from "./outbox.js";
 export * from "./orders-service.js";
+export * from "./dispatch.js";

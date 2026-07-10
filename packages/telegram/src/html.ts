@@ -68,3 +68,84 @@ export function quoteCard(input: { components: PriceComponents; distanceM: numbe
   lines.push(`<b>الإجمالي: ${fmt(c.total)}</b>`, "", "تأكيد الطلب؟ 👇");
   return lines.join("\n");
 }
+
+// —— بطاقات بوت السائق (§4.3/§6) — منطق صافٍ قابل للاختبار مثل بقية الملف ——
+
+/** نقطة بلا نص عنوان (dropoff_text/pickup_text فارغان) — بديل عرض ثابت. */
+const POINT_ONLY_LABEL_AR = "📍 نقطة على الخريطة";
+
+/**
+ * §6.2 — بطاقة عرض الإسناد المُرسَلة للسائق مع أزرار قبول/رفض (تُبنى عند المستدعي —
+ * انظر offerAcceptCb/offerRejectCb بـ driver-flow). المُهلة تُعرض من offers.expires_at
+ * (مصدر الحقيقة الوحيد للمهلة — D16)، وnow معامل صريح: لا new Date() ضمنية (D6)
+ * وقابلية اختبار صافية (§15).
+ * D13: goods_amount = ما يدفعه السائق للتاجر من جيبته عند الاستلام — يجب أن يراه قبل القبول.
+ */
+export function offerCard(input: {
+  publicCode: string;
+  pickupText: string | null;
+  dropoffText: string | null;
+  distanceM?: number | null;
+  /** أجرة التوصيل (orders.price_total) — للعرض فقط (D5). */
+  priceTotal: bigint;
+  goodsAmount?: bigint;
+  codAmount?: bigint;
+  currency: string;
+  /** §6.2 — جولة التوسيع (offers.round): تُعرض من الجولة الثانية فصاعداً. */
+  round?: number;
+  expiresAt: Date;
+  /** مرجع العد التنازلي — مرّرها صراحةً بالاختبارات؛ الافتراضي لحظة البناء. */
+  now?: Date;
+}): string {
+  const fmt = (amount: bigint): string => bidiIsolate(escapeHtml(formatMoney(amount, "ar-SY", input.currency)));
+  const code = bidiIsolate(`#${escapeHtml(input.publicCode)}`);
+  const nowMs = (input.now ?? new Date()).getTime(); // فارق زمني لا عرض تقويمي — لا يخالف D6
+  const secondsLeft = Math.max(0, Math.ceil((input.expiresAt.getTime() - nowMs) / 1000));
+  const goodsAmount = input.goodsAmount ?? 0n;
+  const codAmount = input.codAmount ?? 0n;
+
+  const lines: string[] = [
+    `<b>🛎 عرض توصيل — طلب ${code}</b>`,
+    `الاستلام: ${input.pickupText !== null ? escapeHtml(input.pickupText) : POINT_ONLY_LABEL_AR}`,
+    `التسليم: ${input.dropoffText !== null ? escapeHtml(input.dropoffText) : POINT_ONLY_LABEL_AR}`,
+  ];
+  if (input.distanceM !== undefined && input.distanceM !== null) {
+    lines.push(`المسافة: ${bidiIsolate(`${(input.distanceM / 1000).toFixed(1)} كم`)}`);
+  }
+  lines.push(`أجرة التوصيل: <b>${fmt(input.priceTotal)}</b>`);
+  // D13: البضاعة تتسوى فيزيائياً عند الاستلام — السائق يدفعها من جيبته ويستردها ضمن cod
+  if (goodsAmount > 0n) lines.push(`تدفع للتاجر عند الاستلام: ${fmt(goodsAmount)}`);
+  if (codAmount > 0n) lines.push(`تحصّل من الزبون عند التسليم: ${fmt(codAmount)}`);
+  if (input.round !== undefined && input.round > 1) lines.push(`🔁 جولة ${bidiIsolate(String(input.round))}`);
+  lines.push("", `⏱ عندك ${bidiIsolate(String(secondsLeft))} ثانية للرد`);
+  return lines.join("\n");
+}
+
+/**
+ * §6.2 — بطاقة مهمة السائق: تحل مكان بطاقة العرض بعد القبول، وتُحدَّث مع كل انتقال
+ * حالة (أزرار المرحلة التالية تُبنى بـ taskKeyboard في driver-flow — ليست هنا:
+ * هذا الملف منطق نصوص صافٍ). التسمية العربية من ORDER_STATUS_LABELS_AR نفسها.
+ */
+export function taskCard(input: {
+  publicCode: string;
+  status: OrderStatus;
+  pickupText: string | null;
+  dropoffText: string | null;
+  goodsAmount: bigint;
+  codAmount: bigint;
+  currency: string;
+}): string {
+  const fmt = (amount: bigint): string => bidiIsolate(escapeHtml(formatMoney(amount, "ar-SY", input.currency)));
+  const code = bidiIsolate(`#${escapeHtml(input.publicCode)}`);
+
+  const lines: string[] = [
+    `<b>🚚 مهمتك — طلب ${code}</b>`,
+    `الحالة: <b>${ORDER_STATUS_LABELS_AR[input.status]}</b>`,
+    `الاستلام: ${input.pickupText !== null ? escapeHtml(input.pickupText) : POINT_ONLY_LABEL_AR}`,
+    `التسليم: ${input.dropoffText !== null ? escapeHtml(input.dropoffText) : POINT_ONLY_LABEL_AR}`,
+  ];
+  if (input.goodsAmount > 0n) lines.push(`تدفع للتاجر عند الاستلام: ${fmt(input.goodsAmount)}`);
+  if (input.codAmount > 0n) lines.push(`تحصّل من الزبون عند التسليم: <b>${fmt(input.codAmount)}</b>`);
+  if (input.status === "delivered") lines.push("", "تسليم موفّق 🤝 شكراً!");
+  return lines.join("\n");
+}
