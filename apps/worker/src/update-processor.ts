@@ -2,11 +2,15 @@ import {
   acceptOffer,
   driverLocations,
   drivers,
+  InvalidTransitionError,
+  orders,
   rejectOffer,
   tenants,
+  transition,
   webhookUpdates,
   withTenant,
   type Db,
+  type Tx,
 } from "@quickdrop/db";
 import { makePoint, toPostgisWkt, type TgUpdateJob } from "@quickdrop/shared";
 import {
@@ -18,7 +22,7 @@ import {
   type Bot,
   type ConvRedis,
 } from "@quickdrop/telegram";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 
 // §4.1(3-5) — معالجة تحديث من الـ inbox: اقرأ الصف (idempotent) ← فك تشفير توكن
 // المستأجر ← bot من الـ LRU ← handleUpdate ← علّم processed.
@@ -26,6 +30,84 @@ import { and, desc, eq, sql } from "drizzle-orm";
 // ترانزاكشنان منفصلان حول النداء، والـ idempotency من فحص status (الفخ 7).
 
 type TgUpdate = Parameters<Bot["handleUpdate"]>[0];
+
+/** §7 v1.1 — نصف قطر geofence الوصول بالأمتار: نقطتان متتاليتان ضمنه من نقطة التسليم → arrived. */
+export const GEOFENCE_ARRIVED_RADIUS_M = 150;
+
+/**
+ * §7 v1.1 — الانتقالات التلقائية بعد كتابة نقطة **غير مشبوهة** (المشبوهة لا تغذّي
+ * الـ geofence — §3)، لكل طلب من طلبات السائق النشطة على حدة (D14):
+ * - picked_up → in_transit بفاعل system: أول تحديث موقع بعد الاستلام (§5 v1.1).
+ * - in_transit → arrived بفاعل system: آخر نقطتين متتاليتين غير مشبوهتين كلتاهما ضمن
+ *   150م من نقطة التسليم — النقطتان درعُ قفزات GPS (§7 v1.1).
+ *
+ * استعلام واحد يجلب الطلبات النشطة وفحص المسافة معاً بالقاعدة (ST_DWithin على
+ * geography = أمتار — D7)؛ تُستدعى داخل ترانزاكشن withTenant القائمة، وtransition
+ * تكتب order_events + outbox بنفس الترانزاكشن (D8) — لا نداء تيليغرام هنا (D9).
+ * قفل صف السائق (recordDriverLocation) يسلسل نبضتين متزامنتين فلا تتسابقان هنا.
+ */
+async function applyGeofenceTransitions(tx: Tx, tenantId: string, driverId: string): Promise<void> {
+  // «آخر نقطتين متتاليتين غير مشبوهتين»: count(*) = 2 يمنع التسليح بنقطة واحدة
+  // (bool_and على صف واحد يمرّ)، وbool_and يشترط النقطتين معاً ضمن الدائرة.
+  // subquery مرتبط بصف الطلب (dropoff_point) — يعاد تقييمه لكل طلب على حدة (D14).
+  const lastTwoWithinDropoff = sql<boolean>`(
+    SELECT count(*) = 2 AND bool_and(ST_DWithin(${orders.dropoffPoint}, last2.point, ${GEOFENCE_ARRIVED_RADIUS_M}::float8))
+    FROM (
+      SELECT dl.point
+      FROM driver_locations dl
+      WHERE dl.tenant_id = ${tenantId}
+        AND dl.driver_id = ${driverId}
+        AND dl.is_suspect = false
+      ORDER BY dl.recorded_at DESC
+      LIMIT 2
+    ) last2
+  )`;
+
+  const activeOrders = await tx
+    .select({ id: orders.id, status: orders.status, arrivedByGeofence: lastTwoWithinDropoff })
+    .from(orders)
+    .where(
+      and(
+        eq(orders.driverId, driverId),
+        inArray(orders.status, ["picked_up", "in_transit"]),
+        isNull(orders.deletedAt), // D10: المحذوف ناعماً خارج اللعبة
+      ),
+    );
+
+  for (const order of activeOrders) {
+    if (order.status === "picked_up") {
+      try {
+        // §5 v1.1 — أول موقع غير مشبوه بعد الاستلام → in_transit بفاعل system
+        await transition(tx, {
+          orderId: order.id,
+          to: "in_transit",
+          actor: { type: "system" },
+          meta: { trigger: "driver_location" },
+        });
+      } catch (error: unknown) {
+        // idempotent (§7): سباق مع زر «انطلقت» الاحتياطي أو انتقال متزامن — الانتقال
+        // حدث سلفاً بيد غيرنا، وإعادة رميه تُفشل نبضة موقع سليمة. التجاهل الصامت
+        // مسموح **في هذا الموضع حصراً** (§16.12: معالجة صريحة مبررة، لا ابتلاع أعمى).
+        if (!(error instanceof InvalidTransitionError)) throw error;
+      }
+    } else if (order.status === "in_transit" && order.arrivedByGeofence) {
+      try {
+        // §7 v1.1 — نقطتان متتاليتان غير مشبوهتين ضمن 150م → arrived بفاعل system
+        await transition(tx, {
+          orderId: order.id,
+          to: "arrived",
+          actor: { type: "system" },
+          meta: { trigger: "geofence" },
+        });
+      } catch (error: unknown) {
+        // idempotent (§7): السائق يدخل ويخرج من الدائرة عدة مرات، أو زر «وصلت» سبقنا —
+        // الانتقال يحدث مرة واحدة والباقي يُتجاهل. التجاهل الصامت مسموح **في هذا
+        // الموضع حصراً** (§16.12: معالجة صريحة مبررة، لا ابتلاع أعمى).
+        if (!(error instanceof InvalidTransitionError)) throw error;
+      }
+    }
+  }
+}
 
 export interface UpdateProcessorDeps {
   /** كتابات/قراءات ضمن مستأجر — داخل withTenant حصراً (§2.3). */
@@ -92,10 +174,12 @@ export async function recordDriverLocation(
         .where(eq(drivers.id, driverId));
     }
 
-    // TODO §7 geofence (مهمة زميل لاحقة): عند كل نقطة غير مشبوهة لسائق لديه طلبات نشطة —
-    //   §5: picked_up → in_transit تلقائياً بفاعل system عند أول نقطة غير مشبوهة بعد الاستلام؛
-    //   §7: ST_DWithin(dropoff, point, 150) لنقطتين متتاليتين → arrived بفاعل system (idempotent)؛
-    //   والنشر عبر Redis pub/sub → Socket.IO room tenant:{id}:map.
+    if (!isSuspect) {
+      // §7 v1.1 — الانتقالات التلقائية (in_transit/arrived) بعد كتابة النقطة غير المشبوهة،
+      // بنفس ترانزاكشن withTenant (transition تكتب order_events + outbox معها — D8/D9).
+      // TODO (شاشة الخريطة): النشر عبر Redis pub/sub → Socket.IO room tenant:{id}:map.
+      await applyGeofenceTransitions(tx, tenantId, driverId);
+    }
     return isSuspect;
   });
 

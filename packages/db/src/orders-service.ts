@@ -1,8 +1,9 @@
+import { randomBytes } from "node:crypto";
 import { toPostgisWkt, type OrderActorType, type Point, type Service } from "@quickdrop/shared";
 import { sql } from "drizzle-orm";
 import type { Db } from "./client.js";
 import { quoteOrder, type Quote } from "./pricing.js";
-import { counters, orders, type Order } from "./schema/index.js";
+import { counters, orders, trackingTokens, type Order } from "./schema/index.js";
 import { transition } from "./state-machine.js";
 import { withTenant, type Tx } from "./with-tenant.js";
 
@@ -62,6 +63,9 @@ export async function quoteForTenant(db: Db, tenantId: string, input: QuoteInput
   return withTenant(db, tenantId, (tx) => quoteOrder(tx, input));
 }
 
+/** §7 — عمر رابط التتبع الابتدائي: 72 ساعة من الإنشاء؛ يُقلَّص إلى ساعة بعد التسليم. */
+export const TRACKING_TOKEN_INITIAL_TTL_MS = 72 * 60 * 60 * 1000;
+
 /**
  * D15 — إنشاء طلب: ترانزاكشن withTenant واحدة تجمع التسعير + العدّاد + INSERT
  * + الانتقال الأول — إمّا كله أو لا شيء (لا طلب بلا سعر ولا عدّاد محروق على طلب فاشل).
@@ -74,7 +78,7 @@ export async function createOrder(
   db: Db,
   tenantId: string,
   input: CreateOrderInput,
-): Promise<{ order: Order; quote: Quote }> {
+): Promise<{ order: Order; quote: Quote; trackingToken: string }> {
   return withTenant(db, tenantId, async (tx) => {
     const quote = await quoteOrder(tx, {
       service: input.service,
@@ -132,6 +136,18 @@ export async function createOrder(
       actor: input.createdBy,
     });
 
-    return { order, quote };
+    // §7 — رابط التتبع العام /t/{token}: توكن 128-bit عشوائي (16 بايت hex) لكل طلب،
+    // بنفس ترانزاكشن الإنشاء (لا طلب بلا رابط تتبع). tracking_tokens استثناء RLS
+    // مسمّى (§2.3): القراءة العامة بالتوكن وحده، والإدراج هنا داخل ترانزاكشن المستأجر.
+    // expires_at الابتدائي 72 ساعة — يُقلَّص إلى «التسليم + ساعة» عند delivered (§7).
+    const trackingToken = randomBytes(16).toString("hex");
+    await tx.insert(trackingTokens).values({
+      token: trackingToken,
+      tenantId,
+      orderId: row.id,
+      expiresAt: new Date(Date.now() + TRACKING_TOKEN_INITIAL_TTL_MS), // D6: UTC
+    });
+
+    return { order, quote, trackingToken };
   });
 }

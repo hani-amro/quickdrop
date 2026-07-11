@@ -1,4 +1,4 @@
-import { drivers, offers, orders, tenants, users, withTenant, type Db } from "@quickdrop/db";
+import { drivers, offers, orders, tenants, trackingTokens, users, withTenant, type Db } from "@quickdrop/db";
 import { ORDER_STATUSES, type DispatchJob, type NotificationJob } from "@quickdrop/shared";
 import {
   decryptBotToken,
@@ -11,7 +11,7 @@ import {
   type ConvRedis,
 } from "@quickdrop/telegram";
 import type { Queue } from "bullmq";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { GrammyError, InlineKeyboard } from "grammy";
 import { z } from "zod";
 import { DISPATCH_JOB_OPTS, dispatchOrderJobId, offerTimeoutJobId } from "./dispatch-worker.js";
@@ -199,6 +199,17 @@ async function handleOrderStatusChanged(deps: NotificationsConsumerDeps, job: No
       { kind: "dispatch-order", tenantId: job.tenantId, orderId: payload.orderId, round: 1 },
       { ...DISPATCH_JOB_OPTS, jobId: dispatchOrderJobId(payload.orderId, 1) },
     );
+  }
+
+  // §7 — رابط التتبع العام يموت بعد التسليم بساعة: قلّص expires_at عند delivered.
+  // tracking_tokens استثناء RLS مسمّى (§2.3) — تحديث مباشر بلا withTenant، مقيَّد
+  // بالمستأجر والطلب معاً. LEAST يجعل التكرار (at-least-once §12) غير مُمدِّد للصلاحية:
+  // إعادة المهمة لاحقاً لا تُحيي توكناً بدأ يحتضر.
+  if (payload.to === "delivered") {
+    await deps.appDb
+      .update(trackingTokens)
+      .set({ expiresAt: sql`LEAST(${trackingTokens.expiresAt}, now() + interval '1 hour')` })
+      .where(and(eq(trackingTokens.tenantId, job.tenantId), eq(trackingTokens.orderId, payload.orderId)));
   }
 
   const row = await withTenant(deps.appDb, job.tenantId, async (tx) => {

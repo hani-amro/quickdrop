@@ -9,8 +9,11 @@ import { loadEnv, type ApiEnv } from "./env.js";
 import { HealthController } from "./health/health.controller.js";
 import { OrdersController } from "./orders/orders.controller.js";
 import { OrdersService } from "./orders/orders.service.js";
+import { SettlementsController } from "./settlements/settlements.controller.js";
+import { SettlementsService } from "./settlements/settlements.service.js";
 import { TelegramGatewayController } from "./telegram-gateway/gateway.controller.js";
 import { TelegramGatewayService } from "./telegram-gateway/gateway.service.js";
+import { TrackingController } from "./tracking/tracking.controller.js";
 
 export const ENV = "ENV";
 export const DB = "DB";
@@ -18,7 +21,14 @@ export const REDIS = "REDIS";
 export const TG_QUEUE = "TG_QUEUE";
 
 @Module({
-  controllers: [HealthController, OrdersController, DriversController, TelegramGatewayController],
+  controllers: [
+    HealthController,
+    OrdersController,
+    DriversController,
+    SettlementsController,
+    TrackingController, // §7 — عام بلا auth: /public/track/:token
+    TelegramGatewayController,
+  ],
   providers: [
     { provide: ENV, useFactory: (): ApiEnv => loadEnv() },
     {
@@ -39,6 +49,7 @@ export const TG_QUEUE = "TG_QUEUE";
     TelegramGatewayService,
     OrdersService,
     DriversService,
+    SettlementsService,
   ],
 })
 export class AppModule implements OnApplicationShutdown {

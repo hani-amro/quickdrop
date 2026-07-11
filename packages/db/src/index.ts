@@ -6,3 +6,4 @@ export * from "./pricing.js";
 export * from "./outbox.js";
 export * from "./orders-service.js";
 export * from "./dispatch.js";
+export * from "./settlement.js";

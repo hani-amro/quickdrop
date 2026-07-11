@@ -68,3 +68,7 @@ jobs:
       # §15 — أهم اختبار بالمشروع: عزل المستأجرين يعمل بكل CI
       - name: Tests
         run: pnpm test
+
+      # 8.3-2 — فاتورة المراقبة: طلب delivered بلا قيود دفتره = فشل الـ CI
+      - name: Ledger invariants check
+        run: pnpm --filter @quickdrop/db check-invariants

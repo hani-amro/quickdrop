@@ -9,9 +9,15 @@
     "build": "turbo run build",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
+    "dev:up": "docker compose -f infra/compose/docker-compose.dev.yml up -d",
+    "dev:down": "docker compose -f infra/compose/docker-compose.dev.yml down",
+    "dev:api": "pnpm --filter @quickdrop/api dev",
+    "dev:worker": "pnpm --filter @quickdrop/worker dev",
+    "dev:dashboard": "pnpm --filter @quickdrop/dashboard dev",
     "db:generate": "pnpm --filter @quickdrop/db generate",
     "db:migrate": "pnpm --filter @quickdrop/db migrate",
     "db:check-rls": "pnpm --filter @quickdrop/db check-rls",
+    "db:seed-dev": "pnpm --filter @quickdrop/db seed-dev",
     "tenant:provision": "pnpm --filter @quickdrop/api provision-tenant --"
   },
   "devDependencies": {

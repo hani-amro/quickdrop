@@ -87,3 +87,42 @@ export interface DriverRow {
 export interface ListDriversResponse {
   drivers: DriverRow[];
 }
+
+// GET /api/settlements/board — §8.2: صف لكل سائق عنده قيود غير مسوّاة.
+// expected مال = سلسلة (D5)؛ الحساب بالواجهة BigInt حصراً، لا Number أبداً.
+export interface SettlementBoardRow {
+  driverId: string;
+  name: string | null;
+  expected: string;
+  entryCount: number;
+  lastEntryAt: string;
+}
+
+export interface SettlementBoardResponse {
+  periodDate: string; // اليوم بمنطقة المستأجر (tenantDay خادمياً — الفخ 8)
+  rows: SettlementBoardRow[];
+}
+
+// POST /api/settlements/close — §8.2: الفرق يظهر حسابياً ولا يُخفى
+export interface CloseSettlementResponse {
+  settlement: {
+    id: string;
+    driverId: string;
+    periodDate: string;
+    expected: string;
+    received: string;
+    diff: string;
+    status: string;
+    closedAt: string | null;
+  };
+}
+
+// GET /public/track/{token} — عقد صفحة التتبع العام /t/{token} (§7): الحالة + الكود
+// + نقطتا التسليم/السائق فقط — لا أسماء ولا أرقام. lastPointAgeS = عمر آخر نقطة
+// بالثواني (الفخ 19: تُعرض "آخر موقع معروف قبل X" لا نقطة قديمة بهيئة حيّة).
+export interface PublicTrackingResponse {
+  status: OrderStatus;
+  publicCode: string;
+  dropoff: Point;
+  driver: { lat: number; lng: number; lastPointAgeS: number } | null;
+}

@@ -161,6 +161,8 @@ export interface CreateOrderResponse {
     createdAt: string;
   };
   quote: QuoteResponse;
+  // §7 — رابط التتبع العام /t/{token}: يُملى هاتفياً أو يُرسَل بأي قناة (D15 — زبون التلفون)
+  trackingToken: string;
 }
 
 export interface ListOrdersResponse {
@@ -276,7 +278,7 @@ export class OrdersService {
     const customerId = await this.findOrCreateCustomer(tenant.id, input.customerPhone, input.customerName);
 
     try {
-      const { order, quote } = await createOrder(this.handle.db, tenant.id, {
+      const { order, quote, trackingToken } = await createOrder(this.handle.db, tenant.id, {
         service: input.service,
         customerId,
         pickup: input.pickup,
@@ -310,6 +312,7 @@ export class OrdersService {
           createdAt: order.createdAt.toISOString(),
         },
         quote: toQuoteResponse(quote),
+        trackingToken, // §7 — التوكن لا يُسجَّل باللوغ: سر قصير العمر بيد الزبون فقط
       };
     } catch (error) {
       throw this.mapPricingError(error);

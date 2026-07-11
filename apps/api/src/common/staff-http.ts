@@ -52,6 +52,7 @@ export function parseOr400<S extends z.ZodTypeAny>(schema: S, data: unknown, act
 export interface ActiveTenant {
   id: string;
   etaCorrectionBp: number; // §7 — معامل تصحيح الـ ETA لكل مستأجر (لقطة promised_at)
+  timezone: string; // الفخ 8 — كل حساب تقويمي (تسوية "اليوم" §8.2) عبر tenantDay بمنطقة المستأجر
 }
 
 /**
@@ -60,7 +61,12 @@ export interface ActiveTenant {
  */
 export async function resolveActiveTenant(db: Db, slug: string): Promise<ActiveTenant> {
   const rows = await db
-    .select({ id: tenants.id, status: tenants.status, etaCorrectionBp: tenants.etaCorrectionBp })
+    .select({
+      id: tenants.id,
+      status: tenants.status,
+      etaCorrectionBp: tenants.etaCorrectionBp,
+      timezone: tenants.timezone,
+    })
     .from(tenants)
     .where(eq(tenants.slug, slug))
     .limit(1);
@@ -68,5 +74,5 @@ export async function resolveActiveTenant(db: Db, slug: string): Promise<ActiveT
   if (!tenant || tenant.status === "suspended" || tenant.status === "churned") {
     throw new NotFoundException("not found");
   }
-  return { id: tenant.id, etaCorrectionBp: tenant.etaCorrectionBp };
+  return { id: tenant.id, etaCorrectionBp: tenant.etaCorrectionBp, timezone: tenant.timezone };
 }

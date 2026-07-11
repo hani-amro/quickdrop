@@ -1,10 +1,12 @@
 import type {
+  CloseSettlementResponse,
   CreateOrderRequest,
   CreateOrderResponse,
   ListDriversResponse,
   ListOrdersResponse,
   QuoteRequest,
   QuoteResponse,
+  SettlementBoardResponse,
 } from "./types";
 
 // عميل المتصفح — كل النداءات عبر /api/proxy (route handler خادمي يحقن التوكن
@@ -47,6 +49,11 @@ export const api = {
   // D16 — القبول النهائي قرار القاعدة بأقفال الصفوف؛ الواجهة اقتراح فقط
   assignOrder: (orderId: string, driverId: string): Promise<unknown> =>
     request(`orders/${orderId}/assign`, { method: "POST", body: { driverId } }),
+  // §8.2 — التسوية اليومية: اللوحة + إغلاق يوم سائق (periodDate يحسبه الخادم
+  // بمنطقة المستأجر tenantDay — الفخ 8؛ الواجهة لا ترسل "اليوم" من المتصفح)
+  settlementBoard: (): Promise<SettlementBoardResponse> => request("settlements/board"),
+  closeSettlement: (driverId: string, received: string): Promise<CloseSettlementResponse> =>
+    request("settlements/close", { method: "POST", body: { driverId, received } }),
 };
 
 // أخطاء عامة بالعربي (§11: الخادم يرد رسائل عامة — الواجهة تترجم الحالة فقط)

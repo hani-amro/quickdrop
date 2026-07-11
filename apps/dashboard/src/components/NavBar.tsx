@@ -8,10 +8,13 @@ const LINKS = [
   { href: "/", label: "الإرسال" },
   { href: "/orders/new", label: "طلب جديد" },
   { href: "/drivers", label: "السائقون" },
+  { href: "/settlements", label: "التسوية" },
 ] as const;
 
 export function NavBar() {
   const pathname = usePathname();
+  // §7 — /t/{token} صفحة تتبع عامة لزائر مجهول: بلا تنقّل الداشبورد إطلاقاً
+  if (pathname === "/t" || pathname.startsWith("/t/")) return null;
   return (
     <header className="border-b border-slate-200 bg-white">
       <nav className="mx-auto flex max-w-screen-2xl items-center gap-6 px-4 py-3">

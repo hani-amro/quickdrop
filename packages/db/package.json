@@ -10,6 +10,8 @@
     "generate": "drizzle-kit generate",
     "migrate": "tsx scripts/migrate.ts",
     "check-rls": "tsx scripts/check-rls.ts",
+    "check-invariants": "tsx scripts/check-invariants.ts",
+    "seed-dev": "tsx scripts/seed-dev.ts",
     "test": "vitest run"
   },
   "dependencies": {
