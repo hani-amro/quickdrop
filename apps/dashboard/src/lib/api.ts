@@ -1,7 +1,11 @@
 import type {
+  AnalyticsResponse,
   CloseSettlementResponse,
+  CreateBroadcastRequest,
+  CreateBroadcastResponse,
   CreateOrderRequest,
   CreateOrderResponse,
+  ListBroadcastsResponse,
   ListDriversResponse,
   ListOrdersResponse,
   QuoteRequest,
@@ -54,6 +58,13 @@ export const api = {
   settlementBoard: (): Promise<SettlementBoardResponse> => request("settlements/board"),
   closeSettlement: (driverId: string, received: string): Promise<CloseSettlementResponse> =>
     request("settlements/close", { method: "POST", body: { driverId, received } }),
+  // §13 — إحصاءات اللوحة؛ days اختياري (النافذة الافتراضية 7 أيام خادمياً)
+  analytics: (days?: number): Promise<AnalyticsResponse> =>
+    request(days === undefined ? "analytics" : `analytics?days=${days}`),
+  // §4.3/§14 — البث الجماهيري: القائمة + إنشاء بثّة (تُدفع للطابور فوراً خادمياً)
+  listBroadcasts: (): Promise<ListBroadcastsResponse> => request("broadcasts"),
+  createBroadcast: (body: CreateBroadcastRequest): Promise<CreateBroadcastResponse> =>
+    request("broadcasts", { method: "POST", body }),
 };
 
 // أخطاء عامة بالعربي (§11: الخادم يرد رسائل عامة — الواجهة تترجم الحالة فقط)

@@ -1,9 +1,11 @@
 import { createDb, offers, webhookUpdates } from "@quickdrop/db";
 import {
+  BROADCAST_QUEUE,
   DISPATCH_QUEUE,
   NOTIFICATIONS_QUEUE,
   parseEnv,
   TG_UPDATES_QUEUE,
+  type BroadcastJob,
   type DispatchJob,
   type NotificationJob,
   type TgUpdateJob,
@@ -12,6 +14,7 @@ import { Queue, Worker } from "bullmq";
 import { eq } from "drizzle-orm";
 import { Redis } from "ioredis";
 import { z } from "zod";
+import { createBroadcastProcessor } from "./broadcast-consumer.js";
 import { createDispatchProcessor, DISPATCH_JOB_OPTS, offerTimeoutJobId } from "./dispatch-worker.js";
 import { createNotificationsProcessor, offerTimeoutDelayMs } from "./notifications-consumer.js";
 import { startOutboxPoller } from "./outbox-poller.js";
@@ -160,12 +163,38 @@ async function main(): Promise<void> {
     );
   });
 
+  // §4.3/§14 — مستهلك البث (broadcast-consumer.ts): مهمة واحدة لكل بثّة، إرسال مضبوط المعدل.
+  // concurrency 1 قصداً: كل مهمة تبثّ لكل الجمهور تسلسلياً تحت سقف الـ 30 msg/s للبوت (§4.3)؛
+  // معالجة بثّتين لمستأجرين معاً بنفس العملية قد تتجاوز السقف — v1 يبثّ بثّة واحدة في كل لحظة.
+  const processBroadcast = createBroadcastProcessor({ appDb: appDb.db, scanDb: scanDb.db, redis, masterKey });
+  const broadcastWorker = new Worker<BroadcastJob>(
+    BROADCAST_QUEUE,
+    async (job) => {
+      // §16.12: لا ابتلاع أخطاء — الرمي يعيد الجدولة عبر BullMQ backoff
+      await processBroadcast(job.data);
+    },
+    { connection: redis, concurrency: 1 },
+  );
+
+  broadcastWorker.on("failed", (job, error) => {
+    console.error(
+      JSON.stringify({
+        action: "job_failed",
+        queue: BROADCAST_QUEUE,
+        jobId: job?.id,
+        attempts: job?.attemptsMade,
+        message: error.message,
+      }),
+    );
+  });
+
   // §12 — إغلاق نظيف: استنزف الجاري قبل الخروج، وإلا كل deploy بيقتل مهام بنصها
   const shutdown = async (): Promise<void> => {
     await outboxPoller.stop(); // أولاً: أوقف إنتاج مهام جديدة وانتظر الدورة الجارية
     await worker.close();
     await notificationsWorker.close();
     await dispatchWorker.close();
+    await broadcastWorker.close();
     await queue.close();
     await notificationsQueue.close();
     await dispatchQueue.close();
@@ -178,7 +207,10 @@ async function main(): Promise<void> {
   process.on("SIGINT", () => void shutdown());
 
   console.log(
-    JSON.stringify({ action: "worker_started", queues: [TG_UPDATES_QUEUE, NOTIFICATIONS_QUEUE, DISPATCH_QUEUE] }),
+    JSON.stringify({
+      action: "worker_started",
+      queues: [TG_UPDATES_QUEUE, NOTIFICATIONS_QUEUE, DISPATCH_QUEUE, BROADCAST_QUEUE],
+    }),
   );
 }
 

@@ -1,4 +1,4 @@
-import type { DriverStatus, OrderStatus, Service } from "@quickdrop/shared";
+import type { BroadcastStatus, DriverStatus, OrderStatus, Service } from "@quickdrop/shared";
 
 // أشكال عقد الـ REST كما يراها المتصفح (عبر /api/proxy).
 // D5 — كل مال يعبر الـ JSON سلسلة نصية؛ لا يُحوَّل لـ Number أبداً (العرض فقط عند الحافة).
@@ -125,4 +125,61 @@ export interface PublicTrackingResponse {
   publicCode: string;
   dropoff: Point;
   driver: { lat: number; lng: number; lastPointAgeS: number } | null;
+}
+
+// GET /api/analytics — §13: إحصاءات لوحة المكتب. revenue مال = سلسلة (D5).
+export interface AnalyticsStatusCount {
+  status: OrderStatus;
+  count: number;
+}
+
+export interface AnalyticsDailyCount {
+  day: string; // YYYY-MM-DD بمنطقة المستأجر (الفخ 8 — محسوب خادمياً)
+  count: number;
+}
+
+export interface AnalyticsZoneCount {
+  zoneId: string;
+  name: string;
+  count: number;
+}
+
+export interface AnalyticsResponse {
+  window: { sinceDays: number; timezone: string };
+  ordersToday: number;
+  ordersWindow: number;
+  statusCounts: AnalyticsStatusCount[];
+  avgAssignSeconds: number | null;
+  avgDeliverySeconds: number | null;
+  revenue: string; // D5: مال سلسلة — لا Number
+  deliveredCount: number;
+  activeDrivers: number;
+  daily: AnalyticsDailyCount[];
+  topZones: AnalyticsZoneCount[];
+}
+
+// GET/POST /api/broadcasts — §4.3/§14: البث الجماهيري بعدّاداته.
+export interface BroadcastSummary {
+  id: string;
+  title: string | null;
+  body: string;
+  status: BroadcastStatus;
+  sentCount: number;
+  failedCount: number;
+  scheduledAt: string | null;
+  createdAt: string;
+}
+
+export interface ListBroadcastsResponse {
+  broadcasts: BroadcastSummary[];
+}
+
+export interface CreateBroadcastRequest {
+  title?: string;
+  body: string;
+}
+
+export interface CreateBroadcastResponse {
+  broadcast: BroadcastSummary;
+  enqueued: boolean;
 }

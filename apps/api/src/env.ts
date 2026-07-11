@@ -15,6 +15,13 @@ const envSchema = z.object({
   // openssl rand -hex 32. staff auth الحقيقي (جلسات + argon2id §10.2) لاحقاً.
   // غيابه = المسارات ترد 503 (معطَّلة بصوت عالٍ)، لا فتح مفتوح.
   STAFF_API_TOKEN: z.string().min(32).optional(),
+  // §10.2/§14 — كونسول المشرف: مصادقة منفصلة تماماً عن STAFF_API_TOKEN. مؤقتاً
+  // Bearer = هذا التوكن (openssl rand -hex 32)؛ دخول المشرف الحقيقي (admin_users +
+  // جلسات §10.2) لاحقاً. غيابه = كل /api/admin/* ترد 503 (معطَّلة بصوت عالٍ).
+  ADMIN_API_TOKEN: z.string().min(32).optional(),
+  // §10.2 — هوية المشرف الفاعل (يوقّع audit_log). ثابت مؤقت حتى دخول المشرف الكامل؛
+  // غيابه = تُسجَّل عمليات المشرف بلوغ منظّم بلا صف audit_log (CHECK/FK يفرضان مشرفاً).
+  ADMIN_ID: z.string().uuid().optional(),
 });
 
 export type ApiEnv = z.infer<typeof envSchema>;

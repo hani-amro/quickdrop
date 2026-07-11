@@ -35,6 +35,10 @@ export const tenants = pgTable("tenants", {
   // §8.1 v1.1: حصة السائق من أجرة التوصيل بالـ basis points — 10000 = كامل الأجرة للسائق
   // (المكتب يربح من عمولة/اشتراك لاحقاً)؛ كل معدلات المال أعمدة لكل مستأجر لا ثوابت (§9)
   driverFeeShareBp: integer("driver_fee_share_bp").notNull().default(10000),
+  // §9 v1.1: معدلات الولاء أعمدة لكل مستأجر لا ثوابت. المنح عند delivered فقط.
+  loyaltyPointsPerOrder: integer("loyalty_points_per_order").notNull().default(10),
+  referralBonusPoints: integer("referral_bonus_points").notNull().default(100),
+  referralMonthlyCap: integer("referral_monthly_cap").notNull().default(5), // منع مزارع الإحالات
   botTokenEncrypted: bytea("bot_token_encrypted"),
   botUsername: text("bot_username"),
   botWebhookSecret: text("bot_webhook_secret"),

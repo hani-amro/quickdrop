@@ -37,3 +37,38 @@ export function getEnv(): DashboardEnv {
   }
   return cached;
 }
+
+// §10.2 — كونسول المشرف نطاق منفصل تماماً: توكن platform مستقل عن STAFF_API_TOKEN
+// وبلا TENANT_SLUG (مسارات /api/admin/* غير مقيّدة بمستأجر). التحقق كسول ومنفصل عن
+// getEnv — تشغيل الداشبورد بلا كونسول مشرف (أو العكس) لا يكسر النطاق الآخر.
+const adminEnvSchema = z.object({
+  API_URL: z.string().url(),
+  // نفس قيد الـ API (≥ 32) — التوكن لا يغادر الخادم إلى المتصفح أبداً
+  ADMIN_API_TOKEN: z.string().min(32),
+});
+
+export type AdminEnv = z.infer<typeof adminEnvSchema>;
+
+let adminCached: AdminEnv | null = null;
+
+export function getAdminEnv(): AdminEnv {
+  if (adminCached === null) {
+    const parsed = adminEnvSchema.safeParse({
+      API_URL: process.env.API_URL,
+      ADMIN_API_TOKEN: process.env.ADMIN_API_TOKEN,
+    });
+    if (!parsed.success) {
+      // §11: مسارات الحقول فقط باللوغ (لا قيم/أسرار)، والخطأ عام
+      console.error(
+        JSON.stringify({
+          action: "admin_env",
+          outcome: "validation_failed",
+          issues: parsed.error.issues.map((i) => ({ path: i.path.join("."), code: i.code })),
+        }),
+      );
+      throw new Error("admin console env is not configured");
+    }
+    adminCached = parsed.data;
+  }
+  return adminCached;
+}

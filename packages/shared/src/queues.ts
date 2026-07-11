@@ -43,3 +43,14 @@ export const OFFER_TTL_MS = 45_000;
 
 /** §6.2 — بعد كم جولة فاشلة يتنبّه الموزّع بدل الدوران الصامت. */
 export const MAX_DISPATCH_ROUNDS = 3;
+
+// §4.3/§14 — طابور البث الجماهيري: الـ api يدفع مهمة واحدة لكل بثّة (فوراً إن غير
+// مجدولة)، والـ worker يجلب الجمهور ويرسل رسالة لكل مستخدم مع احترام حدّ المعدل
+// (~30 msg/s لكل بوت §4.3). مهمة واحدة لكل بثّة (لا مهمة لكل مستخدم) — التقدّم
+// يُسجَّل بعدّادات broadcasts، وjobId حتمي = broadcastId يزيل تكرار at-least-once.
+export const BROADCAST_QUEUE = "broadcast";
+
+export interface BroadcastJob {
+  tenantId: string;
+  broadcastId: string;
+}

@@ -1,7 +1,8 @@
 import { randomBytes } from "node:crypto";
-import { toPostgisWkt, type OrderActorType, type Point, type Service } from "@quickdrop/shared";
+import { newId, toPostgisWkt, type OrderActorType, type Point, type Service } from "@quickdrop/shared";
 import { sql } from "drizzle-orm";
 import type { Db } from "./client.js";
+import { applyCouponToOrder } from "./coupons.js";
 import { quoteOrder, type Quote } from "./pricing.js";
 import { counters, orders, trackingTokens, type Order } from "./schema/index.js";
 import { transition } from "./state-machine.js";
@@ -30,6 +31,7 @@ export interface CreateOrderInput {
   goodsAmount?: bigint; // D5: مال bigint حصراً
   notes?: string;
   scheduledAt?: Date; // D6: يُخزَّن TIMESTAMPTZ بتوقيت UTC
+  couponCode?: string; // §8.3-4: إن مُرِّر، يُحجَز ويُخصَم ضمن ترانزاكشن الإنشاء
   createdBy: { type: OrderActorType; id?: string };
 }
 
@@ -92,9 +94,33 @@ export async function createOrder(
     const goodsAmount = input.goodsAmount ?? 0n;
     const c = quote.components;
 
+    // §8.3-4 — نولّد معرّف الطلب مسبقاً (D11) كي نربط حجز الكوبون به قبل الإدراج:
+    // coupon_redemptions بلا FK إلى orders (تفادي حلقة الاستيراد §schema)، فترتيب
+    // الإدراج لا يهم — الحجز والطلب ذرّيان بنفس الترانزاكشن (لا حرق على طلب فاشل).
+    const orderId = newId();
+
+    // §8.3-4: الخصم من الكوبون (إن مُرِّر) على إجمالي التوصيل — subtotal = quote.total.
+    // computePrice يضع discount = 0؛ الكوبون هو مصدر الخصم الوحيد بمسار الإنشاء.
+    let discount = c.discount;
+    let couponId: string | undefined;
+    if (input.couponCode !== undefined) {
+      const applied = await applyCouponToOrder(tx, tenantId, {
+        couponCode: input.couponCode,
+        userId: input.customerId,
+        orderId,
+        subtotal: c.total,
+      });
+      discount = applied.discount;
+      couponId = applied.couponId;
+    }
+
+    // §8.3-1 (invariant): price_total = base + distance + weight + surge + minAdjustment − discount.
+    const priceTotal = c.base + c.distance + c.weight + c.surge + c.minAdjustment - discount;
+
     const inserted = await tx
       .insert(orders)
       .values({
+        id: orderId,
         tenantId,
         publicCode,
         service: input.service,
@@ -108,6 +134,7 @@ export async function createOrder(
         ...(input.weightG !== undefined ? { weightG: input.weightG } : {}),
         ...(input.notes !== undefined ? { notes: input.notes } : {}),
         ...(input.scheduledAt !== undefined ? { scheduledAt: input.scheduledAt } : {}),
+        ...(couponId !== undefined ? { couponId } : {}),
         distanceM: quote.distanceM,
         routeDurationS: quote.durationS,
         // §8.3-1 — لقطة مكوّنات السعر بالأعمدة المسمّاة لحظة الإنشاء (§3: لقطات الأسعار)
@@ -116,10 +143,10 @@ export async function createOrder(
         priceWeight: c.weight,
         priceSurge: c.surge,
         priceMinAdjustment: c.minAdjustment,
-        priceDiscount: c.discount,
-        priceTotal: c.total,
+        priceDiscount: discount,
+        priceTotal,
         goodsAmount,
-        codAmount: goodsAmount + c.total,
+        codAmount: goodsAmount + priceTotal,
       })
       .returning({ id: orders.id });
 

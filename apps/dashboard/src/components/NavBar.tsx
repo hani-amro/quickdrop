@@ -9,12 +9,16 @@ const LINKS = [
   { href: "/orders/new", label: "طلب جديد" },
   { href: "/drivers", label: "السائقون" },
   { href: "/settlements", label: "التسوية" },
+  { href: "/analytics", label: "التحليلات" },
+  { href: "/broadcasts", label: "البث" },
 ] as const;
 
 export function NavBar() {
   const pathname = usePathname();
   // §7 — /t/{token} صفحة تتبع عامة لزائر مجهول: بلا تنقّل الداشبورد إطلاقاً
   if (pathname === "/t" || pathname.startsWith("/t/")) return null;
+  // §10.2 — كونسول المشرف نطاق منفصل تماماً بشريطه البرتقالي الخاص: لا تنقّل المكتب هنا
+  if (pathname === "/admin" || pathname.startsWith("/admin/")) return null;
   return (
     <header className="border-b border-slate-200 bg-white">
       <nav className="mx-auto flex max-w-screen-2xl items-center gap-6 px-4 py-3">

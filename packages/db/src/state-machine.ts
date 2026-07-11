@@ -1,8 +1,16 @@
 import { eq } from "drizzle-orm";
 import { computeDeliveryLedger, type OrderActorType, type OrderStatus } from "@quickdrop/shared";
+import { applyDeliveryLoyalty, settleCouponOnTerminal } from "./loyalty.js";
 import { writeOutbox } from "./outbox.js";
 import { ledgerEntries, orderEvents, orders, tenants, type Order } from "./schema/index.js";
 import type { Tx } from "./with-tenant.js";
+
+// §5 — الحالات النهائية التي تُحرَّر عندها حجوزات الكوبون (§8.3-4): كل إلغاء/فشل
+const COUPON_RELEASE_STATES: ReadonlySet<OrderStatus> = new Set<OrderStatus>([
+  "cancelled_by_customer",
+  "cancelled_by_office",
+  "failed",
+]);
 
 // §5 v1.1 — آلة حالة الطلب. كل تغيير حالة بالنظام يمر من transition() الوحيدة:
 // الداشبورد، البوت، الـ geofence، الـ cron — الكل. أي UPDATE orders SET status
@@ -186,7 +194,12 @@ export async function transition(
   // الرصيد = SUM لا عمود؛ append-only — التصحيح قيد adjustment جديد (§8.2).
   if (args.to === "delivered" && codReceived !== undefined && order.driverId) {
     const tenantRows = await tx
-      .select({ driverFeeShareBp: tenants.driverFeeShareBp })
+      .select({
+        driverFeeShareBp: tenants.driverFeeShareBp,
+        loyaltyPointsPerOrder: tenants.loyaltyPointsPerOrder,
+        referralBonusPoints: tenants.referralBonusPoints,
+        referralMonthlyCap: tenants.referralMonthlyCap,
+      })
       .from(tenants)
       .where(eq(tenants.id, order.tenantId))
       .limit(1);
@@ -210,6 +223,16 @@ export async function transition(
         })),
       );
     }
+
+    // §9 v1.1 — منح الولاء وإتمام الإحالة عند التسليم فقط (بنفس الترانزاكشن)
+    await applyDeliveryLoyalty(tx, order, tenant);
+    // §8.3-4 — استهلاك حجز الكوبون (إن وُجد)
+    await settleCouponOnTerminal(tx, order.tenantId, order.id, "consumed");
+  }
+
+  // §8.3-4 v1.1 — تحرير حجز الكوبون عند أي إلغاء/فشل (يعيد الاستخدام للمخزون)
+  if (COUPON_RELEASE_STATES.has(args.to)) {
+    await settleCouponOnTerminal(tx, order.tenantId, order.id, "released");
   }
 
   // D9: لا نداء تيليغرام داخل الترانزاكشن — صف outbox بنفس الترانزاكشن،
