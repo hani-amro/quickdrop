@@ -6,6 +6,7 @@ import { api, describeError } from "@/lib/api";
 import { STATUS_LABELS, isToday, minutesSince } from "@/lib/format";
 import type { DriverRow, OrderRow } from "@/lib/types";
 import { usePolling } from "@/lib/use-polling";
+import { useRealtime } from "@/lib/useRealtime";
 import { AssignDriverModal } from "./AssignDriverModal";
 import { CancelOrderModal } from "./CancelOrderModal";
 import { ConnectionBadge } from "./ConnectionBadge";
@@ -36,6 +37,11 @@ function withoutKey<T>(record: Record<string, T>, key: string): Record<string, T
 export function DispatchBoard() {
   const toast = useToast();
   const { data, failed, lastUpdated, refresh } = usePolling(api.listOrders, 3000);
+
+  // §10.1 — WS فوق الـ polling (الذي يبقى fallback): حدث order.changed → refetch
+  // فوري مُصطف (refresh) بدل انتظار الـ 3 ثوانٍ. الحمولة معرّفات فقط — الحقيقة
+  // تُجلب من الـ API المصادَق عبر الـ proxy (§11)، لا دمج حمولة WS باللوحة.
+  const { wsAlive } = useRealtime({ onOrderChanged: () => void refresh() });
 
   // Optimistic UI (§10.1): patches محلية فوق حقيقة الخادم؛ الإزالة = تراجع صريح
   const [patches, setPatches] = useState<Record<string, Partial<OrderRow>>>({});
@@ -120,7 +126,7 @@ export function DispatchBoard() {
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-lg font-bold text-slate-900">لوحة الإرسال</h1>
-        <ConnectionBadge failed={failed} lastUpdated={lastUpdated} onRefresh={() => void refresh()} />
+        <ConnectionBadge failed={failed} lastUpdated={lastUpdated} wsAlive={wsAlive} onRefresh={() => void refresh()} />
       </div>
 
       <section className="grid items-start gap-4 md:grid-cols-2 xl:grid-cols-4">

@@ -44,6 +44,7 @@ const updateProcessorDeps: UpdateProcessorDeps = {
   scanDb: scanDb.db,
   redis,
   masterKey,
+  rtRedis: redis, // §10.1 — نشر driver.location على قناة الوقت الحقيقي (نفس العميل)
 };
 
 // §12 — الطوابير ليست مصدر حقيقة: عند الإقلاع أعد بناء المهام الفائتة من القاعدة.
@@ -118,6 +119,7 @@ async function main(): Promise<void> {
     redis,
     masterKey,
     dispatchQueue,
+    rtRedis: redis, // §10.1 — نشر order.changed على قناة الوقت الحقيقي (نفس العميل)
   });
   const notificationsWorker = new Worker<NotificationJob>(
     NOTIFICATIONS_QUEUE,

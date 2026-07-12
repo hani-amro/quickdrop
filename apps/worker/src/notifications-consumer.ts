@@ -1,5 +1,12 @@
 import { drivers, offers, orders, tenants, trackingTokens, users, withTenant, type Db } from "@quickdrop/db";
-import { ORDER_STATUSES, type DispatchJob, type NotificationJob } from "@quickdrop/shared";
+import {
+  ORDER_STATUSES,
+  publishRt,
+  RT_EVENTS,
+  type DispatchJob,
+  type NotificationJob,
+  type RtPublishClient,
+} from "@quickdrop/shared";
 import {
   decryptBotToken,
   escapeHtml,
@@ -37,6 +44,8 @@ export interface NotificationsConsumerDeps {
   masterKey: Buffer;
   /** طابور الإسناد — إدراج dispatch-order عند confirmed وoffer-timeout عند offer.created (§6). */
   dispatchQueue: Queue<DispatchJob>;
+  /** §10.1 — ناشر الوقت الحقيقي: PUBLISH على قناة RT_REDIS_CHANNEL (عملياً نفس عميل ioredis). */
+  rtRedis: RtPublishClient;
 }
 
 // —— منطق صافٍ قابل للاختبار (§15) ——
@@ -185,6 +194,16 @@ async function sendOrMarkBlocked(
 
 async function handleOrderStatusChanged(deps: NotificationsConsumerDeps, job: NotificationJob): Promise<void> {
   const payload = orderStatusChangedPayloadSchema.parse(job.payload);
+
+  // §10.1 — بث اللوحة فوراً وقبل أي تيليغرام (الموزّع أولى بالخبر من البطاقة):
+  // الحدث حقيقة ملتزمة (صف outbox كُتب بترانزاكشن الانتقال D8/D9)، والحمولة معرّف
+  // وحالة فقط (§11). أفضل جهد: polling الداشبورد هو الاحتياط المضمون، وat-least-once
+  // يكرره أحياناً — أثره refetch إضافي غير مؤذٍ.
+  await publishRt(deps.rtRedis, {
+    tenantId: job.tenantId,
+    event: RT_EVENTS.orderChanged,
+    payload: { orderId: payload.orderId, to: payload.to },
+  });
 
   const tenant = await loadActiveTenant(deps, job.tenantId, job.topic);
   if (!tenant) return;

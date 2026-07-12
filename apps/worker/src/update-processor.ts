@@ -12,7 +12,7 @@ import {
   type Db,
   type Tx,
 } from "@quickdrop/db";
-import { makePoint, toPostgisWkt, type TgUpdateJob } from "@quickdrop/shared";
+import { makePoint, publishRt, RT_EVENTS, toPostgisWkt, type RtPublishClient, type TgUpdateJob } from "@quickdrop/shared";
 import {
   computeIsSuspect,
   decryptBotToken,
@@ -118,6 +118,8 @@ export interface UpdateProcessorDeps {
   redis: ConvRedis;
   /** §4.2: MASTER_KEY (32 بايت) لفك تشفير bot_token_encrypted. */
   masterKey: Buffer;
+  /** §10.1 — ناشر الوقت الحقيقي: PUBLISH على قناة RT_REDIS_CHANNEL (عملياً نفس عميل ioredis). */
+  rtRedis: RtPublishClient;
 }
 
 /**
@@ -177,7 +179,6 @@ export async function recordDriverLocation(
     if (!isSuspect) {
       // §7 v1.1 — الانتقالات التلقائية (in_transit/arrived) بعد كتابة النقطة غير المشبوهة،
       // بنفس ترانزاكشن withTenant (transition تكتب order_events + outbox معها — D8/D9).
-      // TODO (شاشة الخريطة): النشر عبر Redis pub/sub → Socket.IO room tenant:{id}:map.
       await applyGeofenceTransitions(tx, tenantId, driverId);
     }
     return isSuspect;
@@ -187,6 +188,15 @@ export async function recordDriverLocation(
     // §3: النقطة المشبوهة ترفع تنبيهاً للموزّع بدل الرفض الصامت — v1: لوغ منظّم (§13)؛
     // التنبيه البصري بالداشبورد يصل مع شاشة الخريطة (Socket.IO).
     console.warn(JSON.stringify({ action: "driver_location_suspect", tenantId, driverId, recordedAt: recordedAt.toISOString() }));
+  } else {
+    // §10.1 — بعد التزام الترانزاكشن حصراً (لا بث لكتابة قد تُرجَع): نقطة غير مشبوهة
+    // → حدث driver.location لغرفة لوحة المستأجر. المشبوهة لا تحرّك المؤشر — نفس
+    // قاعدة last_point (§3). أفضل جهد (publishRt لا يرمي): نبضة سليمة لا تفشل بسبب البث.
+    await publishRt(deps.rtRedis, {
+      tenantId,
+      event: RT_EVENTS.driverLocation,
+      payload: { driverId, lat: point.lat, lng: point.lng, recordedAt: recordedAt.toISOString() },
+    });
   }
 }
 
