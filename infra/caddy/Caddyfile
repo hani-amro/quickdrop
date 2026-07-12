@@ -1,0 +1,56 @@
+# QuickDrop — Caddy إنتاج (§1: TLS تلقائي عبر Let's Encrypt، §11: رؤوس أمنية).
+# النطاقات والبريد تُحقن عبر env من infra/compose/.env.prod — بلا أي سر أو نطاق ثابت هنا.
+# لا يفتح الجدار الناري غير 80/443 (§11) — Caddy وحده يستمع عليهما.
+
+{
+	email {$ACME_EMAIL}
+	# أثناء اختبار الشهادات فعّل staging لتفادي حدود Let's Encrypt، ثم أزله:
+	# acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
+}
+
+# —— رؤوس أمنية مشتركة (§11) ——
+(security_headers) {
+	header {
+		# HSTS سنة + المجالات الفرعية (بعد التأكد أن كل شيء HTTPS)
+		Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		# لا تكشف نسخة/هوية الخادم
+		-Server
+	}
+}
+
+# —— الداشبورد + كونسول المشرف (نفس النطاق، /admin نطاق منطقي منفصل §10.2) ——
+{$DASHBOARD_DOMAIN} {
+	import security_headers
+
+	# CSP صارم (§11): المصدر self + الاتصال بنطاق الـ API (proxy خادمي + Socket.IO wss).
+	# script/style 'unsafe-inline' لازمان لِـ Next.js hydration وTailwind المضمّن.
+	# ملاحظة خرائط: بلاطات MapLibre (Protomaps/OSM) قد تتطلب إضافة مضيف البلاطات إلى
+	# img-src / connect-src / worker-src عند تفعيل الخريطة بالإنتاج.
+	header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://{$API_DOMAIN} wss://{$API_DOMAIN}; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+
+	encode zstd gzip
+	reverse_proxy dashboard:3001
+}
+
+# —— الـ API: REST الطاقم /api/* + webhook تيليغرام /tg/* + التتبع العام /public/track/*
+#     + /health + Socket.IO (/socket.io/, namespace /board) — كلها على api:3000 ——
+{$API_DOMAIN} {
+	import security_headers
+	encode zstd gzip
+
+	# Caddy يمرّر ترقية WebSocket (Upgrade/Connection) تلقائياً بلا إعداد إضافي —
+	# لوحة الإرسال الحية /board (Socket.IO §10.1) تعمل عبر reverse_proxy مباشرة.
+	# webhook تيليغرام PUBLIC_URL/tg/<slug> يصل هنا أيضاً (§4.4).
+	reverse_proxy api:3000
+}
+
+# —— (اختياري) تخزين POD عبر نطاق منفصل عند الحاجة لروابط S3 موقّعة يصلها المتصفح مباشرة ——
+# افتراضياً minio داخلي فقط والـ API يبثّ/يوقّع الروابط. لتفعيل الوصول المباشر:
+#   1) أضف شبكة edge إلى خدمة minio بالـ compose.  2) عرّف STORAGE_DOMAIN بالـ env.
+# {$STORAGE_DOMAIN} {
+# 	import security_headers
+# 	reverse_proxy minio:9000
+# }

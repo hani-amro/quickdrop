@@ -1,0 +1,220 @@
+name: quickdrop-prod
+
+# QuickDrop — إنتاج (§1: Docker Compose + Caddy TLS تلقائي، §11 عزل شبكي، §12 ترحيلات قبل التبديل).
+# التشغيل: pnpm prod:up  (يمرّر --env-file infra/compose/.env.prod — انظر package.json).
+# كل الأسرار عبر env وقت التشغيل — ممنوعة بالريبو وبالصور (§11). انسخ .env.prod.example → .env.prod.
+
+# —— الشبكات: نموذج التهديد (1) تسرب بيانات، (5) اختراق الخادم (§11) ——
+# internal (internal:true): القاعدة/redis/minio — بلا منفذ مضيف وبلا خروج إنترنت.
+#   "منفذ Redis المفتوح للعالم = اختراق خلال ساعات" (§11) — هنا لا منفذ أصلاً.
+# edge: التطبيقات + caddy — الخروج للإنترنت (Telegram API، Sentry، أرشفة WAL) وcaddy وحده ينشر 80/443.
+networks:
+  internal:
+    internal: true
+  edge:
+    driver: bridge
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:
+  caddy_data:
+  caddy_config:
+
+services:
+  # —— PostgreSQL 16 + PostGIS ——
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: quickdrop
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required in .env.prod}
+      # تُقرأ من initdb-prod/01-roles.sh لإنشاء الأدوار بكلمات سر الإنتاج (§2.3).
+      # يجب أن تطابق كلمات السر المُضمّنة بـ DATABASE_URL* أدناه (نفس الملف).
+      DB_MIGRATOR_PASSWORD: ${DB_MIGRATOR_PASSWORD:?required}
+      DB_APP_PASSWORD: ${DB_APP_PASSWORD:?required}
+      DB_WORKER_PASSWORD: ${DB_WORKER_PASSWORD:?required}
+      DB_BACKUP_PASSWORD: ${DB_BACKUP_PASSWORD:?required}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # أدوار الإنتاج تُنشأ مرة واحدة عند أول تهيئة (§2.3) — كلمات السر من env لا من الملف.
+      - ./initdb-prod:/docker-entrypoint-initdb.d:ro
+    networks: [internal] # لا ports: — غير مكشوفة للمضيف إطلاقاً (§11)
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d quickdrop"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  # —— Redis 7 (حالة، أقفال، طوابير BullMQ، Socket.IO adapter) ——
+  redis:
+    image: redis:7-alpine
+    # AOF everysec يكفي — كله قابل لإعادة البناء من Postgres (§12)
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redisdata:/data
+    networks: [internal] # داخلي فقط — لا منفذ مضيف (§11)
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+    stop_grace_period: 30s
+    restart: unless-stopped
+
+  # —— MinIO (تخزين S3 لإثبات التسليم POD ولوغوهات المستأجرين §1/§11) ——
+  # داخلي فقط + دلو خاص (سياسة none): الوصول عبر روابط S3 موقّعة قصيرة العمر يولّدها الـ API (§11).
+  # ثبّت وسم RELEASE محدداً بالإنتاج بدل latest.
+  minio:
+    image: minio/minio:latest
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?required}
+    volumes:
+      - miniodata:/data
+    networks: [internal] # داخلي فقط — لا منفذ مضيف (§11)
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9000/minio/health/live || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    stop_grace_period: 20s
+    restart: unless-stopped
+
+  # —— تهيئة دلو POD (one-shot): إنشاء الدلو وجعله خاصاً (روابط موقّعة فقط §11) ——
+  minio-setup:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?required}
+      POD_BUCKET: ${POD_BUCKET:-quickdrop-pod}
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        set -e
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD"
+        mc mb --ignore-existing "local/$$POD_BUCKET"
+        mc anonymous set none "local/$$POD_BUCKET"
+    networks: [internal]
+    restart: "no"
+
+  # —— الترحيلات (one-shot، قبل تبديل الحاويات §12) ——
+  # تعمل بدور migrator حصراً (DATABASE_URL_MIGRATOR §2.3). api/worker ينتظران نجاحها.
+  # الصورة مخصّصة للترحيل (drizzle-kit + tsx + مجلد migrations) — Dockerfile ملكه CI/آخرون.
+  # بديل من المصدر:  build: { context: ../.., dockerfile: infra/docker/migrate.Dockerfile }
+  migrate:
+    image: ${REGISTRY:?REGISTRY (e.g. ghcr.io/org/quickdrop) is required}/migrate:${IMAGE_TAG:-latest}
+    command: ["pnpm", "db:migrate"]
+    env_file: [./.env.prod]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [internal]
+    restart: "no"
+
+  # —— الـ API (NestJS + Socket.IO على نفس خادم HTTP، منفذ PORT، /health §13) ——
+  api:
+    image: ${REGISTRY:?required}/api:${IMAGE_TAG:-latest}
+    # بديل من المصدر:  build: { context: ../.., dockerfile: apps/api/Dockerfile }
+    env_file: [./.env.prod]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      minio-setup:
+        condition: service_completed_successfully
+      migrate:
+        condition: service_completed_successfully
+    networks: [internal, edge] # internal: قاعدة/redis/minio — edge: تيليغرام + يبلغه caddy
+    # صورة node:24-slim فيها fetch عام — بلا اعتماد curl داخل صورة التطبيق
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3000)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    stop_grace_period: 30s # §12 — SIGTERM: WS ثم app.close() قبل الخروج
+    restart: unless-stopped
+
+  # —— الـ Worker (مستهلكو BullMQ + outbox poller + housekeeping) ——
+  # بلا خادم HTTP → بلا healthcheck؛ الاعتماد على restart + الإغلاق النظيف (§12).
+  worker:
+    image: ${REGISTRY:?required}/worker:${IMAGE_TAG:-latest}
+    # بديل من المصدر:  build: { context: ../.., dockerfile: apps/worker/Dockerfile }
+    env_file: [./.env.prod]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    networks: [internal, edge] # edge: الخروج إلى Telegram Bot API عند الإشعارات
+    stop_grace_period: 30s # §12 — استنزاف المهام الجارية بـ close() قبل الخروج
+    restart: unless-stopped
+
+  # —— الداشبورد (Next.js RTL، منفذ 3001، proxy خادمي يحقن STAFF/ADMIN توكن §11) ——
+  dashboard:
+    image: ${REGISTRY:?required}/dashboard:${IMAGE_TAG:-latest}
+    # بديل من المصدر:  build: { context: ../.., dockerfile: apps/dashboard/Dockerfile }
+    #   تنبيه: NEXT_PUBLIC_* تُخبز وقت البناء — مرّرها كـ build-args بالـ CI لا وقت التشغيل.
+    env_file: [./.env.prod]
+    depends_on:
+      api:
+        condition: service_started
+    networks: [edge] # يكلّم api (edge) ويبلغه caddy (edge) — لا يمس القاعدة/redis
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - node -e "fetch('http://127.0.0.1:3001/login').then(r=>process.exit(r.status<500?0:1)).catch(()=>process.exit(1))"
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 25s
+    stop_grace_period: 20s
+    restart: unless-stopped
+
+  # —— Caddy (TLS تلقائي §1؛ الوحيد المكشوف للمضيف) ——
+  caddy:
+    image: caddy:2-alpine
+    depends_on:
+      api:
+        condition: service_started
+      dashboard:
+        condition: service_started
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp" # HTTP/3 (QUIC)
+    environment:
+      API_DOMAIN: ${API_DOMAIN:?required}
+      DASHBOARD_DOMAIN: ${DASHBOARD_DOMAIN:?required}
+      ACME_EMAIL: ${ACME_EMAIL:?required}
+    volumes:
+      - ../caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data # شهادات ACME — لا تفقدها بين النشرات
+      - caddy_config:/config
+    networks: [edge]
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://127.0.0.1:2019/config/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    stop_grace_period: 15s
+    restart: unless-stopped

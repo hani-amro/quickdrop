@@ -1,11 +1,18 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { broadcasts, createBroadcast, withTenant, type DbHandle } from "@quickdrop/db";
+import { broadcasts, createBroadcast, tenants, withTenant, type DbHandle } from "@quickdrop/db";
 import { type BroadcastJob, type BroadcastStatus } from "@quickdrop/shared";
 import type { Queue } from "bullmq";
 import { and, desc, eq } from "drizzle-orm";
+import type { Redis } from "ioredis";
 import { z } from "zod";
-import { BROADCAST_Q, DB, ENV } from "../app.module.js";
+import { BROADCAST_Q, DB, ENV, REDIS } from "../app.module.js";
 import { assertStaffToken, parseOr400, resolveActiveTenant, slugSchema } from "../common/staff-http.js";
+import {
+  assertTenantResource,
+  BROADCAST_RESOURCE,
+  BROADCAST_WINDOW_S,
+  readBroadcastPerDay,
+} from "../common/tenant-rate.js";
 import type { ApiEnv } from "../env.js";
 
 // §4.3/§14 — REST البث الجماهيري بالداشبورد:
@@ -60,6 +67,7 @@ export class BroadcastsService {
     @Inject(DB) private readonly handle: DbHandle,
     @Inject(ENV) private readonly env: ApiEnv,
     @Inject(BROADCAST_Q) private readonly queue: Queue<BroadcastJob>,
+    @Inject(REDIS) private readonly redis: Redis,
   ) {}
 
   // §4.3 — إنشاء بثّة: الصف durable أولاً، ثم دفع مهمة الطابور (jobId حتمي = broadcastId
@@ -69,6 +77,17 @@ export class BroadcastsService {
     assertStaffToken(this.env.STAFF_API_TOKEN, authorization);
     const input = parseOr400(createBodySchema, body, "broadcasts_create");
     const tenant = await resolveActiveTenant(this.handle.db, input.tenantSlug);
+
+    // §11 — حدّ المستأجر على مورد مشترك (بث/يوم — حماية الجيران المزعجين): اقرأ السقف من
+    // tenants.limits.broadcast_per_day (استثناء RLS مسمّى §2.4 — قراءة مباشرة كـ
+    // resolveActiveTenant) وإلا الافتراضي، ثم استهلك حصّة قبل أي عمل. يرمي 429 عند التجاوز.
+    const limitRows = await this.handle.db
+      .select({ limits: tenants.limits })
+      .from(tenants)
+      .where(eq(tenants.id, tenant.id))
+      .limit(1);
+    const perDay = readBroadcastPerDay(limitRows[0]?.limits);
+    await assertTenantResource(this.redis, tenant.id, BROADCAST_RESOURCE, perDay, BROADCAST_WINDOW_S);
 
     const created = await createBroadcast(this.handle.db, tenant.id, {
       body: input.body,

@@ -1,3 +1,4 @@
+import path from "node:path";
 import type { NextConfig } from "next";
 
 // §11 — CSP صارم على الداشبورد + رؤوس أمان أساسية.
@@ -24,7 +25,20 @@ const csp = [
   "form-action 'self'",
 ].join("; ");
 
+// §12 — إخراج standalone للصورة الإنتاجية: Next يتتبّع التبعيات وينتج server.js مع
+// node_modules مصغّرة مكتفية ذاتياً فلا حاجة لـ pnpm deploy. outputFileTracingRoot =
+// جذر الـ monorepo كي يتتبّع حزمة الـ workspace (@quickdrop/shared) عبر روابط pnpm
+// الرمزية وينسخ ملفاتها؛ ومعه يصير مدخل التشغيل apps/dashboard/server.js داخل standalone.
+// مبوَّب خلف BUILD_STANDALONE=1 (يضبطه Dockerfile): نسخ standalone يُنشئ روابط رمزية
+// وويندوز يمنعها بلا صلاحية مرتفعة (EPERM) فيكسر `pnpm build` محلياً — البناء الإنتاجي
+// على لينكس (node:24-slim) يسمح بها. التبويب يُبقي بناء المضيف أخضر ويفعّل standalone بالصورة.
+const standalone: Pick<NextConfig, "output" | "outputFileTracingRoot"> =
+  process.env.BUILD_STANDALONE === "1"
+    ? { output: "standalone", outputFileTracingRoot: path.join(__dirname, "../..") }
+    : {};
+
 const nextConfig: NextConfig = {
+  ...standalone,
   poweredByHeader: false,
   async headers() {
     return [

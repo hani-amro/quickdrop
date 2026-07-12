@@ -1,0 +1,135 @@
+import {
+  HttpException,
+  HttpStatus,
+  Inject,
+  Injectable,
+  type CanActivate,
+  type ExecutionContext,
+} from "@nestjs/common";
+import type { Request, Response } from "express";
+import { REDIS } from "../tokens.js";
+
+// §11 — الطبقة الأولى من حد المعدل الثلاثي: **لكل IP على الـ API العام**. عدّاد Redis
+// بنافذة ثابتة مشتركة عبر كل نسخ الـ API (توسّع أفقي §1) — نفس نمط عدّاد البوت
+// (packages/telegram): INCR + EXPIRE عند أول طلب بالنافذة، والمبدأ نقي قابل للاختبار.
+// حارس عام (APP_GUARD) يُسجَّل **قبل** SessionGuard فيُرفض الفيضان قبل أي عمل مصادقة.
+
+/** الحد الأدنى البنيوي من Redis الذي يحتاجه الحدّ — ioredis يطابقه، والاختبار يحقن بديلاً. */
+export interface RateLimitRedis {
+  incr(key: string): Promise<number>;
+  expire(key: string, ttlSeconds: number): Promise<unknown>;
+  ttl(key: string): Promise<number>;
+}
+
+/** طبقة حدّ = اسم (للمفتاح واللوغ) + سقف الطلبات + طول النافذة بالثواني. */
+export interface RateTier {
+  name: string;
+  limit: number;
+  windowS: number;
+}
+
+// السقوف بمكان واحد: العام واسع، ومسارات الإساءة (دخول/تتبّع عام) أضيق نافذةً.
+export const RATE_TIERS = {
+  // §11 — قوة غاشمة على الدخول: 10 محاولات/دقيقة لكل IP
+  login: { name: "login", limit: 10, windowS: 60 },
+  // §7/§11 — التتبّع العام مجهول وعرضة للإساءة: نافذة دقيقة أضيق burst من العام
+  track: { name: "track", limit: 60, windowS: 60 },
+  // العام على كل المسارات: 300 طلب/5 دقائق لكل IP
+  global: { name: "global", limit: 300, windowS: 300 },
+} as const satisfies Record<string, RateTier>;
+
+/**
+ * نقي: أي طبقة تنطبق على (method, path)؟ null = معفى من الحدّ:
+ * - /health — مسبار الحياة (§14): 429 عليه = إنذار سقوط كاذب.
+ * - /tg/* — webhook تيليغرام: 429 يجعل تيليغرام يعيد ويتراجع (له سرّ + inbox dedup أصلاً).
+ * وإلا: دخول → طبقة login، تتبّع عام → طبقة track، والباقي → global.
+ */
+export function classifyRoute(method: string, path: string): RateTier | null {
+  if (path === "/health" || path.startsWith("/health/")) return null;
+  if (path.startsWith("/tg/")) return null;
+  if (method === "POST" && path === "/api/auth/login") return RATE_TIERS.login;
+  if (path.startsWith("/public/track")) return RATE_TIERS.track;
+  return RATE_TIERS.global;
+}
+
+/** نقي: هل تجاوز العدّاد (بعد الزيادة) السقف؟ */
+export function fixedWindowExceeded(count: number, limit: number): boolean {
+  return count > limit;
+}
+
+/** نقي: مفتاح العدّاد لكل (طبقة، IP). فصل الطبقات يمنع مسارَ إساءة من استنزاف حصّة الآخر. */
+export function rateLimitKey(tier: string, ip: string): string {
+  return `rl:api:${tier}:${ip}`;
+}
+
+/** مصدر IP الحد الأدنى — express Request يطابقه بنيوياً، والاختبار يمرّر شكلاً بسيطاً. */
+export interface IpSource {
+  headers: Record<string, string | string[] | undefined>;
+  ip?: string | undefined;
+  socket?: { remoteAddress?: string | undefined } | undefined;
+}
+
+/** أول IP بترويسة X-Forwarded-For (العميل الأصلي خلف Caddy) — يقبل النص أو المصفوفة. */
+function firstForwardedIp(value: string | string[] | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const raw = Array.isArray(value) ? value[0] : value;
+  if (raw === undefined) return undefined;
+  const first = raw.split(",")[0]?.trim();
+  return first !== undefined && first.length > 0 ? first : undefined;
+}
+
+/**
+ * §11 — IP الحقيقي خلف Caddy: X-Forwarded-For (أقصى يسار = العميل) وإلا socket ip.
+ * Caddy يضبط الترويسة بقفزة ثقة واحدة، فأقصى اليسار هو العميل الفعلي.
+ */
+export function clientIp(req: IpSource): string {
+  const forwarded = firstForwardedIp(req.headers["x-forwarded-for"]);
+  if (forwarded !== undefined) return forwarded;
+  const direct = req.ip ?? req.socket?.remoteAddress;
+  return direct !== undefined && direct.length > 0 ? direct : "unknown";
+}
+
+@Injectable()
+export class RateLimitGuard implements CanActivate {
+  constructor(@Inject(REDIS) private readonly redis: RateLimitRedis) {}
+
+  async canActivate(context: ExecutionContext): Promise<boolean> {
+    const req = context.switchToHttp().getRequest<Request>();
+    const tier = classifyRoute(req.method, req.path);
+    if (tier === null) return true; // معفى (health / webhook)
+
+    const ip = clientIp(req);
+    const key = rateLimitKey(tier.name, ip);
+
+    let count: number;
+    try {
+      count = await this.redis.incr(key);
+      if (count === 1) await this.redis.expire(key, tier.windowS); // نافذة تبدأ من أول طلب
+    } catch {
+      // §1/§14 — نفشل **مفتوحين**: خلل Redis عابر يجب ألّا يُسقط كل الـ API. الحدّ طبقة
+      // حماية لا بوابة صحّة؛ الإتاحة أولى. (SessionGuard يعتمد Redis أيضاً — سقوطه يرفض).
+      console.warn(JSON.stringify({ action: "rate_limit", outcome: "redis_error", tier: tier.name }));
+      return true;
+    }
+
+    if (!fixedWindowExceeded(count, tier.limit)) return true;
+
+    // تجاوز — Retry-After من TTL المتبقي؛ لو ضاع الـ TTL (‎-1/-2) أعِد تسليح النافذة.
+    let retryAfter = tier.windowS;
+    try {
+      const ttl = await this.redis.ttl(key);
+      if (ttl > 0) retryAfter = ttl;
+      else await this.redis.expire(key, tier.windowS);
+    } catch {
+      /* أبقِ retryAfter = windowS */
+    }
+
+    const res = context.switchToHttp().getResponse<Response>();
+    res.setHeader("Retry-After", String(retryAfter));
+    // §13 — لوغ منظّم للتحقيق بالإساءة؛ §11 — الرد جسم عام موحّد بلا تفاصيل.
+    console.warn(
+      JSON.stringify({ action: "rate_limit", outcome: "blocked", tier: tier.name, ip, path: req.path }),
+    );
+    throw new HttpException("too many requests", HttpStatus.TOO_MANY_REQUESTS);
+  }
+}

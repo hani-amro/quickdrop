@@ -11,6 +11,8 @@
     "test": "turbo run test",
     "dev:up": "docker compose -f infra/compose/docker-compose.dev.yml up -d",
     "dev:down": "docker compose -f infra/compose/docker-compose.dev.yml down",
+    "prod:up": "docker compose --env-file infra/compose/.env.prod -f infra/compose/docker-compose.prod.yml up -d",
+    "prod:down": "docker compose --env-file infra/compose/.env.prod -f infra/compose/docker-compose.prod.yml down",
     "dev:api": "pnpm --filter @quickdrop/api dev",
     "dev:worker": "pnpm --filter @quickdrop/worker dev",
     "dev:dashboard": "pnpm --filter @quickdrop/dashboard dev",
@@ -19,7 +21,9 @@
     "db:check-rls": "pnpm --filter @quickdrop/db check-rls",
     "db:seed-dev": "pnpm --filter @quickdrop/db seed-dev",
     "tenant:provision": "pnpm --filter @quickdrop/api provision-tenant --",
-    "staff:create": "pnpm --filter @quickdrop/api create-staff --"
+    "staff:create": "pnpm --filter @quickdrop/api create-staff --",
+    "backup": "bash infra/scripts/backup.sh",
+    "backup:restore-test": "bash infra/scripts/restore-test.sh"
   },
   "devDependencies": {
     "turbo": "^2.5.0",

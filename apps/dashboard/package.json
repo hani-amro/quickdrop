@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@quickdrop/shared": "workspace:*",
+    "@sentry/nextjs": "^10.65.0",
     "maplibre-gl": "^5.6.0",
     "next": "^15.3.0",
     "react": "^19.1.0",

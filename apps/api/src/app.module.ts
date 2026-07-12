@@ -15,6 +15,7 @@ import { AnalyticsService } from "./analytics/analytics.service.js";
 import { AuthController } from "./auth/auth.controller.js";
 import { AuthService } from "./auth/auth.service.js";
 import { SessionGuard } from "./auth/session.guard.js";
+import { RateLimitGuard } from "./common/rate-limit.guard.js";
 import { BroadcastsController } from "./broadcasts/broadcasts.controller.js";
 import { BroadcastsService } from "./broadcasts/broadcasts.service.js";
 import { DriversController } from "./drivers/drivers.controller.js";
@@ -50,6 +51,9 @@ import { TrackingController } from "./tracking/tracking.controller.js";
     TelegramGatewayController,
   ],
   providers: [
+    // §11 — حد المعدل لكل IP: حارس عام يُسجَّل **أولاً** كي يعمل قبل SessionGuard
+    // (الحرّاس العامّون ينفَّذون بترتيب التسجيل) — يُرفض الفيضان قبل أي عمل مصادقة.
+    { provide: APP_GUARD, useClass: RateLimitGuard },
     // §10.2 — حارس عام: مسارات /api/* للطاقم تتطلب جلسة cookie أو Bearer STAFF_API_TOKEN
     // (session.guard يعفي auth/admin/العامة). دفاع مزدوج مع تحقق طبقة الخدمات.
     { provide: APP_GUARD, useClass: SessionGuard },

@@ -1,0 +1,128 @@
+# نشر الإنتاج (§12) — يعمل فقط بعد نجاح CI على main، أو يدوياً.
+# التسلسل الإلزامي (§12): بناء صور غير قابلة للتغيير بوسم = git sha → دفعها لـ GHCR
+#   → SSH للسيرفر → سحب الصور → ترحيلات القاعدة (migrator) **قبل** تبديل الحاويات
+#   → up -d متدحرج (graceful shutdown عبر stop_grace_period بالـ compose).
+# كل الأسرار عبر ${{ secrets.* }} — لا سر يُخبز بصورة أو يُلتزم بالريبو (§11).
+name: Deploy
+
+on:
+  # يُشغَّل حين ينتهي workflow اسمه "CI" (‎.github/workflows/ci.yml) — البوابة الحقيقية:
+  # لا ننشر إلا إذا خضّرت كل اختبارات CI (بناء، typecheck، RLS، 195 اختباراً، لا-متغيرات الدفتر).
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  # تشغيل يدوي للطوارئ / إعادة نشر آخر main (زر Run workflow).
+  workflow_dispatch:
+
+# نشرة واحدة فقط في كل مرة على الإنتاج — لا نلغي جارية بنصفها (خطر ترحيل نصفي).
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  # ── بوابة + متغيّرات مشتركة ─────────────────────────────────────────────
+  # البوابة: على مسار workflow_run نمرّ فقط إن نجح CI وكان على main. اليدوي يمر دائماً.
+  # تخطّي هذه الوظيفة يُخطّي كل التالي عبر needs (سلوك GitHub الافتراضي).
+  prepare:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.head_branch == 'main')
+    outputs:
+      sha: ${{ steps.vars.outputs.sha }}
+      image_prefix: ${{ steps.vars.outputs.image_prefix }}
+    steps:
+      - id: vars
+        run: |
+          set -euo pipefail
+          # على workflow_run نبني الـ commit الذي خضّر CI بالضبط؛ على اليدوي نبني رأس main.
+          SHA="${{ github.event.workflow_run.head_sha || github.sha }}"
+          # GHCR يتطلب اسم صورة بأحرف صغيرة — المالك قد يحوي أحرفاً كبيرة.
+          echo "sha=${SHA}" >> "$GITHUB_OUTPUT"
+          echo "image_prefix=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
+  # ── بناء ودفع الصور الثلاث ──────────────────────────────────────────────
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # دفع لـ ghcr.io عبر GITHUB_TOKEN
+    strategy:
+      fail-fast: true
+      matrix:
+        app: [api, worker, dashboard]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # اسحب نفس الـ commit الذي خضّر CI (على workflow_run الافتراضي هو رأس الفرع).
+          ref: ${{ needs.prepare.outputs.sha }}
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Dockerfiles ملك وكيل آخر (apps/*/Dockerfile). السياق = جذر المونوريبو (pnpm workspace).
+      - name: Build & push ${{ matrix.app }}
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/${{ matrix.app }}/Dockerfile
+          push: true
+          tags: |
+            ${{ needs.prepare.outputs.image_prefix }}/${{ matrix.app }}:${{ needs.prepare.outputs.sha }}
+            ${{ needs.prepare.outputs.image_prefix }}/${{ matrix.app }}:latest
+          cache-from: type=gha,scope=${{ matrix.app }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.app }}
+
+  # ── النشر على السيرفر (بوابته: نجاح كل الصور) ───────────────────────────
+  deploy:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    environment: production # يسمح بمراجعة/موافقة يدوية اختيارية بإعدادات المستودع
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1
+        env:
+          # الوسم غير القابل للتغيير = git sha؛ الـ compose الإنتاجي يقرأ ${IMAGE_TAG}.
+          IMAGE_TAG: ${{ needs.prepare.outputs.sha }}
+          GHCR_USER: ${{ secrets.GHCR_USER }}
+          GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }} # PAT read:packages لسحب الصور على السيرفر
+          DEPLOY_DIR: ${{ secrets.DEPLOY_DIR }}
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SERVER_SSH_KEY }}
+          envs: IMAGE_TAG,GHCR_USER,GHCR_TOKEN,DEPLOY_DIR
+          script: |
+            set -euo pipefail
+            cd "${DEPLOY_DIR:-/opt/quickdrop}"
+
+            # سحب الصور من GHCR بأذونات السيرفر (منفصلة عن توكن الـ CI).
+            echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+            export IMAGE_TAG
+            # نفس استدعاء compose كسكربتات prod:up/prod:down بجذر package.json (اتفاقية مع وكيل الـ compose).
+            COMPOSE="docker compose --env-file infra/compose/.env.prod -f infra/compose/docker-compose.prod.yml"
+
+            echo "→ سحب صور الوسم ${IMAGE_TAG}"
+            $COMPOSE pull
+
+            # §12: الترحيلات **قبل** تبديل الحاويات، backward-compatible دائماً (expand/contract).
+            # خدمة migrate one-shot (دور migrator) — تفشل الوظيفة إن فشل الترحيل فلا يحصل تبديل.
+            echo "→ ترحيل القاعدة (migrator) قبل التبديل"
+            $COMPOSE run --rm migrate
+
+            # تبديل متدحرج — الحاويات المتغيّرة فقط؛ SIGTERM + stop_grace_period ينزح المهام الجارية.
+            echo "→ تبديل متدحرج للتطبيقات"
+            $COMPOSE up -d --remove-orphans
+
+            # تنظيف طبقات الصور اليتيمة لتوفير القرص (تنبيه المراقبة: قرص > 80% §13).
+            docker image prune -f
+            docker logout ghcr.io || true
