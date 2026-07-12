@@ -3,7 +3,7 @@ CREATE TABLE "addresses" (
 	"tenant_id" uuid NOT NULL,
 	"user_id" uuid NOT NULL,
 	"label" text,
-	"point" "geography(Point,4326)" NOT NULL,
+	"point" geography(Point,4326) NOT NULL,
 	"details_text" text,
 	"floor" text,
 	"has_elevator" boolean,
@@ -45,7 +45,7 @@ CREATE TABLE "merchants" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"tenant_id" uuid NOT NULL,
 	"name" text NOT NULL,
-	"point" "geography(Point,4326)" NOT NULL,
+	"point" geography(Point,4326) NOT NULL,
 	"phone" text,
 	"commission_bp" integer,
 	"category" text NOT NULL,
@@ -59,7 +59,7 @@ CREATE TABLE "driver_locations" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"tenant_id" uuid NOT NULL,
 	"driver_id" uuid NOT NULL,
-	"point" "geography(Point,4326)" NOT NULL,
+	"point" geography(Point,4326) NOT NULL,
 	"recorded_at" timestamp with time zone NOT NULL,
 	"speed_kmh" double precision,
 	"is_suspect" boolean DEFAULT false NOT NULL,
@@ -73,7 +73,7 @@ CREATE TABLE "drivers" (
 	"vehicle" text NOT NULL,
 	"status" text DEFAULT 'offline' NOT NULL,
 	"max_concurrent_orders" integer DEFAULT 2 NOT NULL,
-	"last_point" "geography(Point,4326)",
+	"last_point" geography(Point,4326),
 	"last_point_at" timestamp with time zone,
 	"shift_started_at" timestamp with time zone,
 	"rating_avg" double precision,
@@ -104,7 +104,7 @@ CREATE TABLE "zones" (
 	"id" uuid PRIMARY KEY NOT NULL,
 	"tenant_id" uuid NOT NULL,
 	"name" text NOT NULL,
-	"polygon" "geography(Polygon,4326)" NOT NULL,
+	"polygon" geography(Polygon,4326) NOT NULL,
 	"is_active" boolean DEFAULT true NOT NULL,
 	"sort_order" integer DEFAULT 0 NOT NULL,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -142,7 +142,7 @@ CREATE TABLE "order_events" (
 	"to_status" text NOT NULL,
 	"actor_type" text NOT NULL,
 	"actor_id" uuid,
-	"point" "geography(Point,4326)",
+	"point" geography(Point,4326),
 	"meta" jsonb,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
@@ -168,9 +168,9 @@ CREATE TABLE "orders" (
 	"customer_id" uuid NOT NULL,
 	"merchant_id" uuid,
 	"driver_id" uuid,
-	"pickup_point" "geography(Point,4326)" NOT NULL,
+	"pickup_point" geography(Point,4326) NOT NULL,
 	"pickup_text" text,
-	"dropoff_point" "geography(Point,4326)" NOT NULL,
+	"dropoff_point" geography(Point,4326) NOT NULL,
 	"dropoff_text" text,
 	"dropoff_address_id" uuid,
 	"recipient_phone" text,
@@ -388,6 +388,47 @@ CREATE TABLE "tenant_payments" (
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+CREATE UNIQUE INDEX "addresses_tenant_id_id_uq" ON "addresses" USING btree ("tenant_id","id");--> statement-breakpoint
+CREATE INDEX "addresses_tenant_user_idx" ON "addresses" USING btree ("tenant_id","user_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "users_tenant_id_id_uq" ON "users" USING btree ("tenant_id","id");--> statement-breakpoint
+CREATE UNIQUE INDEX "users_tenant_tg_uq" ON "users" USING btree ("tenant_id","telegram_user_id") WHERE telegram_user_id IS NOT NULL;--> statement-breakpoint
+CREATE INDEX "users_tenant_phone_idx" ON "users" USING btree ("tenant_id","phone_e164");--> statement-breakpoint
+CREATE INDEX "catalog_items_tenant_merchant_idx" ON "catalog_items" USING btree ("tenant_id","merchant_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "merchants_tenant_id_id_uq" ON "merchants" USING btree ("tenant_id","id");--> statement-breakpoint
+CREATE INDEX "driver_locations_tenant_driver_recorded_idx" ON "driver_locations" USING btree ("tenant_id","driver_id","recorded_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "drivers_tenant_id_id_uq" ON "drivers" USING btree ("tenant_id","id");--> statement-breakpoint
+CREATE INDEX "drivers_tenant_status_idx" ON "drivers" USING btree ("tenant_id","status");--> statement-breakpoint
+CREATE INDEX "pricing_rules_tenant_service_idx" ON "pricing_rules" USING btree ("tenant_id","service");--> statement-breakpoint
+CREATE UNIQUE INDEX "zones_tenant_id_id_uq" ON "zones" USING btree ("tenant_id","id");--> statement-breakpoint
+CREATE INDEX "offers_tenant_order_idx" ON "offers" USING btree ("tenant_id","order_id");--> statement-breakpoint
+CREATE INDEX "offers_tenant_driver_status_idx" ON "offers" USING btree ("tenant_id","driver_id","status");--> statement-breakpoint
+CREATE INDEX "order_attachments_tenant_order_idx" ON "order_attachments" USING btree ("tenant_id","order_id");--> statement-breakpoint
+CREATE INDEX "order_events_tenant_order_idx" ON "order_events" USING btree ("tenant_id","order_id");--> statement-breakpoint
+CREATE INDEX "order_items_tenant_order_idx" ON "order_items" USING btree ("tenant_id","order_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "orders_tenant_id_id_uq" ON "orders" USING btree ("tenant_id","id");--> statement-breakpoint
+CREATE UNIQUE INDEX "orders_tenant_public_code_uq" ON "orders" USING btree ("tenant_id","public_code");--> statement-breakpoint
+CREATE INDEX "orders_tenant_status_idx" ON "orders" USING btree ("tenant_id","status");--> statement-breakpoint
+CREATE INDEX "orders_tenant_created_idx" ON "orders" USING btree ("tenant_id","created_at");--> statement-breakpoint
+CREATE INDEX "orders_tenant_driver_status_idx" ON "orders" USING btree ("tenant_id","driver_id","status");--> statement-breakpoint
+CREATE INDEX "ledger_entries_tenant_driver_created_idx" ON "ledger_entries" USING btree ("tenant_id","driver_id","created_at");--> statement-breakpoint
+CREATE INDEX "ledger_entries_tenant_settlement_idx" ON "ledger_entries" USING btree ("tenant_id","settlement_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "settlements_tenant_id_id_uq" ON "settlements" USING btree ("tenant_id","id");--> statement-breakpoint
+CREATE UNIQUE INDEX "settlements_tenant_driver_period_uq" ON "settlements" USING btree ("tenant_id","driver_id","period_date");--> statement-breakpoint
+CREATE UNIQUE INDEX "coupon_redemptions_tenant_order_uq" ON "coupon_redemptions" USING btree ("tenant_id","order_id");--> statement-breakpoint
+CREATE INDEX "coupon_redemptions_tenant_coupon_user_idx" ON "coupon_redemptions" USING btree ("tenant_id","coupon_id","user_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "coupons_tenant_id_id_uq" ON "coupons" USING btree ("tenant_id","id");--> statement-breakpoint
+CREATE UNIQUE INDEX "coupons_tenant_code_uq" ON "coupons" USING btree ("tenant_id","code");--> statement-breakpoint
+CREATE UNIQUE INDEX "loyalty_accounts_tenant_id_id_uq" ON "loyalty_accounts" USING btree ("tenant_id","id");--> statement-breakpoint
+CREATE UNIQUE INDEX "loyalty_accounts_tenant_user_uq" ON "loyalty_accounts" USING btree ("tenant_id","user_id");--> statement-breakpoint
+CREATE INDEX "loyalty_events_tenant_user_created_idx" ON "loyalty_events" USING btree ("tenant_id","user_id","created_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "referrals_tenant_referee_uq" ON "referrals" USING btree ("tenant_id","referee_user_id");--> statement-breakpoint
+CREATE INDEX "audit_log_tenant_created_idx" ON "audit_log" USING btree ("tenant_id","created_at");--> statement-breakpoint
+CREATE UNIQUE INDEX "staff_tenant_id_id_uq" ON "staff" USING btree ("tenant_id","id");--> statement-breakpoint
+CREATE UNIQUE INDEX "staff_tenant_email_uq" ON "staff" USING btree ("tenant_id","email");--> statement-breakpoint
+CREATE INDEX "outbox_tenant_status_next_attempt_idx" ON "outbox" USING btree ("tenant_id","status","next_attempt_at");--> statement-breakpoint
+CREATE INDEX "outbox_status_next_attempt_idx" ON "outbox" USING btree ("status","next_attempt_at");--> statement-breakpoint
+CREATE INDEX "support_messages_tenant_thread_idx" ON "support_messages" USING btree ("tenant_id","thread_id");--> statement-breakpoint
+CREATE UNIQUE INDEX "support_threads_tenant_id_id_uq" ON "support_threads" USING btree ("tenant_id","id");--> statement-breakpoint
 ALTER TABLE "addresses" ADD CONSTRAINT "addresses_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "addresses" ADD CONSTRAINT "addresses_user_fk" FOREIGN KEY ("tenant_id","user_id") REFERENCES "public"."users"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "users" ADD CONSTRAINT "users_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
@@ -446,45 +487,4 @@ ALTER TABLE "support_messages" ADD CONSTRAINT "support_messages_thread_fk" FOREI
 ALTER TABLE "support_threads" ADD CONSTRAINT "support_threads_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "support_threads" ADD CONSTRAINT "support_threads_user_fk" FOREIGN KEY ("tenant_id","user_id") REFERENCES "public"."users"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
 ALTER TABLE "support_threads" ADD CONSTRAINT "support_threads_staff_fk" FOREIGN KEY ("tenant_id","assigned_staff_id") REFERENCES "public"."staff"("tenant_id","id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "tenant_payments" ADD CONSTRAINT "tenant_payments_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-CREATE UNIQUE INDEX "addresses_tenant_id_id_uq" ON "addresses" USING btree ("tenant_id","id");--> statement-breakpoint
-CREATE INDEX "addresses_tenant_user_idx" ON "addresses" USING btree ("tenant_id","user_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "users_tenant_id_id_uq" ON "users" USING btree ("tenant_id","id");--> statement-breakpoint
-CREATE UNIQUE INDEX "users_tenant_tg_uq" ON "users" USING btree ("tenant_id","telegram_user_id") WHERE telegram_user_id IS NOT NULL;--> statement-breakpoint
-CREATE INDEX "users_tenant_phone_idx" ON "users" USING btree ("tenant_id","phone_e164");--> statement-breakpoint
-CREATE INDEX "catalog_items_tenant_merchant_idx" ON "catalog_items" USING btree ("tenant_id","merchant_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "merchants_tenant_id_id_uq" ON "merchants" USING btree ("tenant_id","id");--> statement-breakpoint
-CREATE INDEX "driver_locations_tenant_driver_recorded_idx" ON "driver_locations" USING btree ("tenant_id","driver_id","recorded_at");--> statement-breakpoint
-CREATE UNIQUE INDEX "drivers_tenant_id_id_uq" ON "drivers" USING btree ("tenant_id","id");--> statement-breakpoint
-CREATE INDEX "drivers_tenant_status_idx" ON "drivers" USING btree ("tenant_id","status");--> statement-breakpoint
-CREATE INDEX "pricing_rules_tenant_service_idx" ON "pricing_rules" USING btree ("tenant_id","service");--> statement-breakpoint
-CREATE UNIQUE INDEX "zones_tenant_id_id_uq" ON "zones" USING btree ("tenant_id","id");--> statement-breakpoint
-CREATE INDEX "offers_tenant_order_idx" ON "offers" USING btree ("tenant_id","order_id");--> statement-breakpoint
-CREATE INDEX "offers_tenant_driver_status_idx" ON "offers" USING btree ("tenant_id","driver_id","status");--> statement-breakpoint
-CREATE INDEX "order_attachments_tenant_order_idx" ON "order_attachments" USING btree ("tenant_id","order_id");--> statement-breakpoint
-CREATE INDEX "order_events_tenant_order_idx" ON "order_events" USING btree ("tenant_id","order_id");--> statement-breakpoint
-CREATE INDEX "order_items_tenant_order_idx" ON "order_items" USING btree ("tenant_id","order_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "orders_tenant_id_id_uq" ON "orders" USING btree ("tenant_id","id");--> statement-breakpoint
-CREATE UNIQUE INDEX "orders_tenant_public_code_uq" ON "orders" USING btree ("tenant_id","public_code");--> statement-breakpoint
-CREATE INDEX "orders_tenant_status_idx" ON "orders" USING btree ("tenant_id","status");--> statement-breakpoint
-CREATE INDEX "orders_tenant_created_idx" ON "orders" USING btree ("tenant_id","created_at");--> statement-breakpoint
-CREATE INDEX "orders_tenant_driver_status_idx" ON "orders" USING btree ("tenant_id","driver_id","status");--> statement-breakpoint
-CREATE INDEX "ledger_entries_tenant_driver_created_idx" ON "ledger_entries" USING btree ("tenant_id","driver_id","created_at");--> statement-breakpoint
-CREATE INDEX "ledger_entries_tenant_settlement_idx" ON "ledger_entries" USING btree ("tenant_id","settlement_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "settlements_tenant_id_id_uq" ON "settlements" USING btree ("tenant_id","id");--> statement-breakpoint
-CREATE UNIQUE INDEX "settlements_tenant_driver_period_uq" ON "settlements" USING btree ("tenant_id","driver_id","period_date");--> statement-breakpoint
-CREATE UNIQUE INDEX "coupon_redemptions_tenant_order_uq" ON "coupon_redemptions" USING btree ("tenant_id","order_id");--> statement-breakpoint
-CREATE INDEX "coupon_redemptions_tenant_coupon_user_idx" ON "coupon_redemptions" USING btree ("tenant_id","coupon_id","user_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "coupons_tenant_id_id_uq" ON "coupons" USING btree ("tenant_id","id");--> statement-breakpoint
-CREATE UNIQUE INDEX "coupons_tenant_code_uq" ON "coupons" USING btree ("tenant_id","code");--> statement-breakpoint
-CREATE UNIQUE INDEX "loyalty_accounts_tenant_id_id_uq" ON "loyalty_accounts" USING btree ("tenant_id","id");--> statement-breakpoint
-CREATE UNIQUE INDEX "loyalty_accounts_tenant_user_uq" ON "loyalty_accounts" USING btree ("tenant_id","user_id");--> statement-breakpoint
-CREATE INDEX "loyalty_events_tenant_user_created_idx" ON "loyalty_events" USING btree ("tenant_id","user_id","created_at");--> statement-breakpoint
-CREATE UNIQUE INDEX "referrals_tenant_referee_uq" ON "referrals" USING btree ("tenant_id","referee_user_id");--> statement-breakpoint
-CREATE INDEX "audit_log_tenant_created_idx" ON "audit_log" USING btree ("tenant_id","created_at");--> statement-breakpoint
-CREATE UNIQUE INDEX "staff_tenant_id_id_uq" ON "staff" USING btree ("tenant_id","id");--> statement-breakpoint
-CREATE UNIQUE INDEX "staff_tenant_email_uq" ON "staff" USING btree ("tenant_id","email");--> statement-breakpoint
-CREATE INDEX "outbox_tenant_status_next_attempt_idx" ON "outbox" USING btree ("tenant_id","status","next_attempt_at");--> statement-breakpoint
-CREATE INDEX "outbox_status_next_attempt_idx" ON "outbox" USING btree ("status","next_attempt_at");--> statement-breakpoint
-CREATE INDEX "support_messages_tenant_thread_idx" ON "support_messages" USING btree ("tenant_id","thread_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "support_threads_tenant_id_id_uq" ON "support_threads" USING btree ("tenant_id","id");
+ALTER TABLE "tenant_payments" ADD CONSTRAINT "tenant_payments_tenant_id_tenants_id_fk" FOREIGN KEY ("tenant_id") REFERENCES "public"."tenants"("id") ON DELETE no action ON UPDATE no action;

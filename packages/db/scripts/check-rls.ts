@@ -4,7 +4,9 @@ import pg from "pg";
 // أو مفتاح أجنبي بين جداول أعمال غير مركّب بـ tenant_id.
 
 // الاستثناءات المسمّاة فقط — أي إضافة هنا قرار معماري يُكتب بالوثيقة أولاً.
-const RLS_EXCEPTIONS = ["tenants", "admin_users", "tenant_payments", "tracking_tokens"];
+// spatial_ref_sys جدول تُنشئه إضافة PostGIS في public (بيانات مرجعية للأنظمة
+// الإحداثية، مشتركة للقراءة) — ليس جدول أعمال، فيُستثنى من فرض RLS (§2.3).
+const RLS_EXCEPTIONS = ["tenants", "admin_users", "tenant_payments", "tracking_tokens", "spatial_ref_sys"];
 
 async function main(): Promise<void> {
   const url = process.env["DATABASE_URL_MIGRATOR"];
