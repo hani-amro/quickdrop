@@ -1,3 +1,7 @@
+// رموز الحقن أولاً — قبل أي كنترولر — كي تُهيَّأ قيمها قبل تقييم مُزخرِفات @Inject
+// في الخدمات (التي تعيد استيرادها من هنا)؛ وإلا حلقة الاستيراد تجعلها undefined.
+import { BROADCAST_Q, DB, ENV, REDIS, TG_QUEUE } from "./tokens.js";
+export { BROADCAST_Q, DB, ENV, REDIS, TG_QUEUE };
 import { Inject, Module, type OnApplicationShutdown } from "@nestjs/common";
 import { createDb, type DbHandle } from "@quickdrop/db";
 import { BROADCAST_QUEUE, TG_UPDATES_QUEUE, type BroadcastJob } from "@quickdrop/shared";
@@ -24,12 +28,6 @@ import { SettlementsService } from "./settlements/settlements.service.js";
 import { TelegramGatewayController } from "./telegram-gateway/gateway.controller.js";
 import { TelegramGatewayService } from "./telegram-gateway/gateway.service.js";
 import { TrackingController } from "./tracking/tracking.controller.js";
-
-export const ENV = "ENV";
-export const DB = "DB";
-export const REDIS = "REDIS";
-export const TG_QUEUE = "TG_QUEUE";
-export const BROADCAST_Q = "BROADCAST_Q";
 
 @Module({
   controllers: [
