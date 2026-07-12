@@ -3,6 +3,7 @@
 import { BROADCAST_Q, DB, ENV, REDIS, TG_QUEUE } from "./tokens.js";
 export { BROADCAST_Q, DB, ENV, REDIS, TG_QUEUE };
 import { Inject, Module, type OnApplicationShutdown } from "@nestjs/common";
+import { APP_GUARD } from "@nestjs/core";
 import { createDb, type DbHandle } from "@quickdrop/db";
 import { BROADCAST_QUEUE, TG_UPDATES_QUEUE, type BroadcastJob } from "@quickdrop/shared";
 import { Queue } from "bullmq";
@@ -11,6 +12,9 @@ import { AdminController } from "./admin/admin.controller.js";
 import { AdminService } from "./admin/admin.service.js";
 import { AnalyticsController } from "./analytics/analytics.controller.js";
 import { AnalyticsService } from "./analytics/analytics.service.js";
+import { AuthController } from "./auth/auth.controller.js";
+import { AuthService } from "./auth/auth.service.js";
+import { SessionGuard } from "./auth/session.guard.js";
 import { BroadcastsController } from "./broadcasts/broadcasts.controller.js";
 import { BroadcastsService } from "./broadcasts/broadcasts.service.js";
 import { DriversController } from "./drivers/drivers.controller.js";
@@ -42,9 +46,13 @@ import { TrackingController } from "./tracking/tracking.controller.js";
     AnalyticsController, // §13 — GET /api/analytics
     AdminController, // §14 — كونسول المشرف: /api/admin/* (مصادقة منفصلة)
     TrackingController, // §7 — عام بلا auth: /public/track/:token
+    AuthController, // §10.2 — دخول/خروج/هوية الطاقم (jلسات cookie)
     TelegramGatewayController,
   ],
   providers: [
+    // §10.2 — حارس عام: مسارات /api/* للطاقم تتطلب جلسة cookie أو Bearer STAFF_API_TOKEN
+    // (session.guard يعفي auth/admin/العامة). دفاع مزدوج مع تحقق طبقة الخدمات.
+    { provide: APP_GUARD, useClass: SessionGuard },
     { provide: ENV, useFactory: (): ApiEnv => loadEnv() },
     {
       provide: DB,
@@ -76,6 +84,8 @@ import { TrackingController } from "./tracking/tracking.controller.js";
     BroadcastsService, // §4.3/§14 — البث الجماهيري
     AnalyticsService, // §13 — تحليلات اللوحة
     AdminService, // §14 — دورة حياة المستأجر والباقات
+    AuthService, // §10.2 — مصادقة الطاقم (argon2id + جلسات Redis)
+    SessionGuard, // مزوّد الحارس العام أعلاه
   ],
 })
 export class AppModule implements OnApplicationShutdown {

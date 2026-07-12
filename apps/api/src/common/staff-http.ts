@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import {
   BadRequestException,
   NotFoundException,
@@ -9,8 +10,9 @@ import { secretsEqual } from "@quickdrop/shared";
 import { eq } from "drizzle-orm";
 import { z } from "zod";
 
-// أدوات مشتركة لمسارات الـ staff (orders + drivers) — مصدر واحد للتخويل المؤقت
-// (Bearer STAFF_API_TOKEN — §10.2 لاحقاً)، وتحقق Zod (§11)، وحلّ المستأجر بالـ slug.
+// أدوات مشتركة لمسارات الـ staff (orders + drivers + …) — مصدر واحد للتخويل
+// (§10.2: جلسة cookie عبر session.guard أو Bearer STAFF_API_TOKEN للآلات)،
+// وتحقق Zod (§11)، وحلّ المستأجر بالـ slug.
 
 // نفس قيد provision-tenant — يُستخدم بكل مداخل tenantSlug
 export const slugSchema = z.string().regex(/^[a-z0-9-]{2,32}$/);
@@ -19,11 +21,25 @@ export const slugSchema = z.string().regex(/^[a-z0-9-]{2,32}$/);
 export const uuidSchema = z.string().uuid();
 
 /**
- * أمان مؤقت: Authorization: Bearer = STAFF_API_TOKEN من env — staff auth الحقيقي
- * (جلسات + argon2id §10.2) يُبنى لاحقاً؛ غياب التوكن من env = 503، لا فتح مفتوح.
+ * §10.2 — علامة "جلسة موثَّقة" لكل إقلاع عملية: session.guard يستبدل بها ترويسة
+ * Authorization بعد التحقق من جلسة Redis وتطابق المستأجر، فتقبلها طبقة الخدمات
+ * (assertStaffToken أدناه) كبديل مكافئ للـ Bearer. عشوائية 256-bit لا تغادر العملية
+ * ولا تُرسَل لأي عميل — من يرسلها من الخارج يرفضه الحارس قبل بلوغ الخدمات، وتبقى
+ * الطبقتان (حارس + خدمة) دفاعاً مزدوجاً حتى لو أُسقط الحارس عن مسار سهواً.
+ */
+export const SESSION_VERIFIED_AUTHORIZATION = `QdSessionVerified ${randomBytes(32).toString("hex")}`;
+
+/**
+ * §10.2 — تخويل طبقة الخدمة: **إمّا** جلسة cookie تحقق منها session.guard (العلامة
+ * أعلاه) **وإمّا** Authorization: Bearer = STAFF_API_TOKEN من env (يبقى للآلات
+ * وللداشبورد الحالي عبر الـ proxy الخادمي). غياب التوكن من env يعطّل مسار Bearer
+ * وحده (503) — مسار الجلسة لا يعتمد عليه، لا فتح مفتوح.
  * §4.1: مقارنة ثابتة الزمن — لا === على أسرار؛ ورسالة عامة (§11).
  */
 export function assertStaffToken(configured: string | undefined, authorization: string | undefined): void {
+  if (authorization !== undefined && secretsEqual(authorization, SESSION_VERIFIED_AUTHORIZATION)) {
+    return; // جلسة §10.2 موثَّقة من الحارس
+  }
   if (configured === undefined) {
     throw new ServiceUnavailableException("staff API is not configured");
   }

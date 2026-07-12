@@ -6,6 +6,7 @@ export * from "./crypto.js";
 export * from "./env.js";
 export * from "./statuses.js";
 export * from "./queues.js";
+export * from "./redact.js";
 export * from "./realtime.js";
 export * from "./pricing.js";
 export * from "./ledger.js";
