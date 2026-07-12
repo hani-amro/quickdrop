@@ -49,12 +49,17 @@ async function forward(req: NextRequest, ctx: Ctx, method: "GET" | "POST"): Prom
   }
 
   try {
+    // §10.2 — إن كان للمتصفح جلسة (كوكي qd_session) مرّرها فيتحقق منها حارس الـ API؛
+    // وإلا يبقى Bearer STAFF_API_TOKEN كبديل خادمي (الحارس يقبل أيّهما). الاثنان معاً
+    // آمنان: جلسة صالحة تُقبل، وغيابها يسقط لمسار الآلة.
+    const browserCookie = req.headers.get("cookie");
     const upstream = await fetch(target, {
       method,
       cache: "no-store",
       headers: {
         accept: "application/json",
         authorization: `Bearer ${env.STAFF_API_TOKEN}`,
+        ...(browserCookie !== null ? { cookie: browserCookie } : {}),
         ...(body !== undefined ? { "content-type": "application/json" } : {}),
       },
       ...(body !== undefined ? { body } : {}),

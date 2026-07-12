@@ -14,6 +14,8 @@ export interface ConvRedis {
   get(key: string): Promise<string | null>;
   set(key: string, value: string, expiryMode: "EX", ttlSeconds: number): Promise<unknown>;
   del(key: string): Promise<number>;
+  incr(key: string): Promise<number>; // §11 — عدّاد حد المعدل (ioredis يحققه بنيوياً)
+  expire(key: string, ttlSeconds: number): Promise<unknown>;
 }
 
 // §11 — حدود النظام تمر بـ Zod: ما يعود من Redis مدخل خارجي (كتبته نسخة أقدم ربما).

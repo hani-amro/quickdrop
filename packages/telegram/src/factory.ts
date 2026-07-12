@@ -1,6 +1,7 @@
 import { decryptSecret } from "@quickdrop/shared";
 import { Bot, type Transformer } from "grammy";
 import { assertTokenShape } from "./api.js";
+import { createThrottler } from "./throttler.js";
 
 // §4.1/§4.3 — مصنع بوت المستأجر: instance واحد لكل مستأجر عبر LRU بسيط،
 // فك تشفير التوكن عند أول استخدام فقط، وparse_mode HTML افتراضياً على كل الإرسال.
@@ -52,6 +53,9 @@ export function createTenantBot(opts: { token: string; tenantId: string }): Bot 
   assertTokenShape(opts.token);
   const bot = new Bot(opts.token);
 
+  // §4.3 — الترتيب مقصود: الـ throttler أولاً (الأقرب للشبكة) كي يضبط معدل كل
+  // إرسال فعلي بما فيه ما يضيفه htmlByDefault؛ ثم parse_mode HTML.
+  bot.api.config.use(createThrottler());
   bot.api.config.use(htmlByDefault);
 
   bot.catch((err) => {

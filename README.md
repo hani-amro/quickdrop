@@ -43,6 +43,14 @@ pnpm dev:dashboard   # داشبورد Next.js RTL → http://localhost:3001
 | `apps/worker` | `DATABASE_URL`، `DATABASE_URL_WORKER`، `REDIS_URL`، `MASTER_KEY` |
 | `apps/dashboard` | `API_URL`، `STAFF_API_TOKEN` (**نفس قيمة الـ API** — يُحقن بالـ proxy الخادمي ولا يصل المتصفح)، `TENANT_SLUG=demo` |
 
+**دخول الطاقم (§10.2):** الـ seed ينشئ موظف owner للمعاينة:
+
+| البريد | كلمة السر |
+| --- | --- |
+| `owner@demo.local` | `demo1234` |
+
+افتح `http://localhost:3001` → يحوّلك إلى `/login` → ادخل بالبيانات أعلاه (جلسة cookie عبر Redis). لإنشاء موظف آخر: `pnpm staff:create -- --tenant-slug demo --email x@demo.local --password '••••••••' --role dispatcher`. (المسارات تقبل أيضاً `Bearer STAFF_API_TOKEN` للآلات — الداشبورد يستعمله خادمياً.)
+
 ملاحظات المعاينة:
 
 - **بوت تيليغرام اختياري:** مستأجر `demo` بلا بوت (حقول البوت NULL) — إنشاء الطلبات من الداشبورد (`/orders/new`) ولوحة الإسناد والـ API تعمل كاملة بلا تيليغرام. لربط بوت لاحقاً (§14): `pnpm tenant:provision -- --slug demo --name "Demo Office" --name-ar "مكتب التجربة" --token <TOKEN> --skip-webhook` — بوت تطوير ينتهي بـ `_dev_bot` (الفخ 24).

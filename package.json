@@ -18,7 +18,8 @@
     "db:migrate": "pnpm --filter @quickdrop/db migrate",
     "db:check-rls": "pnpm --filter @quickdrop/db check-rls",
     "db:seed-dev": "pnpm --filter @quickdrop/db seed-dev",
-    "tenant:provision": "pnpm --filter @quickdrop/api provision-tenant --"
+    "tenant:provision": "pnpm --filter @quickdrop/api provision-tenant --",
+    "staff:create": "pnpm --filter @quickdrop/api create-staff --"
   },
   "devDependencies": {
     "turbo": "^2.5.0",

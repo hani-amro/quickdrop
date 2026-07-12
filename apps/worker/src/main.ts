@@ -17,6 +17,7 @@ import { z } from "zod";
 import { createBroadcastProcessor } from "./broadcast-consumer.js";
 import { createDispatchProcessor, DISPATCH_JOB_OPTS, offerTimeoutJobId } from "./dispatch-worker.js";
 import { createNotificationsProcessor, offerTimeoutDelayMs } from "./notifications-consumer.js";
+import { startHousekeeping } from "./housekeeping.js";
 import { startOutboxPoller } from "./outbox-poller.js";
 import { processUpdate, type UpdateProcessorDeps } from "./update-processor.js";
 
@@ -95,6 +96,9 @@ async function main(): Promise<void> {
 
   // D9/§12 — بعد إعادة بناء الفائت: شغّل عامل التقاط الـ outbox (كل ثانية → طابور الإشعارات)
   const outboxPoller = startOutboxPoller({ scanDb: scanDb.db, appDb: appDb.db, queue: notificationsQueue });
+
+  // §3/§16.25 — تنظيف الجداول الساخنة كل ساعة (webhook_updates >48س، driver_locations >90ي)
+  const housekeeping = startHousekeeping({ scanDb: scanDb.db, appDb: appDb.db });
 
   const worker = new Worker<TgUpdateJob>(
     TG_UPDATES_QUEUE,
@@ -193,6 +197,7 @@ async function main(): Promise<void> {
   // §12 — إغلاق نظيف: استنزف الجاري قبل الخروج، وإلا كل deploy بيقتل مهام بنصها
   const shutdown = async (): Promise<void> => {
     await outboxPoller.stop(); // أولاً: أوقف إنتاج مهام جديدة وانتظر الدورة الجارية
+    await housekeeping.stop();
     await worker.close();
     await notificationsWorker.close();
     await dispatchWorker.close();

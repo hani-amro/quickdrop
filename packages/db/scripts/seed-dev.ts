@@ -9,17 +9,44 @@ import {
   type Service,
   type UserRole,
 } from "@quickdrop/shared";
+import { Algorithm, hash } from "@node-rs/argon2";
 import { and, eq, isNull } from "drizzle-orm";
 import {
   createDb,
   drivers,
   pricingRules,
+  staff,
   tenants,
   users,
   withTenant,
   zones,
   type Tx,
 } from "../src/index.js";
+
+// §10.2 — نفس معايير argon2id في apps/api/src/auth/hashing.ts (OWASP: m=19MiB, t=2, p=1).
+const DEMO_STAFF = { email: "owner@demo.local", password: "demo1234", role: "owner" as const };
+
+async function ensureStaff(tx: Tx, tenantId: string): Promise<"created" | "existing"> {
+  const existing = await tx
+    .select({ id: staff.id })
+    .from(staff)
+    .where(and(eq(staff.tenantId, tenantId), eq(staff.email, DEMO_STAFF.email)))
+    .limit(1);
+  if (existing[0]) return "existing";
+  const passwordHash = await hash(DEMO_STAFF.password, {
+    algorithm: Algorithm.Argon2id,
+    memoryCost: 19456,
+    timeCost: 2,
+    parallelism: 1,
+  });
+  await tx.insert(staff).values({
+    tenantId,
+    email: DEMO_STAFF.email,
+    passwordHash,
+    role: DEMO_STAFF.role,
+  });
+  return "created";
+}
 
 // seed تجريبي للمعاينة المحلية (DX) — idempotent: تشغيله مرتين لا يكرر صفوفاً.
 // مستأجر demo بلا بوت (حقول البوت NULL): الداشبورد والـ API يعملان بلا تيليغرام —
@@ -213,7 +240,9 @@ async function main(): Promise<void> {
         driverCounts[await ensureDriver(tx, tenant.id, userId, seed.point)] += 1;
       }
 
-      return { zoneOutcome, rules, customers, driverCounts };
+      const staffOutcome = await ensureStaff(tx, tenant.id);
+
+      return { zoneOutcome, rules, customers, driverCounts, staffOutcome };
     });
 
     // الملخص أسماء وأعداد فقط — لا معرّفات ولا هواتف (§11).
@@ -226,6 +255,7 @@ async function main(): Promise<void> {
           pricingRules: { services: SERVICES, ...summary.rules },
           customers: { names: CUSTOMER_SEEDS.map((c) => c.firstName), ...summary.customers },
           drivers: { names: DRIVER_SEEDS.map((d) => d.firstName), ...summary.driverCounts },
+          staff: { email: DEMO_STAFF.email, outcome: summary.staffOutcome }, // كلمة السر بالـ README
         },
         null,
         2,

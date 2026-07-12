@@ -1,4 +1,5 @@
 import { createOrder, orders, quoteForTenant, users, withTenant, type Db, type User } from "@quickdrop/db";
+import { bumpOrderRate, isOverLimit } from "./rate-limit.js";
 import { fromTelegram, makePoint, type Service } from "@quickdrop/shared";
 import { eq } from "drizzle-orm";
 import { InlineKeyboard, Keyboard, type Bot, type Context } from "grammy";
@@ -267,6 +268,16 @@ export function registerCustomerFlow(bot: Bot, deps: CustomerFlowDeps): void {
       if (!claimed) return;
 
       const user = await ensureCustomer(deps, ctx.from);
+
+      // §11 — حد المعدل: 5 طلبات/ساعة لكل مستخدم. رسالة مهذبة ولا إنشاء عند التجاوز.
+      const orderCount = await bumpOrderRate(deps.redis, deps.tenantId, ctx.from.id);
+      if (isOverLimit(orderCount)) {
+        await ctx.reply("وصلت الحد الأقصى للطلبات هالساعة 🙏 جرّب بعد شوي أو تواصل مع المكتب.", {
+          reply_markup: mainMenuKeyboard(),
+        });
+        return;
+      }
+
       const { order } = await createOrder(deps.db, deps.tenantId, {
         service: conv.service,
         customerId: user.id,
