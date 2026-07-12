@@ -6,6 +6,7 @@ import {
   fixedWindowExceeded,
   RATE_TIERS,
   rateLimitKey,
+  RateLimitGuard,
 } from "./rate-limit.guard.js";
 import {
   assertTenantResource,
@@ -47,6 +48,32 @@ describe("classifyRoute — تصنيف المسار لطبقة الحدّ", () =
   it("بقية مسارات الـ API → العام", () => {
     expect(classifyRoute("GET", "/api/orders")).toBe(RATE_TIERS.global);
     expect(classifyRoute("POST", "/api/broadcasts")).toBe(RATE_TIERS.global);
+  });
+  it("يعفي /metrics (كشط Prometheus)", () => {
+    expect(classifyRoute("GET", "/metrics")).toBeNull();
+  });
+});
+
+describe("RateLimitGuard — الفشل المفتوح السريع عند تعليق Redis (§1/§14)", () => {
+  // Redis يحاكي انقطاعاً: incr لا يُحلّ أبداً (كما مع maxRetriesPerRequest:null)
+  const hangingRedis = {
+    incr: () => new Promise<number>(() => {}), // معلّق للأبد
+    expire: () => new Promise<unknown>(() => {}),
+    ttl: () => new Promise<number>(() => {}),
+  };
+  const ctx = {
+    switchToHttp: () => ({
+      getRequest: () => ({ method: "GET", path: "/api/orders", headers: {}, ip: "1.2.3.4" }),
+      getResponse: () => ({ setHeader: () => {} }),
+    }),
+  } as unknown as Parameters<RateLimitGuard["canActivate"]>[0];
+
+  it("يفشل مفتوحاً (true) خلال مهلة قصيرة بدل التعليق للأبد", async () => {
+    const guard = new RateLimitGuard(hangingRedis);
+    const start = Date.now();
+    const allowed = await guard.canActivate(ctx);
+    expect(allowed).toBe(true); // §14 — الإتاحة أولى، الحدّ ليس بوابة صحّة
+    expect(Date.now() - start).toBeLessThan(1000); // لم يعلّق
   });
 });
 

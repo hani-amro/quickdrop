@@ -22,6 +22,8 @@ const envSchema = z.object({
   // §10.2 — هوية المشرف الفاعل (يوقّع audit_log). ثابت مؤقت حتى دخول المشرف الكامل؛
   // غيابه = تُسجَّل عمليات المشرف بلوغ منظّم بلا صف audit_log (CHECK/FK يفرضان مشرفاً).
   ADMIN_ID: z.string().uuid().optional(),
+  // §13 — Sentry: غيابه = مراقبة أخطاء معطَّلة (no-op)، لا فشل.
+  SENTRY_DSN: z.string().url().optional(),
 });
 
 export type ApiEnv = z.infer<typeof envSchema>;

@@ -114,7 +114,16 @@ export class AuthService {
   /** جلسة صالحة أو null — معرّف بغير شكل إصداراتنا يُرفض قبل Redis. */
   async getSession(sessionId: string): Promise<StaffSession | null> {
     if (!SESSION_ID_RE.test(sessionId)) return null;
-    const raw = await this.redis.get(SESSION_KEY_PREFIX + sessionId);
+    // §1/§14 — عميل ioredis المشترك يعلّق أوامره أثناء انقطاع Redis (maxRetriesPerRequest:null).
+    // على المصادقة نفشل **مغلقين وبسرعة**: مهلة قصيرة → null → الحارس يرفض 401 (عكس الحدّ
+    // الذي يفشل مفتوحاً). لا نُبقي مسار الطلب معلّقاً.
+    let raw: string | null;
+    try {
+      raw = await this.withTimeout(this.redis.get(SESSION_KEY_PREFIX + sessionId), 200);
+    } catch {
+      console.warn(JSON.stringify({ action: "auth_get_session", outcome: "redis_unavailable" }));
+      return null;
+    }
     if (raw === null) return null;
     let parsed: unknown;
     try {
@@ -136,6 +145,23 @@ export class AuthService {
   async logout(sessionId: string): Promise<void> {
     if (!SESSION_ID_RE.test(sessionId)) return;
     await this.redis.del(SESSION_KEY_PREFIX + sessionId);
+  }
+
+  /** يسابق نداء Redis بمهلة — انتهاؤها يرمي، فيفشل المستدعي مغلقاً (§1/§14). */
+  private withTimeout<T>(op: Promise<T>, ms: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("redis timeout")), ms);
+      op.then(
+        (v) => {
+          clearTimeout(timer);
+          resolve(v);
+        },
+        (e: unknown) => {
+          clearTimeout(timer);
+          reject(e instanceof Error ? e : new Error(String(e)));
+        },
+      );
+    });
   }
 
   /** §11 — رسالة عامة واحدة + تأخير ثابت؛ السبب باللوغ فقط (slug بلا بريد — لا PII). */

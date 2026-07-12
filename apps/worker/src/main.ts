@@ -18,6 +18,7 @@ import { createBroadcastProcessor } from "./broadcast-consumer.js";
 import { createDispatchProcessor, DISPATCH_JOB_OPTS, offerTimeoutJobId } from "./dispatch-worker.js";
 import { createNotificationsProcessor, offerTimeoutDelayMs } from "./notifications-consumer.js";
 import { startHousekeeping } from "./housekeeping.js";
+import { initSentry, startMetricsServer } from "./observability.js";
 import { startOutboxPoller } from "./outbox-poller.js";
 import { processUpdate, type UpdateProcessorDeps } from "./update-processor.js";
 
@@ -28,8 +29,14 @@ const env = parseEnv(
     REDIS_URL: z.string().url(),
     // §4.2: MASTER_KEY 32 بايت hex — لفك تشفير توكنات البوتات عند المعالجة
     MASTER_KEY: z.string().regex(/^[0-9a-f]{64}$/i, "MASTER_KEY must be 64 hex chars (32 bytes)"),
+    // §13 — مراقبة: Sentry (اختياري)، ومنفذ /metrics الداخلي
+    SENTRY_DSN: z.string().url().optional(),
+    METRICS_PORT: z.coerce.number().int().positive().default(9100),
+    NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   }),
 );
+
+initSentry(env.SENTRY_DSN, env.NODE_ENV); // §13 — قبل أي عمل، ليلتقط أخطاء الإقلاع
 
 const appDb = createDb(env.DATABASE_URL); // كتابات داخل withTenant حصراً (§2.3)
 const scanDb = createDb(env.DATABASE_URL_WORKER); // مسح عابر للمستأجرين — قراءة فقط
@@ -99,6 +106,12 @@ async function main(): Promise<void> {
 
   // §3/§16.25 — تنظيف الجداول الساخنة كل ساعة (webhook_updates >48س، driver_locations >90ي)
   const housekeeping = startHousekeeping({ scanDb: scanDb.db, appDb: appDb.db });
+
+  // §13 — خادم /metrics + عمق الطوابير (تنبيه طابور > 500)
+  const metricsServer = startMetricsServer({
+    port: env.METRICS_PORT,
+    queues: { [TG_UPDATES_QUEUE]: queue, [NOTIFICATIONS_QUEUE]: notificationsQueue, [DISPATCH_QUEUE]: dispatchQueue },
+  });
 
   const worker = new Worker<TgUpdateJob>(
     TG_UPDATES_QUEUE,
@@ -198,6 +211,7 @@ async function main(): Promise<void> {
   const shutdown = async (): Promise<void> => {
     await outboxPoller.stop(); // أولاً: أوقف إنتاج مهام جديدة وانتظر الدورة الجارية
     await housekeeping.stop();
+    await metricsServer.stop();
     await worker.close();
     await notificationsWorker.close();
     await dispatchWorker.close();

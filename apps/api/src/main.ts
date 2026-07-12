@@ -5,11 +5,13 @@ import type { DbHandle } from "@quickdrop/db";
 import { RT_BOARD_NAMESPACE } from "@quickdrop/shared";
 import { AppModule } from "./app.module.js";
 import { loadEnv } from "./env.js";
+import { initSentry } from "./observability/sentry.js";
 import { createRealtimeServer } from "./realtime/realtime.js";
 import { DB } from "./tokens.js";
 
 async function bootstrap(): Promise<void> {
   const env = loadEnv(); // يفشل بصوت عالٍ قبل فتح أي منفذ
+  initSentry(env.SENTRY_DSN, env.NODE_ENV); // §13 — قبل أي شيء، ليلتقط أخطاء الإقلاع
   const app = await NestFactory.create(AppModule);
   await app.listen(env.PORT);
 

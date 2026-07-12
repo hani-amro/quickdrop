@@ -21,6 +21,32 @@ export interface RateLimitRedis {
   ttl(key: string): Promise<number>;
 }
 
+/**
+ * §1/§14 — الفشل المفتوح يتطلب فشلاً **سريعاً**: عميل ioredis المشترك (يخدم BullMQ)
+ * مضبوط بـ maxRetriesPerRequest:null + offline queue، فأمرُه أثناء انقطاع Redis
+ * **يعلّق** بدل أن يرمي — والـ catch لا يُبلَغ أبداً، فيتجمّد مسار الطلب بأكمله.
+ * نسابق كل نداء بمهلة قصيرة: انتهاؤها = نعامله كخلل Redis ونفشل مفتوحين (لا نُسقط الـ API).
+ */
+export const RATE_LIMIT_REDIS_TIMEOUT_MS = 150;
+
+class RedisTimeoutError extends Error {}
+
+function withTimeout<T>(op: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new RedisTimeoutError("redis op timed out")), ms);
+    op.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e: unknown) => {
+        clearTimeout(timer);
+        reject(e instanceof Error ? e : new Error(String(e)));
+      },
+    );
+  });
+}
+
 /** طبقة حدّ = اسم (للمفتاح واللوغ) + سقف الطلبات + طول النافذة بالثواني. */
 export interface RateTier {
   name: string;
@@ -46,6 +72,7 @@ export const RATE_TIERS = {
  */
 export function classifyRoute(method: string, path: string): RateTier | null {
   if (path === "/health" || path.startsWith("/health/")) return null;
+  if (path === "/metrics") return null; // §13 — كشط Prometheus الداخلي: 429 عليه يعمي المراقبة
   if (path.startsWith("/tg/")) return null;
   if (method === "POST" && path === "/api/auth/login") return RATE_TIERS.login;
   if (path.startsWith("/public/track")) return RATE_TIERS.track;
@@ -103,11 +130,13 @@ export class RateLimitGuard implements CanActivate {
 
     let count: number;
     try {
-      count = await this.redis.incr(key);
-      if (count === 1) await this.redis.expire(key, tier.windowS); // نافذة تبدأ من أول طلب
+      count = await withTimeout(this.redis.incr(key), RATE_LIMIT_REDIS_TIMEOUT_MS);
+      if (count === 1) {
+        await withTimeout(this.redis.expire(key, tier.windowS), RATE_LIMIT_REDIS_TIMEOUT_MS); // نافذة تبدأ من أول طلب
+      }
     } catch {
-      // §1/§14 — نفشل **مفتوحين**: خلل Redis عابر يجب ألّا يُسقط كل الـ API. الحدّ طبقة
-      // حماية لا بوابة صحّة؛ الإتاحة أولى. (SessionGuard يعتمد Redis أيضاً — سقوطه يرفض).
+      // §1/§14 — نفشل **مفتوحين** وبسرعة: خلل/انقطاع Redis (رمي أو مهلة) يجب ألّا يُسقط
+      // كل الـ API. الحدّ طبقة حماية لا بوابة صحّة؛ الإتاحة أولى.
       console.warn(JSON.stringify({ action: "rate_limit", outcome: "redis_error", tier: tier.name }));
       return true;
     }
@@ -117,9 +146,9 @@ export class RateLimitGuard implements CanActivate {
     // تجاوز — Retry-After من TTL المتبقي؛ لو ضاع الـ TTL (‎-1/-2) أعِد تسليح النافذة.
     let retryAfter = tier.windowS;
     try {
-      const ttl = await this.redis.ttl(key);
+      const ttl = await withTimeout(this.redis.ttl(key), RATE_LIMIT_REDIS_TIMEOUT_MS);
       if (ttl > 0) retryAfter = ttl;
-      else await this.redis.expire(key, tier.windowS);
+      else await withTimeout(this.redis.expire(key, tier.windowS), RATE_LIMIT_REDIS_TIMEOUT_MS);
     } catch {
       /* أبقِ retryAfter = windowS */
     }

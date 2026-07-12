@@ -3,7 +3,7 @@
 import { BROADCAST_Q, DB, ENV, REDIS, TG_QUEUE } from "./tokens.js";
 export { BROADCAST_Q, DB, ENV, REDIS, TG_QUEUE };
 import { Inject, Module, type OnApplicationShutdown } from "@nestjs/common";
-import { APP_GUARD } from "@nestjs/core";
+import { APP_GUARD, APP_INTERCEPTOR } from "@nestjs/core";
 import { createDb, type DbHandle } from "@quickdrop/db";
 import { BROADCAST_QUEUE, TG_UPDATES_QUEUE, type BroadcastJob } from "@quickdrop/shared";
 import { Queue } from "bullmq";
@@ -22,6 +22,7 @@ import { DriversController } from "./drivers/drivers.controller.js";
 import { DriversService } from "./drivers/drivers.service.js";
 import { loadEnv, type ApiEnv } from "./env.js";
 import { HealthController } from "./health/health.controller.js";
+import { MetricsController, MetricsInterceptor } from "./observability/metrics.js";
 import { CouponsController } from "./loyalty/coupons.controller.js";
 import { LoyaltyController } from "./loyalty/loyalty.controller.js";
 import { LoyaltyService } from "./loyalty/loyalty.service.js";
@@ -48,9 +49,12 @@ import { TrackingController } from "./tracking/tracking.controller.js";
     AdminController, // §14 — كونسول المشرف: /api/admin/* (مصادقة منفصلة)
     TrackingController, // §7 — عام بلا auth: /public/track/:token
     AuthController, // §10.2 — دخول/خروج/هوية الطاقم (jلسات cookie)
+    MetricsController, // §13 — GET /metrics لـ Prometheus (معفى من الحارسَين)
     TelegramGatewayController,
   ],
   providers: [
+    // §13 — interceptor عام يقيس زمن كل طلب (histogram Prometheus)
+    { provide: APP_INTERCEPTOR, useClass: MetricsInterceptor },
     // §11 — حد المعدل لكل IP: حارس عام يُسجَّل **أولاً** كي يعمل قبل SessionGuard
     // (الحرّاس العامّون ينفَّذون بترتيب التسجيل) — يُرفض الفيضان قبل أي عمل مصادقة.
     { provide: APP_GUARD, useClass: RateLimitGuard },
