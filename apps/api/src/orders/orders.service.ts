@@ -12,6 +12,7 @@ import {
   createOrder,
   drivers,
   offers,
+  orderAttachments,
   orderEvents,
   orders,
   quoteForTenant,
@@ -22,6 +23,7 @@ import {
   type Quote,
   type Tx,
 } from "@quickdrop/db";
+import { createStorageClient, tryLoadStorageConfig, type StorageClient } from "@quickdrop/storage";
 import {
   ORDER_STATUSES,
   SERVICES,
@@ -222,6 +224,15 @@ export interface OrderDetailResponse {
   };
   events: OrderEventView[];
   currentRoundOffers: OfferView[];
+  attachments: OrderAttachmentView[]; // §11 — إثبات التسليم (روابط موقّعة قصيرة العمر)
+}
+
+export interface OrderAttachmentView {
+  id: string;
+  kind: string;
+  createdAt: string;
+  /** §11 — رابط GET موقّع قصير العمر؛ null إن لم يُهيَّأ التخزين (بلا S3). */
+  url: string | null;
 }
 
 export interface ConfirmOrderResponse {
@@ -246,10 +257,19 @@ function toQuoteResponse(quote: Quote): QuoteResponse {
 
 @Injectable()
 export class OrdersService {
+  // §11 — عميل تخزين المرفقات (S3/MinIO)؛ null إن لم يُهيَّأ S3 (تدهور لطيف: مرفقات بلا روابط)
+  private readonly storage: StorageClient | null;
+
   constructor(
     @Inject(DB) private readonly handle: DbHandle,
     @Inject(ENV) private readonly env: ApiEnv,
-  ) {}
+  ) {
+    const cfg = tryLoadStorageConfig(process.env);
+    this.storage = cfg !== null ? createStorageClient(cfg) : null;
+  }
+
+  /** §11 — TTL روابط إثبات التسليم الموقّعة: 5 دقائق تكفي للعرض ولا تسرّب وصولاً دائماً. */
+  private static readonly POD_URL_TTL_S = 300;
 
   // §4.4 — عرض السعر قبل الحفظ: الداشبورد تستدعي quote ثم تعرض التفصيل ثم create
   async quote(authorization: string | undefined, body: unknown): Promise<QuoteResponse> {
@@ -453,6 +473,26 @@ export class OrdersService {
         )
         .orderBy(desc(offers.createdAt));
 
+      // §11 — مرفقات إثبات التسليم + روابط GET موقّعة قصيرة العمر (بلا فتح البكت)
+      const attachmentRows = await tx
+        .select({
+          id: orderAttachments.id,
+          kind: orderAttachments.kind,
+          objectKey: orderAttachments.objectKey,
+          createdAt: orderAttachments.createdAt,
+        })
+        .from(orderAttachments)
+        .where(eq(orderAttachments.orderId, orderId))
+        .orderBy(desc(orderAttachments.createdAt));
+      const attachments: OrderAttachmentView[] = await Promise.all(
+        attachmentRows.map(async (a) => ({
+          id: a.id,
+          kind: a.kind,
+          createdAt: a.createdAt.toISOString(),
+          url: this.storage !== null ? await this.storage.getSignedGetUrl(a.objectKey, OrdersService.POD_URL_TTL_S) : null,
+        })),
+      );
+
       return {
         order: {
           id: row.id,
@@ -508,6 +548,7 @@ export class OrdersService {
           respondedAt: o.respondedAt?.toISOString() ?? null,
           createdAt: o.createdAt.toISOString(),
         })),
+        attachments,
       };
     });
   }

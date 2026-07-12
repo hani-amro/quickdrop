@@ -3,6 +3,7 @@ import {
   driverLocations,
   drivers,
   InvalidTransitionError,
+  orderAttachments,
   orders,
   rejectOffer,
   tenants,
@@ -13,6 +14,12 @@ import {
   type Tx,
 } from "@quickdrop/db";
 import { makePoint, publishRt, RT_EVENTS, toPostgisWkt, type RtPublishClient, type TgUpdateJob } from "@quickdrop/shared";
+import {
+  ImageValidationError,
+  podKey,
+  validateAndReencode,
+  type StorageClient,
+} from "@quickdrop/storage";
 import {
   computeIsSuspect,
   decryptBotToken,
@@ -120,6 +127,8 @@ export interface UpdateProcessorDeps {
   masterKey: Buffer;
   /** §10.1 — ناشر الوقت الحقيقي: PUBLISH على قناة RT_REDIS_CHANNEL (عملياً نفس عميل ioredis). */
   rtRedis: RtPublishClient;
+  /** §11 — تخزين إثبات التسليم (S3/MinIO). null = POD معطّل (بلا S3 مُهيّأ). */
+  storage: StorageClient | null;
 }
 
 /**
@@ -200,6 +209,69 @@ export async function recordDriverLocation(
   }
 }
 
+// §11 v1.1 — إثبات التسليم: صورة من سائق له طلب نشط (picked_up..arrived) →
+// إعادة ترميز (sharp: يقتل أي payload + يمسح EXIF، فحص magic bytes + حد 10MB داخل
+// validateAndReencode) ← رفع S3 ← INSERT order_attachments. التنزيل تمّ سلفاً بمعالج
+// البوت (خارج أي ترانزاكشن، D9)؛ هنا الترميز والتخزين ثم الإدراج الذرّي.
+type PodPhotoResult =
+  | { outcome: "stored"; publicCode: string }
+  | { outcome: "no_active_order" }
+  | { outcome: "rejected"; reason: string };
+
+const POD_ACTIVE_STATUSES = ["picked_up", "in_transit", "arrived"] as const;
+
+async function recordPodPhoto(
+  deps: UpdateProcessorDeps,
+  tenantId: string,
+  driverId: string,
+  imageBuffer: Buffer,
+): Promise<PodPhotoResult> {
+  if (deps.storage === null) return { outcome: "no_active_order" }; // حارس نوعي — لا يُستدعى أصلاً
+
+  // الطلب النشط للسائق (أحدثها) — القراءة سريعة قبل عمل التخزين المكلف
+  const active = await withTenant(deps.appDb, tenantId, (tx) =>
+    tx
+      .select({ id: orders.id, publicCode: orders.publicCode })
+      .from(orders)
+      .where(
+        and(
+          eq(orders.driverId, driverId),
+          inArray(orders.status, [...POD_ACTIVE_STATUSES]),
+          isNull(orders.deletedAt),
+        ),
+      )
+      .orderBy(desc(orders.updatedAt))
+      .limit(1),
+  );
+  const order = active[0];
+  if (!order) return { outcome: "no_active_order" };
+
+  // §11 — إعادة الترميز والفحص (magic bytes/الحجم/فك الترميز) خارج أي ترانزاكشن
+  let reencoded;
+  try {
+    reencoded = await validateAndReencode(imageBuffer);
+  } catch (error) {
+    if (error instanceof ImageValidationError) return { outcome: "rejected", reason: error.reason };
+    throw error; // §16.12 — غير أخطاء التحقق يُعاد رميه
+  }
+
+  const key = podKey(tenantId, order.id, "jpg");
+  await deps.storage.putObject(key, reencoded.buffer, reencoded.contentType); // شبكة — خارج الترانزاكشن (D9)
+
+  // الإدراج الذرّي فقط داخل withTenant (§2.3)
+  await withTenant(deps.appDb, tenantId, (tx) =>
+    tx.insert(orderAttachments).values({
+      tenantId,
+      orderId: order.id,
+      kind: "pod_photo",
+      objectKey: key,
+      createdBy: driverId,
+    }),
+  );
+
+  return { outcome: "stored", publicCode: order.publicCode };
+}
+
 async function markProcessed(deps: UpdateProcessorDeps, tenantId: string, rowId: string): Promise<void> {
   await withTenant(deps.appDb, tenantId, (tx) =>
     tx
@@ -265,6 +337,10 @@ export async function processUpdate(deps: UpdateProcessorDeps, job: TgUpdateJob)
         acceptOffer: (offerId, driverId) => acceptOffer(deps.appDb, job.tenantId, offerId, driverId),
         rejectOffer: (offerId, driverId) => rejectOffer(deps.appDb, job.tenantId, offerId, driverId),
         onLocation: (driverId, point, recordedAt) => recordDriverLocation(deps, job.tenantId, driverId, point, recordedAt),
+        // §11 — إثبات التسليم بالصورة (POD): معطّل إن لم يُهيَّأ التخزين (deps.storage=null)
+        ...(deps.storage !== null
+          ? { onPodPhoto: (driverId, buffer) => recordPodPhoto(deps, job.tenantId, driverId, buffer) }
+          : {}),
       });
       registerCustomerFlow(created, {
         db: deps.appDb,

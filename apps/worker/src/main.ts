@@ -17,6 +17,7 @@ import { z } from "zod";
 import { createBroadcastProcessor } from "./broadcast-consumer.js";
 import { createDispatchProcessor, DISPATCH_JOB_OPTS, offerTimeoutJobId } from "./dispatch-worker.js";
 import { createNotificationsProcessor, offerTimeoutDelayMs } from "./notifications-consumer.js";
+import { createStorageClient, tryLoadStorageConfig } from "@quickdrop/storage";
 import { startHousekeeping } from "./housekeeping.js";
 import { initSentry, startMetricsServer } from "./observability.js";
 import { startOutboxPoller } from "./outbox-poller.js";
@@ -46,6 +47,13 @@ const queue = new Queue(TG_UPDATES_QUEUE, { connection: redis });
 const notificationsQueue = new Queue<NotificationJob>(NOTIFICATIONS_QUEUE, { connection: redis });
 const dispatchQueue = new Queue<DispatchJob>(DISPATCH_QUEUE, { connection: redis });
 
+// §11 — عميل تخزين إثبات التسليم (S3/MinIO). غياب إعداد S3 → null → POD معطّل بلطف.
+const storageConfig = tryLoadStorageConfig(process.env);
+const storage = storageConfig !== null ? createStorageClient(storageConfig) : null;
+if (storage === null) {
+  console.warn(JSON.stringify({ action: "worker_started", pod_storage: "disabled_no_s3_config" }));
+}
+
 // معالجة التحديثات (بوت الزبون §4.3/§4.4) — المنطق بـ update-processor.ts
 const updateProcessorDeps: UpdateProcessorDeps = {
   appDb: appDb.db,
@@ -53,6 +61,7 @@ const updateProcessorDeps: UpdateProcessorDeps = {
   redis,
   masterKey,
   rtRedis: redis, // §10.1 — نشر driver.location على قناة الوقت الحقيقي (نفس العميل)
+  storage, // §11 — إثبات التسليم بالصورة
 };
 
 // §12 — الطوابير ليست مصدر حقيقة: عند الإقلاع أعد بناء المهام الفائتة من القاعدة.

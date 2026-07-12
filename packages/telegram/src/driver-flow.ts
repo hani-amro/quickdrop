@@ -41,7 +41,19 @@ export interface DriverFlowDeps {
   rejectOffer(offerId: string, driverId: string): Promise<void>;
   /** §7 — كل نقطة موقع (live أو عادية): INSERT driver_locations + فحص is_suspect عند الإدخال. */
   onLocation(driverId: string, point: { lat: number; lng: number }, recordedAt: Date): Promise<void>;
+  /**
+   * §11 — إثبات التسليم بالصورة: السائق يرسل صورة لطلبه النشط → إعادة ترميز (sharp،
+   * يقتل payload + يمسح EXIF) وتخزين S3، وINSERT order_attachments. المنفّذ بالـ worker
+   * (يملك القاعدة + عميل التخزين). غيابه (undefined) = POD معطّل (بلا S3 مُهيّأ).
+   * يرجع نتيجة يُشتق منها الرد (لا active order / صيغة مرفوضة / نجاح).
+   */
+  onPodPhoto?: (driverId: string, imageBuffer: Buffer) => Promise<PodPhotoResult>;
 }
+
+export type PodPhotoResult =
+  | { outcome: "stored"; publicCode: string }
+  | { outcome: "no_active_order" }
+  | { outcome: "rejected"; reason: string };
 
 // —— نصوص أزرار الوردية (reply keyboard) — ثابتة كي يطابقها bot.hears حرفياً ——
 export const BTN_SHIFT_START = "🟢 ابدأ وردية";
@@ -436,6 +448,54 @@ export function registerDriverFlow(bot: Bot, deps: DriverFlowDeps): void {
       }
       const recordedAt = new Date(ctx.message.date * 1000); // D6: تحويل صريح
       await deps.onLocation(driver.driverId, fromTelegram(ctx.message.location), recordedAt);
+    }),
+  );
+
+  // §11 — إثبات التسليم: صورة من سائق له طلب نشط. لغير السائق → next() (الزبون قد
+  // يرسل صوراً بتدفقه). التنزيل من تيليغرام ثم onPodPhoto (الـ worker يعيد الترميز
+  // ويخزّن) — كله خارج أي ترانزاكشن قاعدة (D9: نداء الشبكة لا يمسك اتصال قاعدة).
+  bot.on(
+    "message:photo",
+    guard(deps, "pod_photo", async (ctx, next) => {
+      if (!ctx.from) return;
+      const driver = await resolveDriver(deps, ctx.from.id);
+      if (!driver) {
+        await next();
+        return;
+      }
+      if (!deps.onPodPhoto) return; // POD معطّل (بلا S3 مُهيّأ) — تجاهل بصمت
+      // §11: أكبر مقاس (آخر عنصر) — أوضح إثبات
+      const photos = ctx.message.photo;
+      const largest = photos[photos.length - 1];
+      if (!largest) return;
+
+      let buffer: Buffer;
+      try {
+        const file = await ctx.api.getFile(largest.file_id);
+        if (file.file_path === undefined) return;
+        const url = `https://api.telegram.org/file/bot${bot.token}/${file.file_path}`;
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`telegram file download failed: ${res.status}`);
+        buffer = Buffer.from(await res.arrayBuffer());
+      } catch {
+        // §16.12 — لا ابتلاع صامت للفشل، لكن لا نُسقط معالجة التحديث: رسالة لطيفة + لوغ
+        console.error(JSON.stringify({ action: "pod_download", outcome: "error", tenantId: deps.tenantId }));
+        await ctx.reply("تعذّر استلام الصورة 😕 جرّب تبعتها مرة تانية.");
+        return;
+      }
+
+      const result = await deps.onPodPhoto(driver.driverId, buffer);
+      switch (result.outcome) {
+        case "stored":
+          await ctx.reply(`استلمنا صورة إثبات التسليم للطلب #${escapeHtml(result.publicCode)} ✅`);
+          return;
+        case "no_active_order":
+          await ctx.reply("ما عندك طلب نشط حالياً لنربط فيه الصورة 🤔");
+          return;
+        case "rejected":
+          await ctx.reply("الصورة غير مقبولة (صيغة أو حجم) 🚫 ابعت صورة عادية أصغر من 10 ميغا.");
+          return;
+      }
     }),
   );
 }
