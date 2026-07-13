@@ -39,6 +39,10 @@ describe("classifyRoute — تصنيف المسار لطبقة الحدّ", () =
   it("POST /api/auth/login → طبقة login الأضيق", () => {
     expect(classifyRoute("POST", "/api/auth/login")).toBe(RATE_TIERS.login);
   });
+  it("POST مسارات إثبات الهوية الأخرى (TOTP + دخول المشرف) → طبقة login", () => {
+    expect(classifyRoute("POST", "/api/auth/totp/verify")).toBe(RATE_TIERS.login);
+    expect(classifyRoute("POST", "/api/admin/auth/login")).toBe(RATE_TIERS.login);
+  });
   it("GET على مسار الدخول ليس قوة غاشمة → العام", () => {
     expect(classifyRoute("GET", "/api/auth/login")).toBe(RATE_TIERS.global);
   });

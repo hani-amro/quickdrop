@@ -9,6 +9,7 @@
     "start": "node dist/main.js",
     "provision-tenant": "tsx src/cli/provision-tenant.ts",
     "create-staff": "tsx src/cli/create-staff.ts",
+    "create-admin": "tsx src/cli/create-admin.ts",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": {

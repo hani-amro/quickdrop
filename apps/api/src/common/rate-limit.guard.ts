@@ -74,7 +74,16 @@ export function classifyRoute(method: string, path: string): RateTier | null {
   if (path === "/health" || path.startsWith("/health/")) return null;
   if (path === "/metrics") return null; // §13 — كشط Prometheus الداخلي: 429 عليه يعمي المراقبة
   if (path.startsWith("/tg/")) return null;
-  if (method === "POST" && path === "/api/auth/login") return RATE_TIERS.login;
+  // §11 — كل مسارات إثبات الهوية (كلمة سر أو TOTP، للطاقم أو المشرف) بطبقة login الأضيق:
+  // قوة غاشمة على أيّها تُخنق بنفس الحد (10/دقيقة/IP) — بما فيها تخمين رمز TOTP السداسي.
+  if (
+    method === "POST" &&
+    (path === "/api/auth/login" ||
+      path === "/api/auth/totp/verify" ||
+      path === "/api/admin/auth/login")
+  ) {
+    return RATE_TIERS.login;
+  }
   if (path.startsWith("/public/track")) return RATE_TIERS.track;
   return RATE_TIERS.global;
 }

@@ -10,6 +10,9 @@ import { Queue } from "bullmq";
 import { Redis } from "ioredis";
 import { AdminController } from "./admin/admin.controller.js";
 import { AdminService } from "./admin/admin.service.js";
+import { AdminAuthController } from "./admin/admin-auth.controller.js";
+import { AdminAuthService } from "./admin/admin-auth.service.js";
+import { AdminGuard } from "./admin/admin.guard.js";
 import { AnalyticsController } from "./analytics/analytics.controller.js";
 import { AnalyticsService } from "./analytics/analytics.service.js";
 import { AuthController } from "./auth/auth.controller.js";
@@ -47,6 +50,7 @@ import { TrackingController } from "./tracking/tracking.controller.js";
     BroadcastsController, // §4.3/§14 — POST/GET /api/broadcasts
     AnalyticsController, // §13 — GET /api/analytics
     AdminController, // §14 — كونسول المشرف: /api/admin/* (مصادقة منفصلة)
+    AdminAuthController, // §10.2 — دخول المشرف المنفصل: /api/admin/auth/* (جلسات qd_admin)
     TrackingController, // §7 — عام بلا auth: /public/track/:token
     AuthController, // §10.2 — دخول/خروج/هوية الطاقم (jلسات cookie)
     MetricsController, // §13 — GET /metrics لـ Prometheus (معفى من الحارسَين)
@@ -61,6 +65,9 @@ import { TrackingController } from "./tracking/tracking.controller.js";
     // §10.2 — حارس عام: مسارات /api/* للطاقم تتطلب جلسة cookie أو Bearer STAFF_API_TOKEN
     // (session.guard يعفي auth/admin/العامة). دفاع مزدوج مع تحقق طبقة الخدمات.
     { provide: APP_GUARD, useClass: SessionGuard },
+    // §10.2 — حارس عام مستقل لكونسول المشرف: /api/admin/* تتطلب جلسة qd_admin أو Bearer
+    // ADMIN_API_TOKEN (admin.guard يعفي /api/admin/auth الذاتية). دفاع مزدوج مع الخدمة.
+    { provide: APP_GUARD, useClass: AdminGuard },
     { provide: ENV, useFactory: (): ApiEnv => loadEnv() },
     {
       provide: DB,
@@ -92,8 +99,10 @@ import { TrackingController } from "./tracking/tracking.controller.js";
     BroadcastsService, // §4.3/§14 — البث الجماهيري
     AnalyticsService, // §13 — تحليلات اللوحة
     AdminService, // §14 — دورة حياة المستأجر والباقات
-    AuthService, // §10.2 — مصادقة الطاقم (argon2id + جلسات Redis)
+    AdminAuthService, // §10.2 — مصادقة المشرف الحقيقية (admin_users + جلسات qd_admin)
+    AuthService, // §10.2 — مصادقة الطاقم (argon2id + جلسات Redis + TOTP)
     SessionGuard, // مزوّد الحارس العام أعلاه
+    AdminGuard, // مزوّد حارس المشرف العام أعلاه
   ],
 })
 export class AppModule implements OnApplicationShutdown {

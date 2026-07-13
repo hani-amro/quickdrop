@@ -1,15 +1,19 @@
-import { Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { Inject, Injectable, NotFoundException, ServiceUnavailableException } from "@nestjs/common";
 import {
   TenantNotFoundError,
   extendTrial,
   listTenantsHealth,
+  recordImpersonationStart,
   recordTenantPayment,
   setTenantStatus,
+  tenants,
   type DbHandle,
 } from "@quickdrop/db";
 import { TENANT_STATUSES, type TenantPlan, type TenantStatus } from "@quickdrop/shared";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 import { DB, ENV } from "../app.module.js";
+import { AuthService } from "../auth/auth.service.js";
 import { assertAdminToken } from "../common/admin-http.js";
 import { parseOr400, uuidSchema } from "../common/staff-http.js";
 import type { ApiEnv } from "../env.js";
@@ -70,11 +74,19 @@ export interface RecordPaymentResponse {
   payment: { id: string; amount: string; currency: string; periodNote: string | null; createdAt: string };
 }
 
+export interface ImpersonateResult {
+  sessionId: string;
+  tenantSlug: string;
+  expiresInS: number;
+}
+
 @Injectable()
 export class AdminService {
   constructor(
     @Inject(DB) private readonly handle: DbHandle,
     @Inject(ENV) private readonly env: ApiEnv,
+    // §10.2 — "الدخول كمكتب" يصدر جلسة طاقم مقيّدة القراءة عبر خدمة مصادقة الطاقم
+    private readonly auth: AuthService,
   ) {}
 
   // §14 — GET /api/admin/tenants: صحّة كل المستأجرين (نبض النشاط + الباقة/الحالة + السائقون).
@@ -149,6 +161,44 @@ export class AdminService {
     } catch (error) {
       throw this.mapTenantError(error);
     }
+  }
+
+  /**
+   * §10.2 — "الدخول كمكتب" للدعم: يصدر جلسة طاقم مقيّدة القراءة (30 دقيقة) للمستأجر
+   * + قيد audit_log (actorAdminId، action 'impersonate_start'). التخويل بـ AdminGuard
+   * أمام المسار (يمرّر adminId من جلسة المشرف)؛ لا نُصدر جلسة انتحال بلا هوية مشرف حقيقية
+   * (staffId/adminId بالجلسة + FK التدقيق يتطلبانها). مستأجر موقوف/مغادر = 404 (لا شيء لمشاهدته).
+   */
+  async impersonate(adminId: string | undefined, id: string): Promise<ImpersonateResult> {
+    const tenantId = parseOr400(uuidSchema, id, "admin_impersonate_id");
+
+    const rows = await this.handle.db
+      .select({ id: tenants.id, slug: tenants.slug, status: tenants.status })
+      .from(tenants)
+      .where(eq(tenants.id, tenantId))
+      .limit(1);
+    const tenant = rows[0];
+    if (!tenant || tenant.status === "suspended" || tenant.status === "churned") {
+      throw new NotFoundException("not found");
+    }
+
+    // هوية الفاعل: جلسة المشرف (AdminGuard) أو ADMIN_ID المؤقت للـ bootstrap بـ Bearer.
+    const effectiveAdminId = adminId ?? this.env.ADMIN_ID;
+    if (effectiveAdminId === undefined) {
+      // جلسة الانتحال تحتاج معرّف مشرف (توقيع + FK التدقيق) — لا هوية = لا انتحال.
+      throw new ServiceUnavailableException("impersonation requires an admin identity");
+    }
+
+    // القيد أولاً: لا جلسة انتحال بلا أثر تدقيق. (audit_log بـ RLS → withTenant داخل الدالة.)
+    await recordImpersonationStart(this.handle.db, tenantId, effectiveAdminId);
+
+    const session = await this.auth.createImpersonationSession({
+      tenantId,
+      tenantSlug: tenant.slug,
+      adminId: effectiveAdminId,
+    });
+    console.log(JSON.stringify({ action: "impersonate_start", tenant_id: tenantId, actor: effectiveAdminId }));
+    return { sessionId: session.sessionId, tenantSlug: tenant.slug, expiresInS: session.expiresInS };
   }
 
   private assertAdminToken(authorization: string | undefined): void {

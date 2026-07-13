@@ -1,4 +1,11 @@
-import { Inject, Injectable, UnauthorizedException, type CanActivate, type ExecutionContext } from "@nestjs/common";
+import {
+  ForbiddenException,
+  Inject,
+  Injectable,
+  UnauthorizedException,
+  type CanActivate,
+  type ExecutionContext,
+} from "@nestjs/common";
 import { secretsEqual } from "@quickdrop/shared";
 import type { Request } from "express";
 import { SESSION_VERIFIED_AUTHORIZATION } from "../common/staff-http.js";
@@ -17,12 +24,20 @@ import { parseCookies, SESSION_COOKIE } from "./cookie.js";
  * أي المسارات يحرسها هذا الحارس — نقية للاختبار:
  * - خارج /api/* (health، public/track، tg webhook) = بواباتها الخاصة، ليست نطاق الطاقم.
  * - /api/admin/* = نطاق مشرف منفصل تماماً (§10.2) — assertAdminToken بالخدمة.
- * - ثلاثي /api/auth بالقائمة الحصرية = مصادقة ذاتية (login مفتوح؛ me/logout يقرآن
- *   الكوكي بنفسيهما) — أي مسار auth مستقبلي يُحرس افتراضياً، لا فتح مفتوح.
+ * - مسارات /api/auth ذاتية المصادقة بالقائمة الحصرية: login/totp/verify (خطوتا الدخول)
+ *   وme/logout (تقرأ الكوكي بنفسها). enroll/confirm خارج القائمة → محروسة (تتطلب جلسة).
+ *   أي مسار auth مستقبلي يُحرس افتراضياً، لا فتح مفتوح.
  */
 export function isSessionGuardedPath(path: string): boolean {
   if (!path.startsWith("/api/")) return false;
-  if (path === "/api/auth/login" || path === "/api/auth/logout" || path === "/api/auth/me") return false;
+  if (
+    path === "/api/auth/login" ||
+    path === "/api/auth/totp/verify" ||
+    path === "/api/auth/logout" ||
+    path === "/api/auth/me"
+  ) {
+    return false;
+  }
   if (path === "/api/admin" || path.startsWith("/api/admin/")) return false;
   return true;
 }
@@ -72,6 +87,21 @@ export class SessionGuard implements CanActivate {
     const session = await this.auth.getSession(sessionId);
     if (session === null) {
       throw new UnauthorizedException();
+    }
+
+    // §10.2 — "الدخول كمكتب": جلسة انتحال مقيّدة القراءة تسمح بـ GET/HEAD فقط؛ أي
+    // فعل كتابة (POST/PATCH/DELETE/…) يُرفض 403 "جلسة مشاهدة" قبل أي عمل بالخدمة.
+    if (session.readonly === true && request.method !== "GET" && request.method !== "HEAD") {
+      console.warn(
+        JSON.stringify({
+          action: "session_guard",
+          outcome: "readonly_write_blocked",
+          tenant_id: session.tenantId,
+          actor: session.adminId ?? session.staffId,
+          method: request.method,
+        }),
+      );
+      throw new ForbiddenException("جلسة مشاهدة");
     }
 
     // §10.2 — نطاق الجلسة مستأجر واحد: tenantSlug المرسل (إن وُجد) يجب أن يطابق

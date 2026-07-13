@@ -13,3 +13,4 @@ export * from "./loyalty-redeem.js";
 export * from "./broadcasts.js";
 export * from "./analytics.js";
 export * from "./tenant-admin.js";
+export * from "./admin-auth.js";

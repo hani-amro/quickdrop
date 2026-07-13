@@ -1,4 +1,9 @@
-import { Body, Controller, Get, Headers, HttpCode, Param, Post } from "@nestjs/common";
+import { Body, Controller, Get, Headers, HttpCode, Inject, Param, Post, Req, Res } from "@nestjs/common";
+import type { Response } from "express";
+import { ENV } from "../tokens.js";
+import type { ApiEnv } from "../env.js";
+import { buildSessionCookie } from "../auth/cookie.js";
+import type { RequestWithAdmin } from "./admin.guard.js";
 import {
   AdminService,
   type ExtendTrialResponse,
@@ -16,7 +21,10 @@ import {
 // التحقق (Zod §11) والتخويل بالخدمة.
 @Controller("api/admin")
 export class AdminController {
-  constructor(private readonly admin: AdminService) {}
+  constructor(
+    private readonly admin: AdminService,
+    @Inject(ENV) private readonly env: ApiEnv,
+  ) {}
 
   @Get("tenants")
   async listTenants(
@@ -52,5 +60,19 @@ export class AdminController {
     @Body() body: unknown,
   ): Promise<RecordPaymentResponse> {
     return this.admin.recordPayment(authorization, id, body);
+  }
+
+  // §10.2 — "الدخول كمكتب": يصدر جلسة طاقم مقيّدة القراءة للمستأجر (Set-Cookie qd_session)
+  // ويرجع ما يلزم الداشبورد (المستأجر + المدة). التخويل بـ AdminGuard؛ adminId من جلسته.
+  @Post("tenants/:id/impersonate")
+  @HttpCode(200) // فعل يُصدر جلسة، ليس إنشاء مورد REST
+  async impersonate(
+    @Req() req: RequestWithAdmin,
+    @Param("id") id: string,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<{ tenantSlug: string; readonly: true; expiresInS: number }> {
+    const { sessionId, tenantSlug, expiresInS } = await this.admin.impersonate(req.adminSession?.adminId, id);
+    res.setHeader("Set-Cookie", buildSessionCookie(sessionId, this.env.NODE_ENV === "production"));
+    return { tenantSlug, readonly: true, expiresInS };
   }
 }

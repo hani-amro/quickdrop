@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
-import { Inject, Injectable, UnauthorizedException } from "@nestjs/common";
+import { BadRequestException, Inject, Injectable, UnauthorizedException } from "@nestjs/common";
 import { staff, tenants, withTenant, type DbHandle } from "@quickdrop/db";
 import { STAFF_ROLES, type StaffRole } from "@quickdrop/shared";
 import { and, eq } from "drizzle-orm";
@@ -11,13 +11,30 @@ import { DB, ENV, REDIS } from "../tokens.js";
 import type { ApiEnv } from "../env.js";
 import { SESSION_ID_RE, SESSION_TTL_S } from "./cookie.js";
 import { DUMMY_PASSWORD_HASH, verifyPassword } from "./hashing.js";
+import { generateTotpSecret, otpauthUrl, verifyTotp } from "./totp.js";
 
-// §10.2 — مصادقة الطاقم الحقيقية: email + argon2id + جلسات cookie عبر Redis.
-// TODO(§10.2): TOTP إلزامي لدور owner وaccountant — يُبنى فوق هذه الجلسات لاحقاً
-// (عمود staff.totp_secret موجود بالنموذج سلفاً): login ينجح ثم يطالب برمز TOTP
-// قبل إصدار الجلسة الكاملة. غير مبني بهذه المرحلة عمداً.
+// §10.2 — مصادقة الطاقم الحقيقية: email + argon2id + جلسات cookie عبر Redis، مع
+// TOTP إلزامي لدور owner وaccountant (RFC 6238، totp.ts). بعد نجاح كلمة السر:
+// إن كان الدور مُلزَماً وله سرّ TOTP → لا جلسة الآن بل "تحدّي TOTP" قصير بـ Redis ثم
+// verifyLoginTotp؛ وإن لم يسجّل سرّاً بعد → جلسة + mustEnrollTotp (يُلزَم بالتسجيل).
 
 const SESSION_KEY_PREFIX = "sess:";
+
+/** §10.2 — تحدّي TOTP وسيط (بعد كلمة السر، قبل الجلسة): يحمل هوية الموظف بمهلة قصيرة. */
+const MFA_CHALLENGE_PREFIX = "mfa:";
+const MFA_CHALLENGE_TTL_S = 5 * 60; // 5 دقائق لإدخال الرمز
+
+/** §10.2 — سرّ تسجيل TOTP معلّق (بين enroll وconfirm): لا يُثبَّت بـ staff حتى تأكيد رمز صحيح. */
+const TOTP_ENROLL_PREFIX = "mfa_enroll:";
+const TOTP_ENROLL_TTL_S = 10 * 60;
+
+/** §10.2 — "الدخول كمكتب": جلسة طاقم مقيّدة القراءة مدتها 30 دقيقة (readonly + adminId). */
+const IMPERSONATION_TTL_S = 30 * 60;
+
+/** الأدوار المُلزَمة بـ TOTP (§10.2). */
+function totpMandatory(role: StaffRole): boolean {
+  return role === "owner" || role === "accountant";
+}
 
 /** §11 — فشل الدخول برسالة عامة واحدة + تأخير ثابت: لا يفرّق بريداً مجهولاً عن كلمة سر خاطئة. */
 const FAILED_LOGIN_DELAY_MS = 300;
@@ -36,14 +53,44 @@ const sessionSchema = z.object({
   tenantId: z.string().uuid(),
   tenantSlug: slugSchema, // مقارنة نطاق الجلسة بالحارس دون رحلة قاعدة (§10.2: جلسة = مستأجر واحد)
   role: z.enum(STAFF_ROLES),
+  // §10.2 — "الدخول كمكتب": جلسة انتحال مقيّدة القراءة (GET فقط بالحارس) موقّعة بمعرّف المشرف
+  readonly: z.boolean().optional(),
+  adminId: z.string().uuid().optional(),
 });
 
 export type StaffSession = z.infer<typeof sessionSchema>;
 
-export interface LoginResult {
+// §10.2 — تحدّي TOTP بـ Redis: هوية الموظف كاملة كي تُبنى الجلسة بعد التحقق دون
+// إعادة كشف الموظف. لا يُخزَّن سرّ TOTP هنا — يُعاد جلبه من القاعدة عند التحقق.
+const mfaChallengeSchema = z.object({
+  staffId: z.string().uuid(),
+  tenantId: z.string().uuid(),
+  tenantSlug: slugSchema,
+  role: z.enum(STAFF_ROLES),
+});
+
+const totpVerifySchema = z.object({
+  challenge: z.string().regex(SESSION_ID_RE), // نفس شكل معرّف الجلسة: 128-bit hex
+  token: z.string().trim().regex(/^\d{6}$/),
+});
+
+const totpTokenSchema = z.object({
+  token: z.string().trim().regex(/^\d{6}$/),
+});
+
+/** جلسة مُصدَرة (بعد كلمة سر لدور بلا TOTP، أو بعد تحقق TOTP). */
+export interface AuthSessionIssued {
   sessionId: string;
   role: StaffRole;
 }
+
+/**
+ * §10.2 — نتيجة الدخول: إمّا جلسة مباشرة (أدوار بلا TOTP، أو owner/accountant لم
+ * يسجّل سرّاً بعد → mustEnrollTotp)، وإمّا تحدّي TOTP (دور مُلزَم وله سرّ مُفعّل).
+ */
+export type LoginResult =
+  | { kind: "session"; sessionId: string; role: StaffRole; mustEnrollTotp: boolean }
+  | { kind: "mfa_required"; challenge: string };
 
 @Injectable()
 export class AuthService {
@@ -74,7 +121,13 @@ export class AuthService {
 
     const staffRows = await withTenant(this.handle.db, tenant.id, (tx) =>
       tx
-        .select({ id: staff.id, passwordHash: staff.passwordHash, role: staff.role, isActive: staff.isActive })
+        .select({
+          id: staff.id,
+          passwordHash: staff.passwordHash,
+          role: staff.role,
+          isActive: staff.isActive,
+          totpSecret: staff.totpSecret,
+        })
         .from(staff)
         .where(and(eq(staff.tenantId, tenant.id), eq(staff.email, input.email)))
         .limit(1),
@@ -95,20 +148,182 @@ export class AuthService {
       return this.failLogin("bad_password", input.tenantSlug);
     }
 
-    const sessionId = randomBytes(16).toString("hex"); // 128-bit
-    const session: StaffSession = {
-      staffId: member.id,
-      tenantId: tenant.id,
-      tenantSlug: input.tenantSlug,
-      role: member.role,
-    };
-    await this.redis.set(SESSION_KEY_PREFIX + sessionId, JSON.stringify(session), "EX", SESSION_TTL_S);
+    // §10.2 — دور مُلزَم بـ TOTP وله سرّ مُفعّل: لا جلسة الآن؛ أصدر تحدّياً وسيطاً
+    // (Redis) ثم POST /api/auth/totp/verify يُكمل الدخول. لا يُخزَّن السرّ بالتحدّي.
+    if (totpMandatory(member.role) && member.totpSecret !== null) {
+      const challenge = randomBytes(16).toString("hex"); // 128-bit
+      const payload: z.infer<typeof mfaChallengeSchema> = {
+        staffId: member.id,
+        tenantId: tenant.id,
+        tenantSlug: input.tenantSlug,
+        role: member.role,
+      };
+      await this.redis.set(MFA_CHALLENGE_PREFIX + challenge, JSON.stringify(payload), "EX", MFA_CHALLENGE_TTL_S);
+      console.log(
+        JSON.stringify({ action: "auth_login", outcome: "mfa_required", tenant_id: tenant.id, actor: member.id }),
+      );
+      return { kind: "mfa_required", challenge };
+    }
 
+    // جلسة مباشرة. owner/accountant بلا سرّ TOTP بعد → mustEnrollTotp (الواجهة تُلزمه بالتسجيل).
+    const mustEnrollTotp = totpMandatory(member.role) && member.totpSecret === null;
+    const sessionId = await this.issueSession(
+      { staffId: member.id, tenantId: tenant.id, tenantSlug: input.tenantSlug, role: member.role },
+      SESSION_TTL_S,
+    );
     // §13 — لوغ منظّم بحقول ثابتة: معرّفات فقط، لا بريد ولا كوكي (§11)
     console.log(
       JSON.stringify({ action: "auth_login", outcome: "ok", tenant_id: tenant.id, actor: member.id, role: member.role }),
     );
-    return { sessionId, role: member.role };
+    return { kind: "session", sessionId, role: member.role, mustEnrollTotp };
+  }
+
+  /**
+   * §10.2 — إكمال الدخول بعد تحدّي TOTP: يتحقق من الرمز ضد سرّ الموظف (يُعاد جلبه من
+   * القاعدة، لا من التحدّي) ثم يُصدر الجلسة الكاملة. كل فشل = رسالة عامة + تأخير ثابت (§11).
+   * التحدّي يُستهلك مرة واحدة (يُحذف عند النجاح) — لا إعادة استخدام.
+   */
+  async verifyLoginTotp(body: unknown): Promise<AuthSessionIssued> {
+    const input = parseOr400(totpVerifySchema, body, "auth_totp_verify");
+
+    let raw: string | null;
+    try {
+      raw = await this.withTimeout(this.redis.get(MFA_CHALLENGE_PREFIX + input.challenge), 200);
+    } catch {
+      console.warn(JSON.stringify({ action: "auth_totp_verify", outcome: "redis_unavailable" }));
+      return this.failTotp("redis_unavailable");
+    }
+    if (raw === null) return this.failTotp("challenge_missing"); // منتهٍ أو غير موجود
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      console.error(JSON.stringify({ action: "auth_totp_verify", outcome: "corrupt_challenge_json" })); // §16.12
+      return this.failTotp("corrupt_challenge");
+    }
+    const challenge = mfaChallengeSchema.safeParse(parsed);
+    if (!challenge.success) {
+      console.error(JSON.stringify({ action: "auth_totp_verify", outcome: "corrupt_challenge_shape" }));
+      return this.failTotp("corrupt_challenge");
+    }
+    const payload = challenge.data;
+
+    const rows = await withTenant(this.handle.db, payload.tenantId, (tx) =>
+      tx
+        .select({ totpSecret: staff.totpSecret, isActive: staff.isActive })
+        .from(staff)
+        .where(and(eq(staff.tenantId, payload.tenantId), eq(staff.id, payload.staffId)))
+        .limit(1),
+    );
+    const member = rows[0];
+    if (!member || !member.isActive || member.totpSecret === null) {
+      return this.failTotp("staff_or_secret_missing");
+    }
+    if (!verifyTotp(member.totpSecret, input.token)) {
+      return this.failTotp("bad_totp"); // التحدّي يبقى حياً — يعيد المستخدم المحاولة ضمن مهلته
+    }
+
+    await this.redis.del(MFA_CHALLENGE_PREFIX + input.challenge);
+    const sessionId = await this.issueSession(
+      { staffId: payload.staffId, tenantId: payload.tenantId, tenantSlug: payload.tenantSlug, role: payload.role },
+      SESSION_TTL_S,
+    );
+    console.log(
+      JSON.stringify({
+        action: "auth_login",
+        outcome: "ok_mfa",
+        tenant_id: payload.tenantId,
+        actor: payload.staffId,
+        role: payload.role,
+      }),
+    );
+    return { sessionId, role: payload.role };
+  }
+
+  /**
+   * §10.2 — بدء تسجيل TOTP (بجلسة صالحة): يولّد سرّاً ويخزّنه معلّقاً بـ Redis (لا يُثبَّت
+   * بـ staff حتى confirm برمز صحيح)، ويرجع otpauth URL للعرض كـ QR بالداشبورد.
+   */
+  async enrollTotp(session: StaffSession): Promise<{ otpauthUrl: string }> {
+    const rows = await withTenant(this.handle.db, session.tenantId, (tx) =>
+      tx
+        .select({ email: staff.email })
+        .from(staff)
+        .where(and(eq(staff.tenantId, session.tenantId), eq(staff.id, session.staffId)))
+        .limit(1),
+    );
+    const member = rows[0];
+    if (!member) {
+      // جلسة بلا موظف مقابل (مثلاً جلسة انتحال) — لا تسجيل TOTP لها
+      throw new UnauthorizedException();
+    }
+    const secret = generateTotpSecret();
+    await this.redis.set(TOTP_ENROLL_PREFIX + session.staffId, secret, "EX", TOTP_ENROLL_TTL_S);
+    // الملصق يظهر بتطبيق المصادقة — بريد الموظف داخل نطاق المستأجر
+    return { otpauthUrl: otpauthUrl(secret, `${session.tenantSlug}:${member.email}`, "QuickDrop") };
+  }
+
+  /**
+   * §10.2 — تثبيت TOTP: يتحقق من رمز مقابل السرّ المعلّق ثم يكتبه بـ staff.totp_secret
+   * (عبر withTenant). السرّ يُخزَّن كما هو (dev)؛ تشفيره بـ MASTER_KEY (§4.2) تحسين لاحق.
+   */
+  async confirmTotpEnroll(session: StaffSession, body: unknown): Promise<{ ok: true }> {
+    const input = parseOr400(totpTokenSchema, body, "auth_totp_enroll_confirm");
+    const secret = await this.redis.get(TOTP_ENROLL_PREFIX + session.staffId);
+    if (secret === null) {
+      throw new BadRequestException("no pending enrollment"); // انتهى أو لم يُبدأ enroll
+    }
+    if (!verifyTotp(secret, input.token)) {
+      await sleep(FAILED_LOGIN_DELAY_MS);
+      throw new UnauthorizedException(); // السرّ المعلّق يبقى — يعيد المحاولة ضمن مهلته
+    }
+    await withTenant(this.handle.db, session.tenantId, (tx) =>
+      tx
+        .update(staff)
+        .set({ totpSecret: secret, updatedAt: new Date() })
+        .where(and(eq(staff.tenantId, session.tenantId), eq(staff.id, session.staffId))),
+    );
+    await this.redis.del(TOTP_ENROLL_PREFIX + session.staffId);
+    console.log(
+      JSON.stringify({ action: "auth_totp_enrolled", tenant_id: session.tenantId, actor: session.staffId }),
+    );
+    return { ok: true };
+  }
+
+  /**
+   * §10.2 — "الدخول كمكتب": جلسة طاقم مقيّدة القراءة (readonly) للمستأجر مدة 30 دقيقة،
+   * موقّعة بمعرّف المشرف. staffId = adminId (الفاعل مشرف لا موظف)، والدور owner لرؤية
+   * قراءة كاملة؛ كل كتابة يحجبها الحارس (readonly → GET فقط). الاستدعاء بعد تحقق المشرف.
+   */
+  async createImpersonationSession(input: {
+    tenantId: string;
+    tenantSlug: string;
+    adminId: string;
+  }): Promise<{ sessionId: string; role: StaffRole; expiresInS: number }> {
+    const session: StaffSession = {
+      staffId: input.adminId,
+      tenantId: input.tenantId,
+      tenantSlug: input.tenantSlug,
+      role: "owner",
+      readonly: true,
+      adminId: input.adminId,
+    };
+    const sessionId = await this.issueSession(session, IMPERSONATION_TTL_S);
+    return { sessionId, role: session.role, expiresInS: IMPERSONATION_TTL_S };
+  }
+
+  /** يكتب جلسة طاقم بـ Redis بمعرّف 128-bit وTTL معطى ويرجع المعرّف. */
+  private async issueSession(session: StaffSession, ttlS: number): Promise<string> {
+    const sessionId = randomBytes(16).toString("hex"); // 128-bit
+    await this.redis.set(SESSION_KEY_PREFIX + sessionId, JSON.stringify(session), "EX", ttlS);
+    return sessionId;
+  }
+
+  /** §11 — فشل تحقق TOTP: رسالة عامة + تأخير ثابت؛ السبب باللوغ فقط (بلا معرّفات مكشوفة). */
+  private async failTotp(reason: string): Promise<never> {
+    console.warn(JSON.stringify({ action: "auth_totp_verify", outcome: "failed", reason }));
+    await sleep(FAILED_LOGIN_DELAY_MS);
+    throw new UnauthorizedException("invalid credentials");
   }
 
   /** جلسة صالحة أو null — معرّف بغير شكل إصداراتنا يُرفض قبل Redis. */

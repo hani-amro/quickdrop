@@ -52,6 +52,10 @@ export const orders = pgTable(
     recipientPhone: text("recipient_phone"), // الطلب لشخص آخر (الفخ 16)
     scheduledAt: timestamptz("scheduled_at"),
     promisedAt: timestamptz("promised_at"), // لقطة الوعد لحظة confirmed — لا تُعاد كتابتها
+    // §3 v1 — تبليغ/تأكيد التاجر (نسخة v1): الموزّع يتصل هاتفياً + زر "المطعم أكّد" بالداشبورد.
+    // عمود عادي (وقت التأكيد) لا حالة — لا يمسّ transition()/D8؛ يُملأ مرة واحدة (IS NULL شرط).
+    // ذو معنى لطلبات service='food' مع merchant_id فقط؛ بوت التاجر مرحلة لاحقة معلنة.
+    merchantConfirmedAt: timestamptz("merchant_confirmed_at"),
     deliveredAt: timestamptz("delivered_at"), // denormalized؛ يُملأ بترانزاكشن الانتقال
     weightG: integer("weight_g"), // للطرود الموزونة (per_kg)
     distanceM: integer("distance_m"),
