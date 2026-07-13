@@ -33,6 +33,9 @@ async function main(): Promise<void> {
       token: { type: "string" },
       timezone: { type: "string", default: "Asia/Damascus" },
       "skip-webhook": { type: "boolean", default: false },
+      // تجاوز صريح لحارس الفخ 24 (اسم البوت لا ينتهي بـ _dev_bot): للتجربة المحلية
+      // المتعمّدة ببوت حقيقي على long polling. ممنوع بالإنتاج (الحارس يبقى صارماً هناك).
+      "allow-nonstandard-bot": { type: "boolean", default: false },
     },
   });
 
@@ -52,7 +55,13 @@ async function main(): Promise<void> {
   }
 
   const bot = await getBotInfo(token); // يتحقق أن التوكن حي
-  assertBotMatchesEnvironment(bot.username, env.NODE_ENV); // الفخ 24
+  // الفخ 24 — يبقى صارماً بالإنتاج دائماً؛ خارج الإنتاج فقط يسمح --allow-nonstandard-bot
+  // بتجاوز اشتراط _dev_bot (للتجربة المحلية المتعمّدة). التجاوز يُطبع بصوت عالٍ.
+  if (values["allow-nonstandard-bot"] && env.NODE_ENV !== "production") {
+    console.warn(`⚠️  تجاوز الفخ 24: ربط @${bot.username} (ليس _dev_bot) خارج الإنتاج بطلب صريح.`);
+  } else {
+    assertBotMatchesEnvironment(bot.username, env.NODE_ENV);
+  }
 
   const webhookSecret = generateWebhookSecret();
   const encryptedToken = encryptSecret(token, Buffer.from(env.MASTER_KEY, "hex"));

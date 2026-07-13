@@ -281,6 +281,30 @@ async function markProcessed(deps: UpdateProcessorDeps, tenantId: string, rowId:
   );
 }
 
+// §4.1(4)/§4.4 — تسجيل تدفقَي السائق ثم الزبون على bot مستأجر. مصدر واحد يستعمله
+// مسارا التشغيل: webhook (processUpdate أعلاه) وlong-polling (bot-poll.ts، التطوير §4.4) —
+// فالسلوك متطابق. ترتيب السائق أولاً مقصود (تعليق أدناه بـ processUpdate).
+export function registerTenantFlows(
+  bot: Bot,
+  deps: UpdateProcessorDeps,
+  tenantId: string,
+  currency: string,
+): void {
+  registerDriverFlow(bot, {
+    db: deps.appDb,
+    tenantId,
+    // §6.2 D16 — القبول/الرفض ترانزاكشنات قاعدة بأقفال صفوف (dispatch.ts) — العقد الملزم
+    acceptOffer: (offerId, driverId) => acceptOffer(deps.appDb, tenantId, offerId, driverId),
+    rejectOffer: (offerId, driverId) => rejectOffer(deps.appDb, tenantId, offerId, driverId),
+    onLocation: (driverId, point, recordedAt) => recordDriverLocation(deps, tenantId, driverId, point, recordedAt),
+    // §11 — إثبات التسليم بالصورة (POD): معطّل إن لم يُهيَّأ التخزين (deps.storage=null)
+    ...(deps.storage !== null
+      ? { onPodPhoto: (driverId, buffer) => recordPodPhoto(deps, tenantId, driverId, buffer) }
+      : {}),
+  });
+  registerCustomerFlow(bot, { db: deps.appDb, redis: deps.redis, tenantId, currency });
+}
+
 export async function processUpdate(deps: UpdateProcessorDeps, job: TgUpdateJob): Promise<void> {
   // 1) صف الـ inbox — idempotent (الفخ 7: "ماذا لو نُفّذت مرتين؟")
   const row = await withTenant(deps.appDb, job.tenantId, async (tx) => {
@@ -329,26 +353,7 @@ export async function processUpdate(deps: UpdateProcessorDeps, job: TgUpdateJob)
   const bot = await getBotForTenant({
     tenantId: job.tenantId,
     token,
-    onCreate: (created) => {
-      registerDriverFlow(created, {
-        db: deps.appDb,
-        tenantId: job.tenantId,
-        // §6.2 D16 — القبول/الرفض ترانزاكشنات قاعدة بأقفال صفوف (dispatch.ts) — العقد الملزم
-        acceptOffer: (offerId, driverId) => acceptOffer(deps.appDb, job.tenantId, offerId, driverId),
-        rejectOffer: (offerId, driverId) => rejectOffer(deps.appDb, job.tenantId, offerId, driverId),
-        onLocation: (driverId, point, recordedAt) => recordDriverLocation(deps, job.tenantId, driverId, point, recordedAt),
-        // §11 — إثبات التسليم بالصورة (POD): معطّل إن لم يُهيَّأ التخزين (deps.storage=null)
-        ...(deps.storage !== null
-          ? { onPodPhoto: (driverId, buffer) => recordPodPhoto(deps, job.tenantId, driverId, buffer) }
-          : {}),
-      });
-      registerCustomerFlow(created, {
-        db: deps.appDb,
-        redis: deps.redis,
-        tenantId: job.tenantId,
-        currency: tenant.currency,
-      });
-    },
+    onCreate: (created) => registerTenantFlows(created, deps, job.tenantId, tenant.currency),
   });
 
   // 4) D9: handleUpdate (يرسل رسائل تيليغرام) خارج أي ترانزاكشن قاعدة بيانات
