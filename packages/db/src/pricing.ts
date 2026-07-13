@@ -7,6 +7,7 @@ import {
   type PriceComponents,
   type Service,
 } from "@quickdrop/shared";
+import { osrmRoute } from "@quickdrop/geo";
 import { and, desc, eq, isNull, or, sql } from "drizzle-orm";
 import { pricingRules, zones } from "./schema/index.js";
 import type { Tx } from "./with-tenant.js";
@@ -37,12 +38,25 @@ const URBAN_SPEED_M_PER_S = 25_000 / 3_600;
 
 export async function quoteOrder(
   tx: Tx,
-  input: { service: Service; pickup: Point; dropoff: Point; weightG?: number | null },
+  input: { service: Service; pickup: Point; dropoff: Point; weightG?: number | null; osrmBase?: string },
 ): Promise<Quote> {
-  // §7 والفخ 5: هافرساين × 1.4 تقريبٌ لمسافة الطريق حتى OSRM (المرحلة 2) — تقدير، لا مسافة طريق حقيقية.
-  const distanceM = Math.round(haversineMeters(input.pickup, input.dropoff) * ROAD_DISTANCE_FALLBACK_FACTOR);
-  // مؤقت حتى OSRM: duration من السرعة الحضرية الثابتة أعلاه.
-  const durationS = Math.round(distanceM / URBAN_SPEED_M_PER_S);
+  // §7 — مسافة/مدة الطريق: OSRM إن هُيّئ (معامل صريح أو OSRM_URL بالبيئة)، وإلا
+  // هافرساين×1.4 (الفخ 5: تقدير لا مسافة طريق حقيقية).
+  const osrmBase = input.osrmBase ?? process.env["OSRM_URL"]?.trim();
+  let distanceM: number;
+  let durationS: number;
+  const osrm = osrmBase ? await osrmRoute(osrmBase, input.pickup, input.dropoff) : null;
+  if (osrm !== null) {
+    distanceM = osrm.distanceM;
+    durationS = osrm.durationS;
+  } else {
+    if (osrmBase) {
+      // §7 — OSRM مُهيّأ لكنه سقط: سجّل تحذيراً ولا توقف استقبال الطلبات (تسقط للتقدير)
+      console.warn(JSON.stringify({ action: "osrm_route", outcome: "fallback_haversine" }));
+    }
+    distanceM = Math.round(haversineMeters(input.pickup, input.dropoff) * ROAD_DISTANCE_FALLBACK_FACTOR);
+    durationS = Math.round(distanceM / URBAN_SPEED_M_PER_S);
+  }
 
   const dropoffWkt = toPostgisWkt(input.dropoff); // D7: WKT بترتيب lng lat
 

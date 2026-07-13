@@ -6,6 +6,7 @@ import {
   type ConfirmOrderResponse,
   type CreateOrderResponse,
   type ListOrdersResponse,
+  type MerchantConfirmResponse,
   type OrderDetailResponse,
   type QuoteResponse,
 } from "./orders.service.js";
@@ -85,5 +86,16 @@ export class OrdersController {
     @Body() body: unknown,
   ): Promise<AssignOrderResponse> {
     return this.orders.assign(authorization, id, body);
+  }
+
+  // §3 v1 — زر "المطعم أكّد": يعلّم لحظة تأكيد التاجر لطلب طعام (عمود عادي لا حالة، D8)
+  @Post(":id/merchant-confirm")
+  @HttpCode(200)
+  async merchantConfirm(
+    @Headers("authorization") authorization: string | undefined,
+    @Param("id") id: string,
+    @Body() body: unknown,
+  ): Promise<MerchantConfirmResponse> {
+    return this.orders.merchantConfirm(authorization, id, body);
   }
 }

@@ -16,6 +16,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@quickdrop/geo": "workspace:*",
     "@quickdrop/shared": "workspace:*",
     "drizzle-orm": "^0.44.0",
     "pg": "^8.16.0"

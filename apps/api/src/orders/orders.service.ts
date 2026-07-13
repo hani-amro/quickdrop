@@ -11,6 +11,7 @@ import {
   assignManually,
   createOrder,
   drivers,
+  merchants,
   offers,
   orderAttachments,
   orderEvents,
@@ -137,6 +138,8 @@ const assignBodySchema = z.object({
   driverId: uuidSchema,
 });
 
+const merchantConfirmBodySchema = z.object({ tenantSlug: slugSchema });
+
 // —— أشكال الاستجابة (كل مال string — D5) ——
 
 export interface QuoteResponse {
@@ -203,6 +206,8 @@ export interface OrderDetailResponse {
     status: OrderStatus;
     customer: { name: string | null; phone: string | null };
     driver: { id: string; name: string | null } | null;
+    merchant: { name: string; phone: string | null } | null; // §3 v1
+    merchantConfirmedAt: string | null;
     pickupText: string | null;
     dropoffText: string | null;
     recipientPhone: string | null;
@@ -245,6 +250,10 @@ export interface CancelOrderResponse {
 
 export interface AssignOrderResponse {
   order: { id: string; status: OrderStatus; driverId: string };
+}
+
+export interface MerchantConfirmResponse {
+  order: { id: string; publicCode: string; merchantConfirmedAt: string };
 }
 
 function toQuoteResponse(quote: Quote): QuoteResponse {
@@ -422,11 +431,15 @@ export class OrdersService {
           customerName: users.firstName,
           customerPhone: users.phoneE164,
           driverName: driverUsers.firstName,
+          merchantConfirmedAt: orders.merchantConfirmedAt, // §3 v1
+          merchantName: merchants.name,
+          merchantPhone: merchants.phone, // §3 — الموزّع يتصل بالتاجر
         })
         .from(orders)
         .innerJoin(users, and(eq(users.tenantId, orders.tenantId), eq(users.id, orders.customerId)))
         .leftJoin(drivers, and(eq(drivers.tenantId, orders.tenantId), eq(drivers.id, orders.driverId)))
         .leftJoin(driverUsers, and(eq(driverUsers.tenantId, orders.tenantId), eq(driverUsers.id, drivers.userId)))
+        .leftJoin(merchants, and(eq(merchants.tenantId, orders.tenantId), eq(merchants.id, orders.merchantId)))
         .where(and(eq(orders.id, orderId), isNull(orders.deletedAt))) // D10: soft delete لا يظهر
         .limit(1);
       const row = orderRows[0];
@@ -501,6 +514,8 @@ export class OrdersService {
           status: row.status,
           customer: { name: row.customerName, phone: row.customerPhone },
           driver: row.driverId !== null ? { id: row.driverId, name: row.driverName } : null,
+          merchant: row.merchantName !== null ? { name: row.merchantName, phone: row.merchantPhone } : null,
+          merchantConfirmedAt: row.merchantConfirmedAt?.toISOString() ?? null,
           pickupText: row.pickupText,
           dropoffText: row.dropoffText,
           recipientPhone: row.recipientPhone,
@@ -698,6 +713,45 @@ export class OrdersService {
       case "not_found":
         throw new NotFoundException("not found");
     }
+  }
+
+  // §3 v1 — تأكيد التاجر: عمود عادي (merchant_confirmed_at) لا حالة — لا يمسّ transition/D8.
+  // ذو معنى لطلبات food مع merchant_id؛ يُملأ مرة واحدة (IS NULL شرط). 409 لغير المؤهل.
+  async merchantConfirm(authorization: string | undefined, id: string, body: unknown): Promise<MerchantConfirmResponse> {
+    this.assertStaffToken(authorization);
+    const orderId = this.parseOr400(uuidSchema, id, "orders_merchant_confirm_id");
+    const input = this.parseOr400(merchantConfirmBodySchema, body, "orders_merchant_confirm");
+    const tenant = await this.resolveActiveTenant(input.tenantSlug);
+
+    const result = await withTenant(this.handle.db, tenant.id, async (tx) => {
+      const rows = await tx
+        .update(orders)
+        .set({ merchantConfirmedAt: new Date(), updatedAt: new Date() }) // D6: UTC
+        .where(
+          and(
+            eq(orders.id, orderId),
+            eq(orders.service, "food"),
+            isNull(orders.merchantConfirmedAt), // يُملأ مرة واحدة
+            isNull(orders.deletedAt),
+          ),
+        )
+        .returning({ publicCode: orders.publicCode, merchantConfirmedAt: orders.merchantConfirmedAt });
+      return rows[0];
+    });
+
+    if (!result || result.merchantConfirmedAt === null) {
+      // لم يُحدَّث صف: غير موجود، أو ليس food، أو مؤكَّد سلفاً — نميّز 404 عن 409
+      const exists = await withTenant(this.handle.db, tenant.id, (tx) =>
+        tx.select({ id: orders.id }).from(orders).where(and(eq(orders.id, orderId), isNull(orders.deletedAt))).limit(1),
+      );
+      if (exists.length === 0) throw new NotFoundException("not found");
+      throw new ConflictException("order is not a pending food order"); // §11 رسالة عامة
+    }
+
+    console.log(
+      JSON.stringify({ action: "order_merchant_confirmed", tenant_id: tenant.id, order_id: orderId, actor: "staff" }),
+    );
+    return { order: { id: orderId, publicCode: result.publicCode, merchantConfirmedAt: result.merchantConfirmedAt.toISOString() } };
   }
 
   // D15 — البحث بفهرس (tenant_id, phone_e164) ضمن دور customer؛ غير موجود = إنشاء

@@ -64,6 +64,13 @@
       "when": 1783892298747,
       "tag": "0008_offers_worker_scan",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1783932680878,
+      "tag": "0009_merchant_confirmed",
+      "breakpoints": true
     }
   ]
 }
