@@ -199,6 +199,7 @@ export async function transition(
         loyaltyPointsPerOrder: tenants.loyaltyPointsPerOrder,
         referralBonusPoints: tenants.referralBonusPoints,
         referralMonthlyCap: tenants.referralMonthlyCap,
+        timezone: tenants.timezone, // §16.8 — نافذة سقف الإحالة الشهري بمنطقة المستأجر
       })
       .from(tenants)
       .where(eq(tenants.id, order.tenantId))

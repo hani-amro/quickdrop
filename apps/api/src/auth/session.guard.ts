@@ -28,7 +28,10 @@ import { parseCookies, SESSION_COOKIE } from "./cookie.js";
  *   وme/logout (تقرأ الكوكي بنفسها). enroll/confirm خارج القائمة → محروسة (تتطلب جلسة).
  *   أي مسار auth مستقبلي يُحرس افتراضياً، لا فتح مفتوح.
  */
-export function isSessionGuardedPath(path: string): boolean {
+export function isSessionGuardedPath(rawPath: string): boolean {
+  // §11 — Express case-insensitive: نطبّع الحالة قبل أي مقارنة (وإلا مسار مختلط الأحرف
+  // يتخطّى الحارس؛ نفس فئة ثغرة AdminGuard).
+  const path = rawPath.toLowerCase();
   if (!path.startsWith("/api/")) return false;
   if (
     path === "/api/auth/login" ||

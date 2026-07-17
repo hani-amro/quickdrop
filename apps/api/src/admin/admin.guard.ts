@@ -20,7 +20,11 @@ import { ADMIN_SESSION_COOKIE } from "./admin-cookie.js";
  * - ثلاثي /api/admin/auth بالقائمة الحصرية = مصادقة ذاتية (login مفتوح؛ session/logout
  *   يقرآن الكوكي بنفسيهما) — أي مسار admin مستقبلي يُحرس افتراضياً.
  */
-export function isAdminGuardedPath(path: string): boolean {
+export function isAdminGuardedPath(rawPath: string): boolean {
+  // §11 — Express يوجّه case-insensitive؛ لو قارنّا بحساسية الأحرف لتخطّى مهاجمٌ الحارس
+  // بمسار مختلط الأحرف (/API/admin/...) ووصل للمعالج بلا حراسة (ثغرة انتحال مستأجر).
+  // نطبّع مرة (المسارات ASCII) ونقارن الكل به.
+  const path = rawPath.toLowerCase();
   if (!(path === "/api/admin" || path.startsWith("/api/admin/"))) return false;
   if (
     path === "/api/admin/auth/login" ||

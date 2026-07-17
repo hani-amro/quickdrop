@@ -169,7 +169,10 @@ export class AdminService {
    * أمام المسار (يمرّر adminId من جلسة المشرف)؛ لا نُصدر جلسة انتحال بلا هوية مشرف حقيقية
    * (staffId/adminId بالجلسة + FK التدقيق يتطلبانها). مستأجر موقوف/مغادر = 404 (لا شيء لمشاهدته).
    */
-  async impersonate(adminId: string | undefined, id: string): Promise<ImpersonateResult> {
+  async impersonate(authorization: string | undefined, adminId: string | undefined, id: string): Promise<ImpersonateResult> {
+    // §11 — نفس الدفاع المزدوج بالمسارات الأربعة الأخرى: تحقق التوكن أولاً (لا نعتمد
+    // على الحارس وحده — لو أُسقط عن المسار سهواً يبقى هذا الحاجز).
+    this.assertAdminToken(authorization);
     const tenantId = parseOr400(uuidSchema, id, "admin_impersonate_id");
 
     const rows = await this.handle.db

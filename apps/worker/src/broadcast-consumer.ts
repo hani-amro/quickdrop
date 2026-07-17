@@ -28,10 +28,15 @@ import { GrammyError } from "grammy";
 // سلفاً (alreadyFinalized) فلا يُعاد إرسالها بإعادة الجدولة. كل نداءات تيليغرام هنا
 // خارج أي ترانزاكشن قاعدة (الترانزاكشنات قراءة/تحديث أعمدة فقط).
 //
+// استئناف لا إعادة بثّ (§12): 'sending' حالة **قابلة للاستئناف** لا منتهية. لو انهارت
+// المهمة أو تعلّقت (BullMQ attempts/stalled) بعد وسمها 'sending' وقبل recordBroadcastResult،
+// تُعاد تشغيلها فيعود الجمهور كاملاً من enqueueBroadcast — لكن مجموعة bcast:sent:{id} بـ Redis
+// تجعل الحلقة تتخطّى كل من سُلِّم إليه، فلا يُرسَل إلا الذيل (لا إرسال مكرّر للكل). العدّ
+// النهائي مشتقّ من SCARD المجموعتين لا من عدّاد الجولة → مطلق ثابت مهما تكرّر الاستئناف.
+//
 // أخطاء المستقبِل الفردية تُلتقط وتُعدّ (لا رمي) — فلا يُسقط مستقبِل واحد البثّة كلها
 // ولا يعيد بثّها من الصفر. الرمي (retry) يقتصر على الأعطال النُّظُمية (تحميل المستأجر/فك
-// التوكن) قبل أي إرسال — آمن. النافذة الوحيدة لتكرار جماعي: فشل recordBroadcastResult
-// بعد اكتمال الإرسال (تحديث بسيط، نادر) — مقبول v1 كما في مستهلك الإشعارات.
+// التوكن) قبل أي إرسال — آمن، والاستئناف بمجموعة التسليم يتخطّى ما سبق إرساله.
 
 export interface BroadcastConsumerDeps {
   /** دور app_user — كل قراءة/كتابة ضمن مستأجر عبر withTenant حصراً (§2.3). */
@@ -40,8 +45,56 @@ export interface BroadcastConsumerDeps {
   scanDb: Db;
   /** §4.2: MASTER_KEY (32 بايت) لفك تشفير bot_token_encrypted. */
   masterKey: Buffer;
-  /** حالة المحادثة — يمرَّر لتسجيل تدفق البوت عند الإنشاء الأول بالـ LRU (نفس مصنع الإشعارات). */
-  redis: ConvRedis;
+  /**
+   * حالة المحادثة (تسجيل تدفق البوت عند الإنشاء الأول بالـ LRU) **و** مجموعات "المُسلَّم
+   * إليهم" لكل بثّة (§12) — عميل ioredis واحد يطابق الواجهتين بنيوياً.
+   */
+  redis: ConvRedis & BroadcastSetRedis;
+}
+
+// §12 — استئناف لا إعادة بثّ: مجموعتان بـ Redis لكل بثّة (أخفّ من جدول جديد، صحيح كفايةً v1):
+//   bcast:sent:{id}   — من سُلِّم إليه بنجاح → يُتخطّى عند إعادة المحاولة (checkpoint لكل مستقبِل).
+//   bcast:failed:{id} — من تعذّر تسليمه نهائياً (حظر البوت 403) → للعدّ فقط.
+// المحظور يُقصى أصلاً من جمهور enqueueBroadcast (blocked_at IS NULL §4.3)، فيكفي فحص bcast:sent
+// وحده للتخطّي. الفشل العابر (غير 403) لا يُثبَّت في أي مجموعة → يُعاد محاولته عند الاستئناف.
+
+/** الحدّ الأدنى البنيوي لعميل Redis لمجموعات التسليم (ioredis يطابقه؛ الاختبار الصافي يستبدله بـ Map §15). */
+export interface BroadcastSetRedis {
+  sismember(key: string, member: string): Promise<number>;
+  sadd(key: string, member: string): Promise<number>;
+  scard(key: string): Promise<number>;
+  expire(key: string, ttlSeconds: number): Promise<unknown>;
+}
+
+// §12 — TTL أسبوع: يفوق أطول نافذة إعادة محاولة/DLQ ثم تُنظَّف المجموعة تلقائياً (لا تسرّب ذاكرة Redis).
+export const BROADCAST_DELIVERED_TTL_S = 7 * 24 * 60 * 60;
+
+/** §12 — مفتاح مجموعة من سُلِّم إليهم بنجاح لهذه البثّة. */
+export function sentSetKey(broadcastId: string): string {
+  return `bcast:sent:${broadcastId}`;
+}
+
+/** §12 — مفتاح مجموعة من تعذّر تسليمهم نهائياً (حظر) لهذه البثّة. */
+export function failedSetKey(broadcastId: string): string {
+  return `bcast:failed:${broadcastId}`;
+}
+
+/**
+ * §12 (نقي، قابل للاختبار) — هل سُلِّم لهذا المستقبِل في جولة سابقة؟ يُتخطّى إن نعم.
+ * المحظور مُقصى من الجمهور أصلاً (blocked_at)، فالفحص على مجموعة النجاح وحدها يكفي.
+ */
+export async function isAlreadyDelivered(
+  redis: BroadcastSetRedis,
+  broadcastId: string,
+  userId: string,
+): Promise<boolean> {
+  return (await redis.sismember(sentSetKey(broadcastId), userId)) === 1;
+}
+
+/** §12 — سجّل عضواً في مجموعة تسليم (SADD idempotent) مع ضبط/تجديد TTL أسبوع عند كل إضافة فعلية. */
+export async function recordInDeliverySet(redis: BroadcastSetRedis, key: string, userId: string): Promise<void> {
+  const added = await redis.sadd(key, userId);
+  if (added > 0) await redis.expire(key, BROADCAST_DELIVERED_TTL_S);
 }
 
 // §4.3 — الحدّ ~30 msg/s لكل بوت. تأخير بسيط بين الرسائل (25/s < 30/s) يبقينا تحت السقف
@@ -133,14 +186,16 @@ export function broadcastText(title: string | null, body: string): string {
   return `<b>${escapeHtml(title)}</b>\n\n${safeBody}`;
 }
 
-type SendOutcome = "sent" | "failed";
+// §12 — نميّز الحظر (403، فشل نهائي: يُعدّ فشلاً ويُقصى من الجمهور بـ blocked_at) عن الفشل
+// العابر (لا يُثبَّت في أي مجموعة → يُعاد محاولته عند الاستئناف). كلاهما يُعدّ ضمن failed_count.
+type SendOutcome = "sent" | "blocked" | "failed";
 
 /**
  * إرسال رسالة بثّة لمستقبِل واحد مع معالجة الحدود:
  * - 429: نم retry_after + jitter وأعد المحاولة (حتى MAX_RATE_LIMIT_RETRIES).
- * - 403: علّم blocked_at وعدّه فشلاً (تعذّر التسليم) — لا إعادة محاولة.
- * - أي خطأ آخر: لوغ منظّم وعدّه فشلاً — مستقبِل واحد فاشل لا يُسقط البثّة كلها ولا
- *   يُعيدها من الصفر (إعادة الرمي = بثّ مكرّر للكل §4.3). هذه معالجة صريحة لا ابتلاع (§16.12).
+ * - 403: علّم blocked_at وأرجِع "blocked" (فشل نهائي، لا إعادة محاولة).
+ * - أي خطأ آخر: لوغ منظّم وأرجِع "failed" (فشل عابر) — مستقبِل واحد فاشل لا يُسقط البثّة
+ *   كلها ولا يُعيدها من الصفر (إعادة الرمي = بثّ مكرّر للكل §4.3). معالجة صريحة لا ابتلاع (§16.12).
  */
 async function sendToMember(
   deps: BroadcastConsumerDeps,
@@ -157,7 +212,7 @@ async function sendToMember(
       }
       if (isBlockedByUser(error)) {
         await markUserBlocked(deps, args.tenantId, args.member.userId);
-        return "failed";
+        return "blocked";
       }
       console.error(
         JSON.stringify({
@@ -215,15 +270,33 @@ export function createBroadcastProcessor(deps: BroadcastConsumerDeps): (job: Bro
     const bot = await getTenantBot(deps, job.tenantId, tenant);
     const text = broadcastText(bcast.title, bcast.body);
 
-    let sent = 0;
-    let failed = 0;
+    // §12 — استئناف لا إعادة بثّ: تخطَّ من سُلِّم إليه سابقاً (bcast:sent)، أرسل الذيل فقط.
+    const sentKey = sentSetKey(job.broadcastId);
+    const failedKey = failedSetKey(job.broadcastId);
+    let skipped = 0;
+    let transientFailed = 0; // فشل عابر لهذه الجولة فقط (غير مثبَّت — يُعاد محاولته عند الاستئناف)
     for (const member of audience) {
+      if (await isAlreadyDelivered(deps.redis, job.broadcastId, member.userId)) {
+        skipped += 1; // سُلِّم في جولة سابقة — لا إرسال ولا تأخير معدّل، يمرّ الذيل سريعاً
+        continue;
+      }
       const outcome = await sendToMember(deps, { tenantId: job.tenantId, broadcastId: job.broadcastId, bot, member, text });
-      if (outcome === "sent") sent += 1;
-      else failed += 1;
-      // §4.3 — احترام حدّ المعدل: تأخير بسيط بين الرسائل (لا يُطبَّق بعد الأخيرة يهمّ قليلاً)
+      if (outcome === "sent") {
+        await recordInDeliverySet(deps.redis, sentKey, member.userId); // checkpoint: لن يُعاد إرساله
+      } else if (outcome === "blocked") {
+        // فشل نهائي (حظر): ثبّته للعدّ؛ blocked_at يقصيه أصلاً من جمهور أي استئناف
+        await recordInDeliverySet(deps.redis, failedKey, member.userId);
+      } else {
+        transientFailed += 1; // فشل عابر: لا يُثبَّت كي يُعاد محاولته لو استُؤنفت المهمة
+      }
+      // §4.3 — احترام حدّ المعدل: تأخير بسيط بعد كل إرسال فعلي (لا بعد التخطّي)
       await sleep(BROADCAST_MSG_INTERVAL_MS);
     }
+
+    // §12 — العدّ النهائي **مطلق** مشتقّ من المجموعتين (لا عدّاد جولة): ثابت مهما تكرّر الاستئناف.
+    // sent = كل من سُلِّم إليه عبر كل الجولات؛ failed = الحظر المثبَّت + الفشل العابر لهذه الجولة.
+    const sent = await deps.redis.scard(sentKey);
+    const failed = (await deps.redis.scard(failedKey)) + transientFailed;
 
     await recordBroadcastResult(deps.appDb, job.tenantId, job.broadcastId, { sent, failed });
     console.log(
@@ -233,6 +306,7 @@ export function createBroadcastProcessor(deps: BroadcastConsumerDeps): (job: Bro
         broadcastId: job.broadcastId,
         sent,
         failed,
+        skipped,
         audience: audience.length,
       }),
     );

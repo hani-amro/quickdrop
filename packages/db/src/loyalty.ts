@@ -1,4 +1,4 @@
-import { and, eq, gte, sql } from "drizzle-orm";
+import { and, eq, gte, ne, sql } from "drizzle-orm";
 import {
   couponRedemptions,
   loyaltyAccounts,
@@ -41,7 +41,7 @@ export async function applyDeliveryLoyalty(
   order: Pick<Order, "id" | "tenantId" | "customerId">,
   rates: Pick<
     typeof tenants.$inferSelect,
-    "loyaltyPointsPerOrder" | "referralBonusPoints" | "referralMonthlyCap"
+    "loyaltyPointsPerOrder" | "referralBonusPoints" | "referralMonthlyCap" | "timezone"
   >,
 ): Promise<void> {
   // ضمان صف حساب الولاء (مرساة القفل للاسترداد لاحقاً §9)
@@ -91,8 +91,32 @@ export async function applyDeliveryLoyalty(
   const ref = pending[0];
   if (!ref) return;
 
-  // سقف الإحالات الشهري لكل مُحيل (منع المزارع §9)
-  const monthStart = sql`date_trunc('month', now())`;
+  // §9 — إتمام ذرّي winner-take-all: القيد status='pending' + RETURNING يجعل ترانزاكشناً
+  // واحداً فقط يكسب القلب pending→earned عند تسليمين متزامنين لنفس المدعو؛ الخاسر يجد
+  // 0 صفوف بعد إعادة التقييم فيتخطّى المكافأة (كان بلا قيد → منح مزدوج، كُشف بالنبش).
+  const claimed = await tx
+    .update(referrals)
+    .set({ status: "earned", earnedAt: new Date() })
+    .where(and(eq(referrals.tenantId, order.tenantId), eq(referrals.id, ref.id), eq(referrals.status, "pending")))
+    .returning({ id: referrals.id });
+  if (claimed.length === 0) return; // خسر السباق — عُلّمت earned من الفائز، لا مكافأة ثانية
+  if (rates.referralBonusPoints <= 0) return;
+
+  // §9 — قفل حساب المُحيل: نقطة تسلسل واحدة لقرار السقف، فتتسلسل منحُ عدة مدعوّين متزامنين
+  // لنفس المُحيل ويرى كلٌّ المجموع الملتزَم (كان بلا قفل → تجاوز السقف تحت التزامن).
+  await tx
+    .insert(loyaltyAccounts)
+    .values({ tenantId: order.tenantId, userId: ref.referrerUserId })
+    .onConflictDoNothing({ target: [loyaltyAccounts.tenantId, loyaltyAccounts.userId] });
+  await tx
+    .select({ id: loyaltyAccounts.id })
+    .from(loyaltyAccounts)
+    .where(and(eq(loyaltyAccounts.tenantId, order.tenantId), eq(loyaltyAccounts.userId, ref.referrerUserId)))
+    .for("update");
+
+  // §9/§16.8 — نافذة الشهر بمنطقة المستأجر لا منطقة جلسة القاعدة (تصحيح حدود الشهر).
+  // نستثني الإحالة الحالية (عُلّمت earned للتو) كي يبقى العدّ = المُستحَق سابقاً هذا الشهر.
+  const monthStart = sql`date_trunc('month', now() AT TIME ZONE ${rates.timezone}) AT TIME ZONE ${rates.timezone}`;
   const earnedThisMonth = await tx
     .select({ n: sql<number>`COUNT(*)::int` })
     .from(referrals)
@@ -102,18 +126,12 @@ export async function applyDeliveryLoyalty(
         eq(referrals.referrerUserId, ref.referrerUserId),
         eq(referrals.status, "earned"),
         gte(referrals.earnedAt, monthStart),
+        ne(referrals.id, ref.id),
       ),
     );
-  const cap = rates.referralMonthlyCap;
   const already = earnedThisMonth[0]?.n ?? 0;
 
-  // علّم الإحالة earned دائماً (اكتملت فعلاً)، لكن امنح المكافأة فقط ضمن السقف
-  await tx
-    .update(referrals)
-    .set({ status: "earned", earnedAt: new Date() })
-    .where(and(eq(referrals.tenantId, order.tenantId), eq(referrals.id, ref.id)));
-
-  if (rates.referralBonusPoints > 0 && already < cap) {
+  if (already < rates.referralMonthlyCap) {
     await tx.insert(loyaltyEvents).values({
       tenantId: order.tenantId,
       userId: ref.referrerUserId,

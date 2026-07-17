@@ -342,12 +342,10 @@ export async function acceptOffer(
       .set({ status: "expired", updatedAt: now })
       .where(and(eq(offers.orderId, order.id), eq(offers.status, "pending"), ne(offers.id, offerId)))
       .returning({ id: offers.id, driverId: offers.driverId });
-    if (superseded.length > 0) {
-      await writeOutbox(tx, tenantId, "offer.superseded", {
-        orderId: order.id,
-        offerIds: superseded.map((o) => o.id),
-        driverIds: superseded.map((o) => o.driverId),
-      });
+    // صف outbox واحد لكل عرض مُبطَل بالشكل المفرد الذي يقرؤه المستهلك (offer.expired نفسه)؛
+    // البث المتعدّد بشكل جمعي كان يفشل تحليل Zod ويُهمل كل الإشعارات (كُشف بالنبش الحي).
+    for (const o of superseded) {
+      await writeOutbox(tx, tenantId, "offer.superseded", { offerId: o.id, orderId: order.id, driverId: o.driverId });
     }
 
     return { outcome: "accepted", orderId: order.id } as const;
@@ -458,11 +456,10 @@ export async function assignManually(
             eq(offers.status, "pending"), // حزام فوق القفل — الصفوف مقفولة بيدنا أصلاً
           ),
         );
-      await writeOutbox(tx, tenantId, "offer.superseded", {
-        orderId: order.id,
-        offerIds: pendingOffers.map((o) => o.id),
-        driverIds: pendingOffers.map((o) => o.driverId),
-      });
+      // صف مفرد لكل عرض (الشكل الذي يقرؤه المستهلك) — انظر التعليق بـ acceptOffer.
+      for (const o of pendingOffers) {
+        await writeOutbox(tx, tenantId, "offer.superseded", { offerId: o.id, orderId: order.id, driverId: o.driverId });
+      }
     }
 
     return { outcome: "accepted", orderId: order.id } as const;
@@ -548,7 +545,7 @@ export async function handleOfferTimeout(
     // §6.2: بعد MAX_DISPATCH_ROUNDS جولات فاشلة — تنبيه الموزّع، لا دوران صامت.
     await writeOutbox(tx, tenantId, "dispatch.exhausted", {
       orderId: order.id,
-      rounds: offer.round,
+      round: offer.round, // المفتاح الذي يقرؤه المستهلك (كان 'rounds' فيُسجَّل round:null)
     });
     return { done: true } as const;
   });

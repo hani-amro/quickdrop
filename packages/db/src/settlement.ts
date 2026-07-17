@@ -23,6 +23,11 @@ export interface SettlementBoardRow {
  * §8.2 — لوحة التسوية: صف لكل سائق عنده قيود غير مسوّاة. استعلام واحد
  * (§16.10: لا N+1 — join/تجميع واحد، لا استعلام لكل سائق).
  * الترتيب: الأثقل ذمةً أولاً (الموزّع يبدأ بمن معه أكبر كاش) ثم driverId للحتمية.
+ *
+ * البقايا بعد إغلاق اليوم (فرق التسوية: المكتب مدين للسائق، أو نقص توريد) تُصفَّى
+ * بقيد adjustment/payout جديد عبر postAdjustment — لا بإعادة فتح تسوية مغلقة
+ * (§8.2 append-only: بعد الإغلاق ممنوع أي UPDATE). قيد التصحيح settlement_id=NULL
+ * فيظهر هنا فوراً كذمّة قابلة للتسوية حتى إغلاق يومٍ لاحق.
  */
 export async function getSettlementBoard(db: Db, tenantId: string): Promise<SettlementBoardRow[]> {
   // D5 — sum(BIGINT) يصل numeric نصياً من الدرايفر: bigint بالتطبيق، لا Number (الفخ 1)
@@ -212,5 +217,96 @@ export async function closeDriverSettlement(
     }
 
     return settlement;
+  });
+}
+
+/** §8.2/§11 — إدخال تصحيح غير صالح (0 لـ adjustment، ≥0 لـ payout، أو memo مفقود) — حالة عمل (400 بالـ API)، لا باغ. */
+export class InvalidAdjustmentError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidAdjustmentError";
+  }
+}
+
+/**
+ * §8.1/§8.2 — تحقق إشارة قيد التصحيح اليدوي (منطق نقي، قابل للاختبار بلا قاعدة —
+ * يعكس CHECK ledger_entries_sign_ck تماماً حتى يُرفَض الإدخال قبل ضرب القاعدة):
+ *   - adjustment: amount <> 0 (0 عبث بلا معنى محاسبي — §8.3).
+ *   - payout:     amount < 0  (المكتب يدفع للسائق — قيد سالب بالمنظور المُلزم §8.1).
+ * يرمي InvalidAdjustmentError برسالة عامة (§11) عند الخرق.
+ */
+export function validateAdjustment(entryType: "adjustment" | "payout", amount: bigint): void {
+  if (entryType === "adjustment") {
+    if (amount === 0n) {
+      throw new InvalidAdjustmentError("adjustment amount must be non-zero");
+    }
+    return;
+  }
+  // payout — المكتب يدفع للسائق، سالب حصراً (CHECK يرفض ≥ 0)
+  if (amount >= 0n) {
+    throw new InvalidAdjustmentError("payout amount must be negative");
+  }
+}
+
+export interface PostAdjustmentInput {
+  driverId: string;
+  /** D5: bigint بأصغر وحدة. adjustment: ≠ 0 (± حسب من المدين)؛ payout: < 0. */
+  amount: bigint;
+  entryType: "adjustment" | "payout";
+  /** إلزامي لـ adjustment (§8.2: سبب إلزامي بتوقيع staff)؛ اختياري لـ payout (سببه دفعٌ صريح). */
+  memo?: string;
+  /** توقيع الموظف (§8.2/§10.2) — يُملأ مع staff auth الحقيقي؛ يذهب لـ created_by. */
+  staffId?: string;
+}
+
+/**
+ * §8.2 — تصفية بقايا الذمّة بقيد جديد بدل إعادة فتح تسوية مغلقة (append-only):
+ *   - adjustment: تصحيح بتوقيع staff + سبب إلزامي (فرق تسوية، رفض تاجر استرداد §8.4، …).
+ *   - payout:     دفع المكتب للسائق حين تتجاوز أجورُه الكاشَ الذي بحوزته (§8.1).
+ * القيد يُدرَج بـ settlement_id=NULL فيظهر فوراً على لوحة التسوية (getSettlementBoard)
+ * كذمّة قابلة للتسوية حتى إغلاق يومٍ لاحق. append-only — لا UPDATE بعد الإدراج (§8.2).
+ * يعيد معرّف القيد المُنشأ.
+ */
+export async function postAdjustment(
+  db: Db,
+  tenantId: string,
+  input: PostAdjustmentInput,
+): Promise<string> {
+  // 1) تحقق الإشارة (نقي) — يعكس CHECK قبل ضرب القاعدة
+  validateAdjustment(input.entryType, input.amount);
+
+  // 2) §8.2 — سبب إلزامي لـ adjustment (memo غير فارغ بعد trim)؛ payout يقبل بلا memo
+  const memo = input.memo?.trim();
+  if (input.entryType === "adjustment" && (memo === undefined || memo.length === 0)) {
+    throw new InvalidAdjustmentError("adjustment requires a memo (§8.2)");
+  }
+
+  return withTenant(db, tenantId, async (tx) => {
+    // السائق مدخل مستخدم (§11): غير موجود/محجوب RLS = 404 نظيف بدل خرق FK خام
+    const driverRows = await tx
+      .select({ id: drivers.id })
+      .from(drivers)
+      .where(eq(drivers.id, input.driverId));
+    if (!driverRows[0]) {
+      throw new SettlementDriverNotFoundError(input.driverId);
+    }
+
+    // append-only: قيد جديد بـ settlement_id=NULL (يظهر على اللوحة) — لا تعديل لصف قائم (§8.2)
+    const rows = await tx
+      .insert(ledgerEntries)
+      .values({
+        tenantId,
+        driverId: input.driverId,
+        entryType: input.entryType,
+        amount: input.amount,
+        memo: memo ?? null,
+        createdBy: input.staffId ?? null,
+      })
+      .returning({ id: ledgerEntries.id });
+    const created = rows[0];
+    if (!created) {
+      throw new Error("postAdjustment: INSERT ledger_entries ... RETURNING returned no row"); // §16.12
+    }
+    return created.id;
   });
 }

@@ -70,7 +70,10 @@ export const RATE_TIERS = {
  * - /tg/* — webhook تيليغرام: 429 يجعل تيليغرام يعيد ويتراجع (له سرّ + inbox dedup أصلاً).
  * وإلا: دخول → طبقة login، تتبّع عام → طبقة track، والباقي → global.
  */
-export function classifyRoute(method: string, path: string): RateTier | null {
+export function classifyRoute(method: string, rawPath: string): RateTier | null {
+  // §11 — Express case-insensitive: نطبّع قبل التصنيف، وإلا مسار مختلط الأحرف
+  // (/API/auth/login) يقع بالطبقة العامة الواسعة بدل طبقة الدخول الضيقة (تجاوز قوة غاشمة).
+  const path = rawPath.toLowerCase();
   if (path === "/health" || path.startsWith("/health/")) return null;
   if (path === "/metrics") return null; // §13 — كشط Prometheus الداخلي: 429 عليه يعمي المراقبة
   if (path.startsWith("/tg/")) return null;

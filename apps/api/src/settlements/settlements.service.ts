@@ -1,9 +1,17 @@
-import { ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
 import {
+  BadRequestException,
+  ConflictException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from "@nestjs/common";
+import {
+  InvalidAdjustmentError,
   SettlementDayClosedError,
   SettlementDriverNotFoundError,
   closeDriverSettlement,
   getSettlementBoard,
+  postAdjustment,
   type DbHandle,
 } from "@quickdrop/db";
 import { tenantDay, type SettlementStatus } from "@quickdrop/shared";
@@ -22,6 +30,13 @@ const moneyStringSchema = z
   .regex(/^\d{1,15}$/)
   .transform((s) => BigInt(s));
 
+// D5 — مبلغ التصحيح موقّع: adjustment قد يكون ± و payout سالب؛ الإشارة الفعلية
+// تُفرَض بـ validateAdjustment/CHECK. الكسري/الفارغ = 400 بالـ regex نفسه.
+const signedMoneyStringSchema = z
+  .string()
+  .regex(/^-?\d{1,15}$/)
+  .transform((s) => BigInt(s));
+
 // YYYY-MM-DD بمنطقة المستأجر — الشكل فقط هنا؛ القيمة الافتراضية tenantDay(اليوم)
 const periodDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
 
@@ -32,6 +47,16 @@ const closeBodySchema = z.object({
   driverId: uuidSchema,
   received: moneyStringSchema,
   periodDate: periodDateSchema.optional(),
+});
+
+// §8.2 — تصفية بقايا الذمّة بقيد جديد (لا إعادة فتح تسوية مغلقة). memo إلزامي
+// لـ adjustment (سبب بتوقيع staff)؛ الإشارة تُفرَض في postAdjustment/CHECK.
+const adjustBodySchema = z.object({
+  tenantSlug: slugSchema,
+  driverId: uuidSchema,
+  amount: signedMoneyStringSchema,
+  entryType: z.enum(["adjustment", "payout"]),
+  memo: z.string().trim().min(1).max(500).optional(),
 });
 
 // —— أشكال الاستجابة (كل مال string — D5) ——
@@ -60,6 +85,10 @@ export interface CloseSettlementResponse {
     status: SettlementStatus;
     closedAt: string | null;
   };
+}
+
+export interface AdjustSettlementResponse {
+  entryId: string; // §8.2: معرّف قيد التصحيح/الدفع الجديد (يظهر على اللوحة فوراً)
 }
 
 @Injectable()
@@ -133,14 +162,51 @@ export class SettlementsService {
     }
   }
 
-  // §8.2 — اليوم مقفول لهذا السائق = تعارض حالة (409)؛ سائق غير موجود = 404.
-  // الرسائل عامة (§11)؛ أي خطأ آخر يُعاد رميه كما هو — §16.12: لا ابتلاع.
+  // §8.2 — POST /api/settlements/adjust: تصفية بقايا الذمّة بقيد adjustment/payout جديد
+  // (لا إعادة فتح تسوية مغلقة — append-only). القيد يظهر على اللوحة فوراً (settlement_id=NULL).
+  async adjust(authorization: string | undefined, body: unknown): Promise<AdjustSettlementResponse> {
+    assertStaffToken(this.env.STAFF_API_TOKEN, authorization);
+    const input = parseOr400(adjustBodySchema, body, "settlements_adjust");
+    const tenant = await resolveActiveTenant(this.handle.db, input.tenantSlug);
+
+    try {
+      const entryId = await postAdjustment(this.handle.db, tenant.id, {
+        driverId: input.driverId,
+        amount: input.amount,
+        entryType: input.entryType,
+        // exactOptionalPropertyTypes: نمرّر memo فقط عند وجوده (لا undefined صريح)
+        ...(input.memo !== undefined ? { memo: input.memo } : {}),
+        // أمان مؤقت: لا هوية موظف مع التوكن الثابت — staffId يُملأ مع staff auth §10.2
+      });
+
+      // §13: لوغ منظّم بحقول ثابتة — معرّفات ونوع فقط، لا مبالغ ولا PII (لا memo)
+      console.log(
+        JSON.stringify({
+          action: "settlement_adjusted",
+          tenant_id: tenant.id,
+          driver_id: input.driverId,
+          entry_type: input.entryType,
+          entry_id: entryId,
+        }),
+      );
+
+      return { entryId };
+    } catch (error) {
+      throw this.mapSettlementError(error);
+    }
+  }
+
+  // §8.2 — اليوم مقفول لهذا السائق = تعارض حالة (409)؛ سائق غير موجود = 404؛
+  // إدخال تصحيح غير صالح = 400. الرسائل عامة (§11)؛ أي خطأ آخر يُعاد رميه — §16.12: لا ابتلاع.
   private mapSettlementError(error: unknown): unknown {
     if (error instanceof SettlementDayClosedError) {
       return new ConflictException("settlement day is already closed for this driver");
     }
     if (error instanceof SettlementDriverNotFoundError) {
       return new NotFoundException("not found");
+    }
+    if (error instanceof InvalidAdjustmentError) {
+      return new BadRequestException("invalid request");
     }
     return error;
   }

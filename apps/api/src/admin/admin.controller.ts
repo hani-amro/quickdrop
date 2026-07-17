@@ -68,10 +68,12 @@ export class AdminController {
   @HttpCode(200) // فعل يُصدر جلسة، ليس إنشاء مورد REST
   async impersonate(
     @Req() req: RequestWithAdmin,
+    @Headers("authorization") authorization: string | undefined,
     @Param("id") id: string,
     @Res({ passthrough: true }) res: Response,
   ): Promise<{ tenantSlug: string; readonly: true; expiresInS: number }> {
-    const { sessionId, tenantSlug, expiresInS } = await this.admin.impersonate(req.adminSession?.adminId, id);
+    // §11 — دفاع مزدوج كبقية مسارات المشرف: تحقق التوكن بالخدمة (backstop لو أُسقط الحارس)
+    const { sessionId, tenantSlug, expiresInS } = await this.admin.impersonate(authorization, req.adminSession?.adminId, id);
     res.setHeader("Set-Cookie", buildSessionCookie(sessionId, this.env.NODE_ENV === "production"));
     return { tenantSlug, readonly: true, expiresInS };
   }

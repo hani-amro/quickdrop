@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Headers, HttpCode, Post, Query } from "@nestjs/common";
 import {
   SettlementsService,
+  type AdjustSettlementResponse,
   type CloseSettlementResponse,
   type SettlementBoardResponse,
 } from "./settlements.service.js";
@@ -9,6 +10,8 @@ import {
 //   GET  /api/settlements/board?tenantSlug= → صف لكل سائق عنده قيود غير مسوّاة
 //                                             + periodDate اليوم بمنطقة المستأجر (الفخ 8)
 //   POST /api/settlements/close             → إغلاق يوم سائق (settlements + قيد remitted §8.2)
+//   POST /api/settlements/adjust            → تصفية بقايا الذمّة بقيد adjustment/payout جديد
+//                                             (append-only — لا إعادة فتح تسوية مغلقة §8.2)
 // التحقق (Zod §11) والتخويل المؤقت (Bearer STAFF_API_TOKEN) بالخدمة — نفس نمط orders.
 @Controller("api/settlements")
 export class SettlementsController {
@@ -29,5 +32,14 @@ export class SettlementsController {
     @Body() body: unknown,
   ): Promise<CloseSettlementResponse> {
     return this.settlements.close(authorization, body);
+  }
+
+  @Post("adjust")
+  @HttpCode(201) // إنشاء قيد دفتر جديد (adjustment/payout §8.2)
+  async adjust(
+    @Headers("authorization") authorization: string | undefined,
+    @Body() body: unknown,
+  ): Promise<AdjustSettlementResponse> {
+    return this.settlements.adjust(authorization, body);
   }
 }
