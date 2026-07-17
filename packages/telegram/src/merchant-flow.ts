@@ -1,7 +1,11 @@
 import {
   bindMerchantOperator,
+  listCatalog,
   merchantAcceptOrder,
   merchantRejectOrder,
+  resolveMerchantOperator,
+  toggleCatalogItemAvailability,
+  type CatalogItemView,
   type Db,
 } from "@quickdrop/db";
 import { InlineKeyboard, type Bot, type Context, type NextFunction } from "grammy";
@@ -36,8 +40,27 @@ export function merchantRejectCb(orderId: string): string {
   return `${CB_MERCHANT_REJECT_PREFIX}:${orderId}`;
 }
 
+// §3 — قلب توفّر صنف من بوت التاجر: 'mo:av:{itemId}'. المكتب يقلبه أيضاً من الداشبورد.
+export const CB_MERCHANT_AVAIL_PREFIX = "mo:av";
+export function merchantAvailCb(itemId: string): string {
+  return `${CB_MERCHANT_AVAIL_PREFIX}:${itemId}`;
+}
+
 export const MERCHANT_ACCEPT_RE = new RegExp(`^${CB_MERCHANT_ACCEPT_PREFIX}:${UUID_CAPTURE}:(\\d{1,3})$`);
 export const MERCHANT_REJECT_RE = new RegExp(`^${CB_MERCHANT_REJECT_PREFIX}:${UUID_CAPTURE}$`);
+export const MERCHANT_AVAIL_RE = new RegExp(`^${CB_MERCHANT_AVAIL_PREFIX}:${UUID_CAPTURE}$`);
+
+/** §3 — أقصى أصناف تُعرض بلوحة قلب التوفّر (حد أزرار تيليغرام العملي). */
+const MENU_TOGGLE_LIMIT = 40;
+
+/** لوحة قلب توفّر أصناف المطعم: زر لكل صنف باسمه وحالته، تُبنى من صفوف القاعدة. */
+export function merchantMenuKeyboard(items: CatalogItemView[]): InlineKeyboard {
+  const kb = new InlineKeyboard();
+  for (const it of items.slice(0, MENU_TOGGLE_LIMIT)) {
+    kb.text(`${it.isAvailable ? "✅" : "❌"} ${it.nameAr}`, merchantAvailCb(it.id)).row();
+  }
+  return kb;
+}
 
 /** مفتاح Redis لكود الربط — يولّده الـ api (مطعم) ويقرؤه البوت (نفس Redis). */
 export function merchantBindKey(tenantId: string, code: string): string {
@@ -206,6 +229,60 @@ export function registerMerchantFlow(bot: Bot, deps: MerchantFlowDeps): void {
           await editCardText(ctx, deps, "الطلب لم يعد متاحاً 🤷");
           return;
       }
+    }),
+  );
+
+  // —— /menu — عرض أصناف المطعم مع أزرار قلب التوفّر (§3: التاجر يعلّم "نفد" من بوته) ——
+  bot.command(
+    "menu",
+    guard(deps, "menu", async (ctx) => {
+      if (!ctx.from) return;
+      const op = await resolveMerchantOperator(deps.db, deps.tenantId, ctx.from.id);
+      if (!op) {
+        await ctx.reply("هذا الأمر لمشغّلي المطاعم فقط 🚫");
+        return;
+      }
+      const items = await listCatalog(deps.db, deps.tenantId, op.merchantId);
+      if (items.length === 0) {
+        await ctx.reply(`لا أصناف بكتالوج «${escapeHtml(op.merchantName)}» بعد — يضيفها المكتب من الداشبورد.`);
+        return;
+      }
+      await ctx.reply(`أصناف «${escapeHtml(op.merchantName)}» — اضغط الصنف لقلب توفّره:`, {
+        reply_markup: merchantMenuKeyboard(items),
+      });
+    }),
+  );
+
+  // —— mo:av:{itemId} — قلب توفّر صنف، ثم إعادة بناء اللوحة من صفوف القاعدة (D16) ——
+  bot.callbackQuery(
+    MERCHANT_AVAIL_RE,
+    guard(deps, "toggle_avail", async (ctx) => {
+      await ctx.answerCallbackQuery(); // §4.3
+      const itemId = ctx.match?.[1];
+      if (itemId === undefined || !ctx.from) return;
+
+      const result = await toggleCatalogItemAvailability(deps.db, deps.tenantId, ctx.from.id, itemId);
+      if (!result) {
+        // ليس مشغّلاً، أو الصنف ليس لمطعمه (عزل داخل المستأجر)
+        await ctx.reply("تعذّر تعديل الصنف 🤷 (ليس لمطعمك أو لم يعد لديك صلاحية).");
+        return;
+      }
+      // أعد بناء اللوحة من القاعدة كي تعكس الحالة الجديدة لكل الأصناف (لا من الذاكرة)
+      const op = await resolveMerchantOperator(deps.db, deps.tenantId, ctx.from.id);
+      if (op) {
+        const items = await listCatalog(deps.db, deps.tenantId, op.merchantId);
+        try {
+          await ctx.editMessageReplyMarkup({ reply_markup: merchantMenuKeyboard(items) });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (!message.includes("message is not modified")) {
+            console.error(
+              JSON.stringify({ action: "merchant_menu_edit_failed", tenantId: deps.tenantId, error: message }),
+            );
+          }
+        }
+      }
+      await ctx.reply(`${result.isAvailable ? "✅ صار متوفّراً" : "❌ صار غير متوفّر"}: ${escapeHtml(result.nameAr)}`);
     }),
   );
 }

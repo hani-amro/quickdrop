@@ -54,7 +54,8 @@ export const orders = pgTable(
     promisedAt: timestamptz("promised_at"), // لقطة الوعد لحظة confirmed — لا تُعاد كتابتها
     // §3 v1 — تبليغ/تأكيد التاجر (نسخة v1): الموزّع يتصل هاتفياً + زر "المطعم أكّد" بالداشبورد.
     // عمود عادي (وقت التأكيد) لا حالة — لا يمسّ transition()/D8؛ يُملأ مرة واحدة (IS NULL شرط).
-    // ذو معنى لطلبات service='food' مع merchant_id فقط؛ بوت التاجر مرحلة لاحقة معلنة.
+    // ذو معنى لطلبات service='food' مع merchant_id فقط؛ يملؤه المكتب (زر الداشبورد) أو
+    // التاجر من بوته (merchant-flow.ts: قبول الطلب يضبط هذا العمود + merchant_prep_minutes).
     merchantConfirmedAt: timestamptz("merchant_confirmed_at"),
     merchantPrepMinutes: integer("merchant_prep_minutes"), // §3 بوت التاجر — مدة التحضير المختارة عند القبول
     deliveredAt: timestamptz("delivered_at"), // denormalized؛ يُملأ بترانزاكشن الانتقال

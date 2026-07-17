@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   BIND_PAYLOAD_RE,
   MERCHANT_ACCEPT_RE,
+  MERCHANT_AVAIL_RE,
   MERCHANT_REJECT_RE,
   PREP_OPTIONS,
   merchantAcceptCb,
+  merchantAvailCb,
   merchantBindKey,
   merchantBindPayload,
   merchantRejectCb,
@@ -38,6 +40,16 @@ describe("merchant callback data", () => {
   it("لا يخلط زرّي القبول والرفض", () => {
     expect(MERCHANT_REJECT_RE.exec(merchantAcceptCb(ORDER, 15))).toBeNull();
     expect(MERCHANT_ACCEPT_RE.exec(merchantRejectCb(ORDER))).toBeNull();
+  });
+
+  it("avail: يبني ويلتقط itemId، ولا يخلط مع القبول/الرفض (§3 قلب التوفّر)", () => {
+    const ITEM = "019f7120-c761-7b7c-a7ed-8321eff30040";
+    const m = MERCHANT_AVAIL_RE.exec(merchantAvailCb(ITEM));
+    expect(m).not.toBeNull();
+    expect(m![1]).toBe(ITEM);
+    expect(Buffer.byteLength(merchantAvailCb(ITEM), "utf8")).toBeLessThanOrEqual(64);
+    expect(MERCHANT_AVAIL_RE.exec(merchantAcceptCb(ITEM, 30))).toBeNull();
+    expect(MERCHANT_AVAIL_RE.exec(merchantRejectCb(ITEM))).toBeNull();
   });
 });
 

@@ -6,7 +6,7 @@ import { withTenant } from "./with-tenant.js";
 
 // §3 — إدارة التجار (المطاعم/المحال) وكتالوجهم من الداشبورد. كل الوصول عبر
 // withTenant (§2.2)؛ المال bigint حصراً (D5) والنقطة WKT بترتيب lng lat (D7).
-// بوت التاجر (قبول/رفض/قلب is_available من التاجر) مرحلة لاحقة — هنا الإدارة المكتبية.
+// هنا الإدارة المكتبية؛ بوت التاجر (قبول/رفض/قلب is_available من التاجر) مبنيّ بـ merchant-bot.ts.
 
 /** §3 — التاجر كما تعرضه طبقة الإدارة: الموقع مُفكَّك إلى {lat,lng} (الفخ 6). */
 export interface MerchantView {
@@ -221,7 +221,7 @@ export async function upsertCatalogItem(
   });
 }
 
-/** §3 — قلب توفّر صنف (المكتب v1؛ قلب التاجر من بوته لاحقاً). يعود بالصنف المحدَّث. */
+/** §3 — قلب توفّر صنف من المكتب (الداشبورد)؛ التاجر يقلبه من بوته عبر toggleCatalogItemAvailability. */
 export async function setItemAvailability(
   db: Db,
   tenantId: string,
