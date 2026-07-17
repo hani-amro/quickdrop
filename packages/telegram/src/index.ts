@@ -5,6 +5,7 @@ export * from "./html.js";
 export * from "./conversation.js";
 export * from "./food.js";
 export * from "./customer-flow.js";
+export * from "./merchant-flow.js";
 export * from "./driver-logic.js";
 export * from "./driver-flow.js";
 export * from "./throttler.js";

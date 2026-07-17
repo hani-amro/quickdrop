@@ -1,5 +1,6 @@
 import { eq } from "drizzle-orm";
 import type { Db } from "./client.js";
+import { writeOutbox } from "./outbox.js";
 import { orders } from "./schema/index.js";
 import { transition } from "./state-machine.js";
 import { withTenant } from "./with-tenant.js";
@@ -21,13 +22,17 @@ export function scheduledDelayMs(scheduledAt: Date, now: Date): number {
 export async function fireScheduledOrder(db: Db, tenantId: string, orderId: string): Promise<{ fired: boolean }> {
   return withTenant(db, tenantId, async (tx) => {
     const rows = await tx
-      .select({ id: orders.id, status: orders.status })
+      .select({ id: orders.id, status: orders.status, service: orders.service, merchantId: orders.merchantId })
       .from(orders)
       .where(eq(orders.id, orderId))
       .for("update");
     const order = rows[0];
     if (!order || order.status !== "scheduled") return { fired: false }; // أُلغي/أُطلق سلفاً — لا شيء
     await transition(tx, { orderId, to: "pending", actor: { type: "system" } });
+    // §3 (بوت التاجر) — طلب طعام مجدول دخل pending الآن: بلّغ مشغّلي المطعم (نفس الترانزاكشن D9)
+    if (order.service === "food" && order.merchantId !== null) {
+      await writeOutbox(tx, tenantId, "merchant.new_order", { orderId, merchantId: order.merchantId });
+    }
     return { fired: true };
   });
 }

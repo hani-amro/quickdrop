@@ -127,6 +127,32 @@ export function foodConfirmCard(input: { merchantName: string; lines: FoodDispla
   ].join("\n");
 }
 
+/**
+ * §3 (بوت التاجر) — بطاقة الطلب الجديد المُرسَلة لمشغّل المطعم مع أزرار قبول (+ مدة
+ * تحضير) / رفض (تُبنى عند المستدعي — merchant-flow). تعرض الأصناف وقيمة البضاعة ومنطقة
+ * التسليم. أزرار القبول تحمل مدة التحضير، والرفض يلغي الطلب.
+ */
+export function merchantOrderCard(input: {
+  publicCode: string;
+  lines: FoodDisplayLine[];
+  goodsAmount: bigint;
+  dropoffText: string | null;
+  currency: string;
+}): string {
+  const fmt = (amount: bigint): string => bidiIsolate(escapeHtml(formatMoney(amount, "ar-SY", input.currency)));
+  const rows = [
+    `<b>🔔 طلب جديد #${escapeHtml(input.publicCode)}</b>`,
+    "",
+    ...foodLineRows(input.lines, fmt),
+    `قيمة البضاعة: <b>${fmt(input.goodsAmount)}</b>`,
+  ];
+  if (input.dropoffText !== null && input.dropoffText.trim() !== "") {
+    rows.push("", `📍 التوصيل إلى: ${escapeHtml(input.dropoffText)}`);
+  }
+  rows.push("", "اقبل الطلب وحدّد مدة التحضير، أو ارفضه 👇");
+  return rows.join("\n");
+}
+
 // —— بطاقات بوت السائق (§4.3/§6) — منطق صافٍ قابل للاختبار مثل بقية الملف ——
 
 /** نقطة بلا نص عنوان (dropoff_text/pickup_text فارغان) — بديل عرض ثابت. */

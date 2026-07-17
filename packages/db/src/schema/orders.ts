@@ -56,6 +56,7 @@ export const orders = pgTable(
     // عمود عادي (وقت التأكيد) لا حالة — لا يمسّ transition()/D8؛ يُملأ مرة واحدة (IS NULL شرط).
     // ذو معنى لطلبات service='food' مع merchant_id فقط؛ بوت التاجر مرحلة لاحقة معلنة.
     merchantConfirmedAt: timestamptz("merchant_confirmed_at"),
+    merchantPrepMinutes: integer("merchant_prep_minutes"), // §3 بوت التاجر — مدة التحضير المختارة عند القبول
     deliveredAt: timestamptz("delivered_at"), // denormalized؛ يُملأ بترانزاكشن الانتقال
     weightG: integer("weight_g"), // للطرود الموزونة (per_kg)
     distanceM: integer("distance_m"),

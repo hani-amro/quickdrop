@@ -26,6 +26,7 @@ import {
   getBotForTenant,
   registerCustomerFlow,
   registerDriverFlow,
+  registerMerchantFlow,
   type Bot,
   type ConvRedis,
 } from "@quickdrop/telegram";
@@ -302,6 +303,9 @@ export function registerTenantFlows(
       ? { onPodPhoto: (driverId, buffer) => recordPodPhoto(deps, tenantId, driverId, buffer) }
       : {}),
   });
+  // §3 (بوت التاجر) — قبل تدفق الزبون: معالج /start هنا يمرّر next() لأي حمولة ليست كود
+  // ربط، فيصل /start العادي للزبون. التسجيل بعده كان سيجعل /start الزبون يبتلع كود الربط.
+  registerMerchantFlow(bot, { db: deps.appDb, redis: deps.redis, tenantId });
   registerCustomerFlow(bot, { db: deps.appDb, redis: deps.redis, tenantId, currency });
 }
 

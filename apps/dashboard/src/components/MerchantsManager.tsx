@@ -356,6 +356,7 @@ function CatalogPanel({ merchant }: { merchant: MerchantView }) {
         <h2 className="text-sm font-bold text-slate-700">
           كتالوج <bdi>{merchant.name}</bdi>
         </h2>
+        <BindBotButton merchant={merchant} />
       </div>
 
       {loadFailed && (
@@ -402,6 +403,68 @@ function CatalogPanel({ merchant }: { merchant: MerchantView }) {
       )}
 
       <AddItemRow merchantId={merchant.id} onAdded={mergeItem} />
+    </div>
+  );
+}
+
+// §3 (بوت التاجر) — زر توليد رابط ربط: المشغّل يفتحه بتيليغرام فيربط حسابه بالمطعم،
+// وبعدها تصله الطلبات الجديدة ليقبلها (+ مدة تحضير) أو يرفضها. الكود قصير العمر لمرة واحدة.
+function BindBotButton({ merchant }: { merchant: MerchantView }) {
+  const toast = useToast();
+  const [link, setLink] = useState<{ deepLink: string | null; code: string } | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  async function generate(): Promise<void> {
+    setLoading(true);
+    try {
+      const res = await api.createMerchantBindCode(merchant.id);
+      setLink({ deepLink: res.deepLink, code: res.code });
+    } catch (err) {
+      toast.error(describeError(err));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function copy(text: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success("نُسخ الرابط");
+    } catch {
+      toast.error("تعذّر النسخ — انسخه يدوياً");
+    }
+  }
+
+  return (
+    <div className="flex flex-col items-end gap-2">
+      <button
+        type="button"
+        onClick={() => void generate()}
+        disabled={loading}
+        className="rounded-lg border border-sky-500 px-3 py-1 text-xs font-semibold text-sky-700 hover:bg-sky-50 disabled:opacity-50"
+      >
+        {loading ? "…" : link === null ? "🔗 ربط بوت التاجر" : "🔄 رابط جديد"}
+      </button>
+      {link !== null && (
+        <div className="w-full max-w-xs rounded-lg border border-sky-200 bg-sky-50 p-2 text-xs text-slate-700">
+          <p className="mb-1 text-slate-500">أرسل هذا الرابط لمشغّل المطعم — يفتحه بتيليغرام (صالح 15 دقيقة):</p>
+          {link.deepLink !== null ? (
+            <button
+              type="button"
+              onClick={() => void copy(link.deepLink!)}
+              className="block w-full truncate rounded bg-white px-2 py-1 text-start font-mono text-sky-700 underline"
+              dir="ltr"
+              title={link.deepLink}
+            >
+              {link.deepLink}
+            </button>
+          ) : (
+            <p dir="ltr" className="font-mono">
+              الكود: {link.code} <span className="text-slate-400">(اسم البوت غير مضبوط)</span>
+            </p>
+          )}
+        </div>
+      )}
     </div>
   );
 }

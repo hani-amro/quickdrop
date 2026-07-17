@@ -1,5 +1,6 @@
 import type {
   AnalyticsResponse,
+  BindCodeResponse,
   CatalogItemResponse,
   CloseSettlementResponse,
   CreateBroadcastRequest,
@@ -87,6 +88,9 @@ export const api = {
     request(`merchants/${merchantId}/catalog`, { method: "POST", body }),
   setItemAvailability: (merchantId: string, itemId: string, isAvailable: boolean): Promise<CatalogItemResponse> =>
     request(`merchants/${merchantId}/catalog/${itemId}/availability`, { method: "POST", body: { isAvailable } }),
+  // §3 (بوت التاجر) — كود/رابط ربط لمرة واحدة يفتحه المشغّل بتيليغرام فيربط حسابه بالمطعم
+  createMerchantBindCode: (merchantId: string): Promise<BindCodeResponse> =>
+    request(`merchants/${merchantId}/bind-code`, { method: "POST", body: {} }),
   // §10.2 — تسجيل TOTP للطاقم (إلزامي owner/accountant): البدء يولّد سرّاً معلّقاً ويرجع
   // otpauth URL؛ التأكيد بالرمز يثبّته. الجلسة (كوكي qd_session) تُمرَّر عبر الـ proxy.
   totpEnroll: (): Promise<{ otpauthUrl: string }> => request("auth/totp/enroll", { method: "POST", body: {} }),

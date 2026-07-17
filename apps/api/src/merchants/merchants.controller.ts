@@ -1,6 +1,7 @@
 import { Body, Controller, Get, Headers, HttpCode, Param, Post, Query } from "@nestjs/common";
 import {
   MerchantsService,
+  type BindCodeResponse,
   type CatalogItemResponse,
   type CreateMerchantResponse,
   type ListCatalogResponse,
@@ -59,5 +60,16 @@ export class MerchantsController {
     @Body() body: unknown,
   ): Promise<CatalogItemResponse> {
     return this.merchants.setItemAvailability(authorization, id, itemId, body);
+  }
+
+  // §3 (بوت التاجر) — توليد كود/رابط ربط لمرة واحدة: فعل يولّد سراً قصير العمر → 200
+  @Post(":id/bind-code")
+  @HttpCode(200)
+  async createBindCode(
+    @Headers("authorization") authorization: string | undefined,
+    @Param("id") id: string,
+    @Body() body: unknown,
+  ): Promise<BindCodeResponse> {
+    return this.merchants.createBindCode(authorization, id, body);
   }
 }

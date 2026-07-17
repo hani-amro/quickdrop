@@ -1,4 +1,15 @@
-import { drivers, offers, orders, tenants, trackingTokens, users, withTenant, type Db } from "@quickdrop/db";
+import {
+  drivers,
+  listOperatorChatsForMerchant,
+  offers,
+  orderItems,
+  orders,
+  tenants,
+  trackingTokens,
+  users,
+  withTenant,
+  type Db,
+} from "@quickdrop/db";
 import {
   ORDER_STATUSES,
   publishRt,
@@ -11,6 +22,8 @@ import {
   decryptBotToken,
   escapeHtml,
   getBotForTenant,
+  merchantOrderCard,
+  merchantOrderKeyboard,
   offerCard,
   orderCard,
   registerCustomerFlow,
@@ -101,6 +114,11 @@ export const offerClosedPayloadSchema = z.object({
 export const dispatchExhaustedPayloadSchema = z.object({
   orderId: z.string().uuid(),
   round: z.number().int().optional(),
+});
+
+export const merchantNewOrderPayloadSchema = z.object({
+  orderId: z.string().uuid(),
+  merchantId: z.string().uuid(),
 });
 
 // —— أدوات مشتركة ——
@@ -512,6 +530,82 @@ async function handleDispatchExhausted(deps: NotificationsConsumerDeps, job: Not
   });
 }
 
+// —— merchant.new_order: بطاقة الطلب الجديد لكل مشغّلي المطعم (قبول/رفض) ——
+
+async function handleMerchantNewOrder(deps: NotificationsConsumerDeps, job: NotificationJob): Promise<void> {
+  const payload = merchantNewOrderPayloadSchema.parse(job.payload);
+
+  const tenant = await loadActiveTenant(deps, job.tenantId, job.topic);
+  if (!tenant) return;
+
+  const data = await withTenant(deps.appDb, job.tenantId, async (tx) => {
+    const orderRows = await tx
+      .select({
+        publicCode: orders.publicCode,
+        dropoffText: orders.dropoffText,
+        goodsAmount: orders.goodsAmount,
+        merchantId: orders.merchantId,
+        status: orders.status,
+      })
+      .from(orders)
+      .where(eq(orders.id, payload.orderId))
+      .limit(1);
+    const order = orderRows[0];
+    if (!order) return null;
+    const items = await tx
+      .select({ nameAr: orderItems.nameSnapshot, qty: orderItems.qty, unitPrice: orderItems.unitPriceSnapshot })
+      .from(orderItems)
+      .where(eq(orderItems.orderId, payload.orderId));
+    return { order, items };
+  });
+  if (!data) {
+    throw new Error(`notifications: order ${payload.orderId} not found for merchant.new_order`); // §16.12
+  }
+
+  // الطلب قد يكون أُلغي/تقدّم قبل استهلاك الصف (at-least-once متأخر) — لا تُزعج التاجر بطلب
+  // ميت. القبول/الرفض لاحقاً محروسان بالقاعدة أصلاً (D16)، لكن البطاقة نفسها بلا معنى هنا.
+  if (data.order.status !== "pending") {
+    console.log(
+      JSON.stringify({ action: "merchant_notify_skipped_not_pending", tenantId: job.tenantId, orderId: payload.orderId, status: data.order.status }),
+    );
+    return;
+  }
+
+  const chats = await listOperatorChatsForMerchant(deps.appDb, job.tenantId, payload.merchantId);
+  if (chats.length === 0) {
+    // لا مشغّل مربوط بعد — الاحتياط v1 قائم (اتصال الموزّع + زر الداشبورد §3). لوغ لا فشل.
+    console.log(
+      JSON.stringify({ action: "merchant_notify_no_operators", tenantId: job.tenantId, merchantId: payload.merchantId, orderId: payload.orderId }),
+    );
+    return;
+  }
+
+  const bot = await getTenantBot(deps, job.tenantId, tenant);
+  const text = merchantOrderCard({
+    publicCode: data.order.publicCode,
+    lines: data.items,
+    goodsAmount: data.order.goodsAmount,
+    dropoffText: data.order.dropoffText,
+    currency: tenant.currency,
+  });
+  const keyboard = merchantOrderKeyboard(payload.orderId);
+
+  for (const chatId of chats) {
+    try {
+      await bot.api.sendMessage(chatId, text, { reply_markup: keyboard });
+    } catch (error: unknown) {
+      if (isBlockedByUser(error)) {
+        // المشغّل حظر البوت — تخطٍّ هادئ (لا صف users للمشغّلين في v1، فلا blocked_at)
+        console.warn(
+          JSON.stringify({ action: "merchant_operator_blocked_bot", tenantId: job.tenantId, merchantId: payload.merchantId, chatId }),
+        );
+        continue;
+      }
+      throw error; // §16.12: خطأ آخر → retry (قد يكرّر بطاقة لمشغّل سابق — مقبول at-least-once)
+    }
+  }
+}
+
 /**
  * D9/§12 — معالج طابور الإشعارات (NOTIFICATIONS_QUEUE): يوزّع حسب topic.
  * §16.12: لا ابتلاع أخطاء — الرمي يعيد الجدولة عبر BullMQ backoff؛ الحالات التي
@@ -534,6 +628,9 @@ export function createNotificationsProcessor(deps: NotificationsConsumerDeps): (
         return;
       case "dispatch.exhausted":
         await handleDispatchExhausted(deps, job);
+        return;
+      case "merchant.new_order":
+        await handleMerchantNewOrder(deps, job);
         return;
       default:
         // topic مجهول (منتج أحدث/أقدم): لوغ تحذيري بلا رمي — retry بلا فائدة (§16.12

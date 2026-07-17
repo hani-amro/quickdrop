@@ -265,6 +265,13 @@ export interface UpsertCatalogItemRequest {
   sortOrder?: number;
 }
 
+// §3 (بوت التاجر) — كود/رابط ربط لمرة واحدة (deepLink يفتحه المشغّل بتيليغرام)
+export interface BindCodeResponse {
+  code: string;
+  deepLink: string | null;
+  expiresInSeconds: number;
+}
+
 export interface CatalogItemResponse {
   item: CatalogItemView;
 }

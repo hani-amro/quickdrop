@@ -4,6 +4,7 @@ import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "./client.js";
 import { applyCouponToOrder } from "./coupons.js";
 import { quoteOrder, type Quote } from "./pricing.js";
+import { writeOutbox } from "./outbox.js";
 import { catalogItems, counters, merchants, orderItems, orders, trackingTokens, type Order } from "./schema/index.js";
 import { transition } from "./state-machine.js";
 import { withTenant, type Tx } from "./with-tenant.js";
@@ -245,6 +246,12 @@ export async function createOrder(
       to: input.scheduledAt !== undefined ? "scheduled" : "pending",
       actor: input.createdBy,
     });
+
+    // §3 (بوت التاجر) — طلب طعام فوري دخل pending: بلّغ مشغّلي المطعم (قبول/رفض) عبر
+    // outbox بنفس الترانزاكشن (D9). المجدول يُبلَّغ عند إطلاقه لـ pending (fireScheduledOrder).
+    if (food !== null && input.merchantId !== undefined && order.status === "pending") {
+      await writeOutbox(tx, tenantId, "merchant.new_order", { orderId: row.id, merchantId: input.merchantId });
+    }
 
     // §7 — رابط التتبع العام /t/{token}: توكن 128-bit عشوائي (16 بايت hex) لكل طلب،
     // بنفس ترانزاكشن الإنشاء (لا طلب بلا رابط تتبع). tracking_tokens استثناء RLS

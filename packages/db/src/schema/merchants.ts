@@ -1,5 +1,6 @@
 import { MERCHANT_CATEGORIES } from "@quickdrop/shared";
 import {
+  bigint,
   boolean,
   foreignKey,
   index,
@@ -62,7 +63,28 @@ export const catalogItems = pgTable(
   ],
 );
 
+// §3 (مرحلة بوت التاجر) — ربط حساب تيليغرام بمطعم: مشغّل واحد يخدم مطعماً واحداً
+// (فريد على tenant+telegram_user_id)، والمطعم قد يملك عدة مشغّلين (عدة أرقام موظفين).
+// يُملأ بتدفق ربط: الداشبورد يولّد كوداً قصير العمر (Redis)، المشغّل يرسله للبوت فيُقيَّد.
+export const merchantOperators = pgTable(
+  "merchant_operators",
+  {
+    id: idPk(),
+    tenantId: tenantId(),
+    merchantId: uuid("merchant_id").notNull(),
+    telegramUserId: bigint("telegram_user_id", { mode: "number" }).notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    // مشغّل (حساب تيليغرام) واحد ⇒ مطعم واحد ضمن المستأجر — إعادة الربط تستبدل الصف
+    uniqueIndex("merchant_operators_tenant_tg_uq").on(t.tenantId, t.telegramUserId),
+    index("merchant_operators_tenant_merchant_idx").on(t.tenantId, t.merchantId), // §2.3
+    foreignKey({ columns: [t.tenantId, t.merchantId], foreignColumns: [merchants.tenantId, merchants.id], name: "merchant_operators_merchant_fk" }),
+  ],
+);
+
 export type Merchant = typeof merchants.$inferSelect;
 export type NewMerchant = typeof merchants.$inferInsert;
 export type CatalogItem = typeof catalogItems.$inferSelect;
 export type NewCatalogItem = typeof catalogItems.$inferInsert;
+export type MerchantOperator = typeof merchantOperators.$inferSelect;

@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto";
 import { Inject, Injectable, NotFoundException } from "@nestjs/common";
 import {
   CatalogItemNotFoundError,
@@ -5,6 +6,7 @@ import {
   createMerchant,
   listCatalog,
   listMerchants,
+  merchantBindContext,
   setItemAvailability,
   upsertCatalogItem,
   type CatalogItemView,
@@ -12,8 +14,10 @@ import {
   type MerchantView,
 } from "@quickdrop/db";
 import { MERCHANT_CATEGORIES, type MerchantCategory } from "@quickdrop/shared";
+import { MERCHANT_BIND_TTL_SECONDS, merchantBindKey, merchantBindPayload } from "@quickdrop/telegram";
+import { Redis } from "ioredis";
 import { z } from "zod";
-import { DB, ENV } from "../app.module.js";
+import { DB, ENV, REDIS } from "../app.module.js";
 import { assertStaffToken, parseOr400, resolveActiveTenant, slugSchema, uuidSchema } from "../common/staff-http.js";
 import type { ApiEnv } from "../env.js";
 import { normalizePhoneE164 } from "../orders/orders.util.js";
@@ -145,11 +149,18 @@ function toCatalogItemResponse(i: CatalogItemView): CatalogItemResponseView {
   };
 }
 
+export interface BindCodeResponse {
+  code: string;
+  deepLink: string | null; // null إن لم يُضبط botUsername للمستأجر (نادر)
+  expiresInSeconds: number;
+}
+
 @Injectable()
 export class MerchantsService {
   constructor(
     @Inject(DB) private readonly handle: DbHandle,
     @Inject(ENV) private readonly env: ApiEnv,
+    @Inject(REDIS) private readonly redis: Redis,
   ) {}
 
   // §3 — قائمة التجار (المطاعم/المحال) للمستأجر.
@@ -264,6 +275,31 @@ export class MerchantsService {
     } catch (error) {
       throw this.mapNotFound(error);
     }
+  }
+
+  // §3 (بوت التاجر) — توليد كود ربط لمرة واحدة: يُخزَّن بـ Redis (mbind:{tenant}:{code})
+  // بعمر قصير، والمشغّل يفتح t.me/<bot>?start=mrc_<code> فيربط البوت حسابه بالمطعم.
+  // الكود عشوائي 64-bit؛ نافذة التسريب محدودة بالعمر القصير + الاستهلاك لمرة واحدة.
+  async createBindCode(authorization: string | undefined, id: string, body: unknown): Promise<BindCodeResponse> {
+    assertStaffToken(this.env.STAFF_API_TOKEN, authorization);
+    const merchantId = parseOr400(uuidSchema, id, "merchant_bind_code_id");
+    const input = parseOr400(listQuerySchema, body, "merchant_bind_code");
+    const tenant = await resolveActiveTenant(this.handle.db, input.tenantSlug);
+
+    const ctx = await merchantBindContext(this.handle.db, tenant.id, merchantId);
+    if (!ctx) throw new NotFoundException("not found");
+
+    const code = randomBytes(8).toString("hex"); // 16 محرفاً hex — يطابق [A-Za-z0-9]{6,32}
+    await this.redis.set(merchantBindKey(tenant.id, code), merchantId, "EX", MERCHANT_BIND_TTL_SECONDS);
+
+    console.log(
+      JSON.stringify({ action: "merchant_bind_code_created", tenant_id: tenant.id, merchant_id: merchantId, actor: "staff" }),
+    );
+    return {
+      code,
+      deepLink: ctx.botUsername !== null ? `https://t.me/${ctx.botUsername}?start=${merchantBindPayload(code)}` : null,
+      expiresInSeconds: MERCHANT_BIND_TTL_SECONDS,
+    };
   }
 
   // §11 — معرّف من المستخدم غير موجود (تاجر/صنف) = 404 حالة عمل برسالة عامة؛
