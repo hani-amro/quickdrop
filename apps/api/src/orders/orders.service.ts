@@ -31,12 +31,14 @@ import {
   type OfferStatus,
   type OrderActorType,
   type OrderStatus,
+  type ScheduledOrderJob,
   type Service,
 } from "@quickdrop/shared";
+import { Queue } from "bullmq";
 import { and, desc, eq, isNull, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { z } from "zod";
-import { DB, ENV } from "../app.module.js";
+import { DB, ENV, SCHEDULED_Q } from "../app.module.js";
 import {
   assertStaffToken,
   parseOr400,
@@ -272,6 +274,7 @@ export class OrdersService {
   constructor(
     @Inject(DB) private readonly handle: DbHandle,
     @Inject(ENV) private readonly env: ApiEnv,
+    @Inject(SCHEDULED_Q) private readonly scheduledQueue: Queue<ScheduledOrderJob>,
   ) {
     const cfg = tryLoadStorageConfig(process.env);
     this.storage = cfg !== null ? createStorageClient(cfg) : null;
@@ -321,6 +324,23 @@ export class OrdersService {
         // أمان مؤقت: لا هوية موظف مع التوكن الثابت — actor.id يُملأ مع staff auth §10.2
         createdBy: { type: "staff" },
       });
+
+      // §6.3 — طلب بموعد مستقبلي (status='scheduled'): ادفع مهمة مؤجّلة تطلقه عند الموعد.
+      // jobId حتمي = 'sched:{orderId}' → idempotent مع إعادة جدولة الـ worker عند الإقلاع.
+      if (order.status === "scheduled" && input.scheduledAt !== undefined) {
+        await this.scheduledQueue.add(
+          "fire-scheduled",
+          { tenantId: tenant.id, orderId: order.id },
+          {
+            jobId: `sched:${order.id}`,
+            delay: Math.max(0, input.scheduledAt.getTime() - Date.now()),
+            attempts: 5,
+            backoff: { type: "exponential", delay: 1000 },
+            removeOnComplete: { count: 1000 },
+          },
+        );
+      }
+
       // §13: لوغ منظّم بحقول ثابتة — بلا PII (لا هاتف ولا اسم)
       console.log(
         JSON.stringify({

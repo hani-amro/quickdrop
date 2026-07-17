@@ -11,6 +11,7 @@ import { AssignDriverModal } from "./AssignDriverModal";
 import { CancelOrderModal } from "./CancelOrderModal";
 import { ConnectionBadge } from "./ConnectionBadge";
 import { OrderCard } from "./OrderCard";
+import { OrderDetailModal } from "./OrderDetailModal";
 import { useToast } from "./Toast";
 
 // §10.1 — شاشة الإرسال: أعمدة بالحالة، polling كل 3 ثوانٍ (§16.10: نداء قائمة
@@ -48,6 +49,7 @@ export function DispatchBoard() {
   const [busyIds, setBusyIds] = useState<Record<string, true>>({});
   const [cancelFor, setCancelFor] = useState<OrderRow | null>(null);
   const [assignFor, setAssignFor] = useState<OrderRow | null>(null);
+  const [detailFor, setDetailFor] = useState<OrderRow | null>(null); // §3 v1 — تفاصيل + "المطعم أكّد"
   const [showFinished, setShowFinished] = useState(false);
 
   const rows = useMemo(() => {
@@ -136,6 +138,7 @@ export function DispatchBoard() {
             <OrderCard
               key={order.id}
               order={order}
+              onOpen={() => setDetailFor(order)}
               footer={
                 <>
                   <button
@@ -167,6 +170,7 @@ export function DispatchBoard() {
             <OrderCard
               key={order.id}
               order={order}
+              onOpen={() => setDetailFor(order)}
               // §10.1 — عمر "بلا إسناد" يُقاس من لحظة التأكيد إن توفرت، وإلا من الإنشاء
               slaBreached={minutesSince(order.confirmedAt ?? order.createdAt) > SLA_MINUTES}
               footer={
@@ -200,6 +204,7 @@ export function DispatchBoard() {
             <OrderCard
               key={order.id}
               order={order}
+              onOpen={() => setDetailFor(order)}
               meta={
                 <p className="mt-1 text-xs text-slate-600">
                   <bdi>{order.driverName ?? "سائق غير محدد"}</bdi> — {STATUS_LABELS[order.status]}
@@ -230,6 +235,7 @@ export function DispatchBoard() {
               <OrderCard
                 key={order.id}
                 order={order}
+                onOpen={() => setDetailFor(order)}
                 meta={<p className="mt-1 text-xs text-slate-500">{STATUS_LABELS[order.status]}</p>}
               />
             ))}
@@ -257,6 +263,13 @@ export function DispatchBoard() {
             setAssignFor(null);
             void assignOrder(order, driver);
           }}
+        />
+      )}
+      {detailFor !== null && (
+        <OrderDetailModal
+          order={detailFor}
+          onClose={() => setDetailFor(null)}
+          onConfirmed={() => void refresh()}
         />
       )}
     </div>

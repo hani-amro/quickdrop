@@ -1,13 +1,15 @@
-import { createDb, offers, webhookUpdates } from "@quickdrop/db";
+import { createDb, fireScheduledOrder, offers, orders, scheduledDelayMs, webhookUpdates } from "@quickdrop/db";
 import {
   BROADCAST_QUEUE,
   DISPATCH_QUEUE,
   NOTIFICATIONS_QUEUE,
   parseEnv,
+  SCHEDULED_QUEUE,
   TG_UPDATES_QUEUE,
   type BroadcastJob,
   type DispatchJob,
   type NotificationJob,
+  type ScheduledOrderJob,
   type TgUpdateJob,
 } from "@quickdrop/shared";
 import { Queue, Worker } from "bullmq";
@@ -46,6 +48,9 @@ const masterKey = Buffer.from(env.MASTER_KEY, "hex");
 const queue = new Queue(TG_UPDATES_QUEUE, { connection: redis });
 const notificationsQueue = new Queue<NotificationJob>(NOTIFICATIONS_QUEUE, { connection: redis });
 const dispatchQueue = new Queue<DispatchJob>(DISPATCH_QUEUE, { connection: redis });
+const scheduledQueue = new Queue<ScheduledOrderJob>(SCHEDULED_QUEUE, { connection: redis });
+
+const scheduledJobId = (orderId: string): string => `sched:${orderId}`;
 
 // §11 — عميل تخزين إثبات التسليم (S3/MinIO). غياب إعداد S3 → null → POD معطّل بلطف.
 const storageConfig = tryLoadStorageConfig(process.env);
@@ -106,9 +111,32 @@ async function rescanPendingOffers(): Promise<void> {
   }
 }
 
+// §6.3/§12 — القاعدة مصدر الحقيقة للجدولة: عند الإقلاع أعد جدولة كل طلب scheduled
+// (مهمة api الأصلية قد تكون ضاعت مع Redis). jobId حتمي = 'sched:{orderId}' يجعلها
+// idempotentة مع المهمة الأصلية؛ الفائت موعده → delay 0 فيُطلق فوراً.
+async function rescanScheduledOrders(): Promise<void> {
+  const scheduled = await scanDb.db
+    .select({ id: orders.id, tenantId: orders.tenantId, scheduledAt: orders.scheduledAt })
+    .from(orders)
+    .where(eq(orders.status, "scheduled"));
+  const now = new Date();
+  for (const o of scheduled) {
+    if (!o.scheduledAt) continue; // scheduled بلا موعد لا يُطلق آلياً (حماية)
+    await scheduledQueue.add(
+      "fire-scheduled",
+      { tenantId: o.tenantId, orderId: o.id },
+      { jobId: scheduledJobId(o.id), delay: scheduledDelayMs(o.scheduledAt, now), attempts: 5, backoff: { type: "exponential", delay: 1000 }, removeOnComplete: { count: 1000 } },
+    );
+  }
+  if (scheduled.length > 0) {
+    console.log(JSON.stringify({ action: "rescan_scheduled_enqueued", count: scheduled.length }));
+  }
+}
+
 async function main(): Promise<void> {
   await rescanPending();
   await rescanPendingOffers();
+  await rescanScheduledOrders();
 
   // D9/§12 — بعد إعادة بناء الفائت: شغّل عامل التقاط الـ outbox (كل ثانية → طابور الإشعارات)
   const outboxPoller = startOutboxPoller({ scanDb: scanDb.db, appDb: appDb.db, queue: notificationsQueue });
@@ -216,6 +244,22 @@ async function main(): Promise<void> {
     );
   });
 
+  // §6.3 — مستهلك الطلبات المجدولة: عند الموعد يطلق الطلب scheduled→pending (القرار
+  // بالقاعدة بقفل الصف وفحص الحالة — idempotent).
+  const scheduledWorker = new Worker<ScheduledOrderJob>(
+    SCHEDULED_QUEUE,
+    async (job) => {
+      // §16.12: لا ابتلاع — الرمي يعيد الجدولة عبر backoff
+      await fireScheduledOrder(appDb.db, job.data.tenantId, job.data.orderId);
+    },
+    { connection: redis, concurrency: 10 },
+  );
+  scheduledWorker.on("failed", (job, error) => {
+    console.error(
+      JSON.stringify({ action: "job_failed", queue: SCHEDULED_QUEUE, jobId: job?.id, attempts: job?.attemptsMade, message: error.message }),
+    );
+  });
+
   // §12 — إغلاق نظيف: استنزف الجاري قبل الخروج، وإلا كل deploy بيقتل مهام بنصها
   const shutdown = async (): Promise<void> => {
     await outboxPoller.stop(); // أولاً: أوقف إنتاج مهام جديدة وانتظر الدورة الجارية
@@ -225,9 +269,11 @@ async function main(): Promise<void> {
     await notificationsWorker.close();
     await dispatchWorker.close();
     await broadcastWorker.close();
+    await scheduledWorker.close();
     await queue.close();
     await notificationsQueue.close();
     await dispatchQueue.close();
+    await scheduledQueue.close();
     redis.disconnect();
     await appDb.close();
     await scanDb.close();

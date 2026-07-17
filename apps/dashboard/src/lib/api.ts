@@ -8,6 +8,8 @@ import type {
   ListBroadcastsResponse,
   ListDriversResponse,
   ListOrdersResponse,
+  MerchantConfirmResponse,
+  OrderDetailResponse,
   QuoteRequest,
   QuoteResponse,
   SettlementBoardResponse,
@@ -40,6 +42,8 @@ async function request<T>(path: string, init?: { method?: "GET" | "POST"; body?:
 export const api = {
   // §16.10 — القائمة نداء واحد (الخادم استعلام واحد بـ join)؛ التوزيع على الأعمدة بالواجهة
   listOrders: (): Promise<ListOrdersResponse> => request("orders"),
+  // §10.1 — تفاصيل الطلب للوحة الجانبية (§3 v1: منها merchant + merchantConfirmedAt)
+  orderDetail: (orderId: string): Promise<OrderDetailResponse> => request(`orders/${orderId}`),
   listDrivers: (): Promise<ListDriversResponse> => request("drivers"),
   // §4.4 — التسعير بنفس محرك البوت (مصدر حقيقة واحد) قبل الحفظ
   quote: (body: QuoteRequest): Promise<QuoteResponse> => request("orders/quote", { method: "POST", body }),
@@ -53,6 +57,9 @@ export const api = {
   // D16 — القبول النهائي قرار القاعدة بأقفال الصفوف؛ الواجهة اقتراح فقط
   assignOrder: (orderId: string, driverId: string): Promise<unknown> =>
     request(`orders/${orderId}/assign`, { method: "POST", body: { driverId } }),
+  // §3 v1 — زر "المطعم أكّد": عمود عادي (merchant_confirmed_at) لا حالة؛ يُملأ مرة واحدة
+  merchantConfirm: (orderId: string): Promise<MerchantConfirmResponse> =>
+    request(`orders/${orderId}/merchant-confirm`, { method: "POST", body: {} }),
   // §8.2 — التسوية اليومية: اللوحة + إغلاق يوم سائق (periodDate يحسبه الخادم
   // بمنطقة المستأجر tenantDay — الفخ 8؛ الواجهة لا ترسل "اليوم" من المتصفح)
   settlementBoard: (): Promise<SettlementBoardResponse> => request("settlements/board"),
@@ -65,6 +72,11 @@ export const api = {
   listBroadcasts: (): Promise<ListBroadcastsResponse> => request("broadcasts"),
   createBroadcast: (body: CreateBroadcastRequest): Promise<CreateBroadcastResponse> =>
     request("broadcasts", { method: "POST", body }),
+  // §10.2 — تسجيل TOTP للطاقم (إلزامي owner/accountant): البدء يولّد سرّاً معلّقاً ويرجع
+  // otpauth URL؛ التأكيد بالرمز يثبّته. الجلسة (كوكي qd_session) تُمرَّر عبر الـ proxy.
+  totpEnroll: (): Promise<{ otpauthUrl: string }> => request("auth/totp/enroll", { method: "POST", body: {} }),
+  totpEnrollConfirm: (token: string): Promise<{ ok: true }> =>
+    request("auth/totp/enroll/confirm", { method: "POST", body: { token } }),
 };
 
 // أخطاء عامة بالعربي (§11: الخادم يرد رسائل عامة — الواجهة تترجم الحالة فقط)

@@ -73,6 +73,35 @@ export interface ListOrdersResponse {
   orders: OrderRow[];
 }
 
+// GET /api/orders/:id — تفاصيل الطلب (§10.1). عقد الـ API أوسع (أحداث/عروض/مرفقات)؛
+// نُمثّل هنا الحقول التي تعرضها الواجهة فقط (structural typing — الزائد يُتجاهل بأمان).
+// §3 v1 — merchant{name,phone} + merchantConfirmedAt يصلان بهذا العقد لا بقائمة اللوحة.
+export interface OrderDetail {
+  id: string;
+  publicCode: string;
+  service: Service;
+  status: OrderStatus;
+  customer: { name: string | null; phone: string | null };
+  driver: { id: string; name: string | null } | null;
+  merchant: { name: string; phone: string | null } | null; // §3 — الموزّع يتصل بالتاجر
+  merchantConfirmedAt: string | null; // §3 v1 — عمود عادي لا حالة (D8)
+  pickupText: string | null;
+  dropoffText: string | null;
+  recipientPhone: string | null;
+  notes: string | null;
+  price: PriceComponentStrings; // D5: كل مال string
+  createdAt: string;
+}
+
+export interface OrderDetailResponse {
+  order: OrderDetail;
+}
+
+// POST /api/orders/:id/merchant-confirm — §3 v1: يعلّم لحظة تأكيد التاجر (يُملأ مرة واحدة)
+export interface MerchantConfirmResponse {
+  order: { id: string; publicCode: string; merchantConfirmedAt: string };
+}
+
 // GET /api/drivers — العقد المتوقع من فريق الـ API (قائمة الإسناد اليدوي §10.1):
 // الاسم والحالة والنشِطة/السعة (D14) وآخر نقطة موقع. الحقول العددية اختيارية دفاعياً.
 export interface DriverRow {

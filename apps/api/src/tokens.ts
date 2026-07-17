@@ -6,3 +6,4 @@ export const DB = "DB";
 export const REDIS = "REDIS";
 export const TG_QUEUE = "TG_QUEUE";
 export const BROADCAST_Q = "BROADCAST_Q";
+export const SCHEDULED_Q = "SCHEDULED_Q";

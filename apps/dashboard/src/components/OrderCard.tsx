@@ -11,11 +11,14 @@ export function OrderCard({
   slaBreached = false,
   meta,
   footer,
+  onOpen,
 }: {
   order: OrderRow;
   slaBreached?: boolean;
   meta?: ReactNode;
   footer?: ReactNode;
+  /** §10.1 — فتح تفاصيل الطلب (§3 v1: منها زر "المطعم أكّد")؛ يجعل الكود قابلاً للنقر. */
+  onOpen?: () => void;
 }) {
   return (
     <article
@@ -24,7 +27,17 @@ export function OrderCard({
       }`}
     >
       <div className="flex items-center justify-between gap-2">
-        <bdi className="text-base font-bold text-slate-900">{order.publicCode}</bdi>
+        {onOpen !== undefined ? (
+          <button
+            type="button"
+            onClick={onOpen}
+            className="text-base font-bold text-sky-700 hover:underline"
+          >
+            <bdi>{order.publicCode}</bdi>
+          </button>
+        ) : (
+          <bdi className="text-base font-bold text-slate-900">{order.publicCode}</bdi>
+        )}
         <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
           {order.service !== undefined ? SERVICE_LABELS[order.service] : "—"}
         </span>

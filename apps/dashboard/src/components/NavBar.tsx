@@ -11,6 +11,7 @@ const LINKS = [
   { href: "/settlements", label: "التسوية" },
   { href: "/analytics", label: "التحليلات" },
   { href: "/broadcasts", label: "البث" },
+  { href: "/settings/security", label: "الأمان" }, // §10.2 — تسجيل المصادقة الثنائية
 ] as const;
 
 export function NavBar() {

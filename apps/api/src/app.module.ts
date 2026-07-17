@@ -1,11 +1,11 @@
 // رموز الحقن أولاً — قبل أي كنترولر — كي تُهيَّأ قيمها قبل تقييم مُزخرِفات @Inject
 // في الخدمات (التي تعيد استيرادها من هنا)؛ وإلا حلقة الاستيراد تجعلها undefined.
-import { BROADCAST_Q, DB, ENV, REDIS, TG_QUEUE } from "./tokens.js";
-export { BROADCAST_Q, DB, ENV, REDIS, TG_QUEUE };
+import { BROADCAST_Q, DB, ENV, REDIS, SCHEDULED_Q, TG_QUEUE } from "./tokens.js";
+export { BROADCAST_Q, DB, ENV, REDIS, SCHEDULED_Q, TG_QUEUE };
 import { Inject, Module, type OnApplicationShutdown } from "@nestjs/common";
 import { APP_GUARD, APP_INTERCEPTOR } from "@nestjs/core";
 import { createDb, type DbHandle } from "@quickdrop/db";
-import { BROADCAST_QUEUE, TG_UPDATES_QUEUE, type BroadcastJob } from "@quickdrop/shared";
+import { BROADCAST_QUEUE, SCHEDULED_QUEUE, TG_UPDATES_QUEUE, type BroadcastJob, type ScheduledOrderJob } from "@quickdrop/shared";
 import { Queue } from "bullmq";
 import { Redis } from "ioredis";
 import { AdminController } from "./admin/admin.controller.js";
@@ -91,6 +91,13 @@ import { TrackingController } from "./tracking/tracking.controller.js";
         new Queue<BroadcastJob>(BROADCAST_QUEUE, { connection: redis }),
       inject: [REDIS],
     },
+    {
+      // §6.3 — منتج طابور الجدولة: يدفع مهمة مؤجّلة عند إنشاء طلب بموعد مستقبلي
+      provide: SCHEDULED_Q,
+      useFactory: (redis: Redis): Queue<ScheduledOrderJob> =>
+        new Queue<ScheduledOrderJob>(SCHEDULED_QUEUE, { connection: redis }),
+      inject: [REDIS],
+    },
     TelegramGatewayService,
     OrdersService,
     DriversService,
@@ -111,12 +118,14 @@ export class AppModule implements OnApplicationShutdown {
     @Inject(REDIS) private readonly redis: Redis,
     @Inject(TG_QUEUE) private readonly queue: Queue,
     @Inject(BROADCAST_Q) private readonly broadcastQueue: Queue<BroadcastJob>,
+    @Inject(SCHEDULED_Q) private readonly scheduledQueue: Queue<ScheduledOrderJob>,
   ) {}
 
   // §12 — إغلاق نظيف: استنزف ثم أغلق؛ وإلا كل نشرة deploy بتقطع طلبات بنصها.
   async onApplicationShutdown(): Promise<void> {
     await this.queue.close();
     await this.broadcastQueue.close();
+    await this.scheduledQueue.close();
     this.redis.disconnect();
     await this.db.close();
   }

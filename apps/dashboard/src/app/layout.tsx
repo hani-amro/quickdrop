@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { ImpersonationBanner } from "@/components/ImpersonationBanner";
 import { NavBar } from "@/components/NavBar";
 import { ToastProvider } from "@/components/Toast";
 import "./globals.css";
@@ -15,6 +16,8 @@ export default function RootLayout({ children }: { children: ReactNode }) {
     <html lang="ar" dir="rtl">
       <body className="min-h-dvh">
         <ToastProvider>
+          {/* §10.2 — شريط "أنت تشاهد كمكتب" البرتقالي: يظهر فقط بجلسة readonly (دعم) */}
+          <ImpersonationBanner />
           <NavBar />
           <main className="mx-auto max-w-screen-2xl px-4 py-4">{children}</main>
         </ToastProvider>

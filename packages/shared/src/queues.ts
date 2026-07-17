@@ -54,3 +54,15 @@ export interface BroadcastJob {
   tenantId: string;
   broadcastId: string;
 }
+
+// §6.3 — طابور الطلبات المجدولة: الـ api يدفع مهمة مؤجّلة عند إنشاء طلب بموعد مستقبلي
+// (delay = scheduled_at − الآن)، والـ worker يستهلكها عند الموعد فيطلق الطلب
+// scheduled→pending بفاعل system. القاعدة مصدر الحقيقة لا الطابور (§12): orders.scheduled_at
+// يبقى بعد ضياع Redis، وjobId حتمي = 'sched:{orderId}' يزيل تكرار at-least-once ويجعل
+// إعادةَ جدولة الـ worker عند الإقلاع idempotentة مع مهمة الـ api الأصلية.
+export const SCHEDULED_QUEUE = "scheduled";
+
+export interface ScheduledOrderJob {
+  tenantId: string;
+  orderId: string;
+}
