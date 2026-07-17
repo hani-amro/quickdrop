@@ -42,6 +42,9 @@ export function isSessionGuardedPath(rawPath: string): boolean {
     return false;
   }
   if (path === "/api/admin" || path.startsWith("/api/admin/")) return false;
+  // §10.3 — الـ Mini App نطاق زبون ذاتي المصادقة (initData ثم توكن Bearer مجهول)،
+  // ليس نطاق الطاقم — يحرسه MiniappService بنفسه. حرسه بجلسة الطاقم كان سيمنعه كلياً.
+  if (path === "/api/miniapp" || path.startsWith("/api/miniapp/")) return false;
   return true;
 }
 

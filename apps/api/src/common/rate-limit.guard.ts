@@ -108,21 +108,30 @@ export interface IpSource {
   socket?: { remoteAddress?: string | undefined } | undefined;
 }
 
-/** أول IP بترويسة X-Forwarded-For (العميل الأصلي خلف Caddy) — يقبل النص أو المصفوفة. */
-function firstForwardedIp(value: string | string[] | undefined): string | undefined {
+/**
+ * §11 — آخر IP بترويسة X-Forwarded-For. **حرج أمنياً**: أقصى اليسار يتحكّم به المهاجم
+ * (Caddy يُلحِق IP القرين الحقيقي لأي XFF يرسله العميل، لا يستبدله)، فأخذُه يُفرّغ كل
+ * طبقات حد المعدل لكل IP (تخمين كلمات السر/TOTP بلا سقف + إغراق /api/miniapp/auth).
+ * القرين الحقيقي = آخر مُدخَل يُلحقه الوكيل الموثوق الوحيد (Caddy). دفاع مضاعف:
+ * Caddyfile يعيد ضبط XFF إلى {remote_host}. يقبل النص أو المصفوفة.
+ */
+function lastForwardedIp(value: string | string[] | undefined): string | undefined {
   if (value === undefined) return undefined;
-  const raw = Array.isArray(value) ? value[0] : value;
+  // مصفوفة = عدة ترويسات XFF؛ آخر قيمة بآخر ترويسة هي التي ألحقها الوكيل الأقرب
+  const raw = Array.isArray(value) ? value[value.length - 1] : value;
   if (raw === undefined) return undefined;
-  const first = raw.split(",")[0]?.trim();
-  return first !== undefined && first.length > 0 ? first : undefined;
+  const parts = raw.split(",");
+  const last = parts[parts.length - 1]?.trim();
+  return last !== undefined && last.length > 0 ? last : undefined;
 }
 
 /**
- * §11 — IP الحقيقي خلف Caddy: X-Forwarded-For (أقصى يسار = العميل) وإلا socket ip.
- * Caddy يضبط الترويسة بقفزة ثقة واحدة، فأقصى اليسار هو العميل الفعلي.
+ * §11 — IP الحقيقي خلف Caddy: آخر مُدخَل بـ X-Forwarded-For (قفزة ثقة واحدة = Caddy،
+ * وهو من يُلحق القرين الفعلي أخيراً) وإلا socket ip. المهاجم قد يسبق بمدخلات مزيّفة
+ * لكن لا يستطيع الإلحاق بعد Caddy، فآخر مُدخَل غير قابل للتزوير بهذا الطوبولوجي.
  */
 export function clientIp(req: IpSource): string {
-  const forwarded = firstForwardedIp(req.headers["x-forwarded-for"]);
+  const forwarded = lastForwardedIp(req.headers["x-forwarded-for"]);
   if (forwarded !== undefined) return forwarded;
   const direct = req.ip ?? req.socket?.remoteAddress;
   return direct !== undefined && direct.length > 0 ? direct : "unknown";

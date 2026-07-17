@@ -41,10 +41,13 @@
 	import security_headers
 	encode zstd gzip
 
-	# Caddy يمرّر ترقية WebSocket (Upgrade/Connection) تلقائياً بلا إعداد إضافي —
-	# لوحة الإرسال الحية /board (Socket.IO §10.1) تعمل عبر reverse_proxy مباشرة.
-	# webhook تيليغرام PUBLIC_URL/tg/<slug> يصل هنا أيضاً (§4.4).
-	reverse_proxy api:3000
+	# §11 أمان حرج: أعِد ضبط X-Forwarded-For إلى القرين الحقيقي وحده. الافتراضي (إلحاق)
+	# يترك أقصى اليسار تحت تحكّم العميل، فيُفرّغ حد المعدل لكل IP (تخمين كلمات السر/TOTP
+	# بلا سقف + إغراق /api/miniapp/auth). {remote_host} = القرين المتصل بـ Caddy فقط.
+	# دفاع مضاعف مع clientIp() التي تأخذ آخر مُدخَل (rate-limit.guard).
+	reverse_proxy api:3000 {
+		header_up X-Forwarded-For {remote_host}
+	}
 }
 
 # —— (اختياري) تخزين POD عبر نطاق منفصل عند الحاجة لروابط S3 موقّعة يصلها المتصفح مباشرة ——

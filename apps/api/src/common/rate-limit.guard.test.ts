@@ -89,13 +89,19 @@ describe("rateLimitKey — اشتقاق المفتاح لكل (طبقة، IP)", 
   });
 });
 
-describe("clientIp — IP الحقيقي خلف Caddy", () => {
-  it("يأخذ أقصى يسار X-Forwarded-For (العميل الأصلي)", () => {
-    expect(clientIp({ headers: { "x-forwarded-for": "9.9.9.9, 10.0.0.1" } })).toBe("9.9.9.9");
+describe("clientIp — IP الحقيقي خلف Caddy (آخر مُدخَل)", () => {
+  it("يأخذ آخر مُدخَل بـ X-Forwarded-For (القرين الذي ألحقه Caddy)", () => {
+    expect(clientIp({ headers: { "x-forwarded-for": "9.9.9.9, 10.0.0.1" } })).toBe("10.0.0.1");
   });
-  it("يقصّ الفراغات ويقبل الترويسة كمصفوفة", () => {
-    expect(clientIp({ headers: { "x-forwarded-for": "  9.9.9.9  " } })).toBe("9.9.9.9");
-    expect(clientIp({ headers: { "x-forwarded-for": ["9.9.9.9, 10.0.0.1"] } })).toBe("9.9.9.9");
+  it("لا يُخدَع بمدخلات مزيّفة يسبق بها المهاجم (تجاوز حد المعدل — HIGH)", () => {
+    // المهاجم يرسل XFF مزيّفاً، وCaddy يُلحق قرينه الحقيقي أخيراً → آخر مُدخَل هو الصادق
+    expect(clientIp({ headers: { "x-forwarded-for": "1.2.3.4, 5.6.7.8, 203.0.113.7" } })).toBe("203.0.113.7");
+    expect(clientIp({ headers: { "x-forwarded-for": "forged-junk, 203.0.113.7" } })).toBe("203.0.113.7");
+  });
+  it("يقصّ الفراغات ويأخذ آخر عنصر عند تعدّد ترويسات XFF (مصفوفة)", () => {
+    expect(clientIp({ headers: { "x-forwarded-for": "  10.0.0.1  " } })).toBe("10.0.0.1");
+    expect(clientIp({ headers: { "x-forwarded-for": ["9.9.9.9", "10.0.0.1"] } })).toBe("10.0.0.1");
+    expect(clientIp({ headers: { "x-forwarded-for": ["1.1.1.1, 2.2.2.2"] } })).toBe("2.2.2.2");
   });
   it("يسقط إلى req.ip ثم socket.remoteAddress عند غياب الترويسة", () => {
     expect(clientIp({ headers: {}, ip: "7.7.7.7" })).toBe("7.7.7.7");

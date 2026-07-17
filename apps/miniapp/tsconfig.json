@@ -1,0 +1,28 @@
+{
+  // tsconfig مستقل لـ Vite (bundler resolution + react-jsx يتعارضان مع NodeNext/emit
+  // في tsconfig.base.json) — لكن بنفس صرامة الجذر حرفياً:
+  // strict + noUncheckedIndexedAccess + noImplicitOverride + exactOptionalPropertyTypes.
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "exactOptionalPropertyTypes": true,
+    "forceConsistentCasingInFileNames": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "verbatimModuleSyntax": true,
+    "useDefineForClassFields": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true,
+    "noEmit": true
+  },
+  "include": ["src", "vite.config.ts"]
+}

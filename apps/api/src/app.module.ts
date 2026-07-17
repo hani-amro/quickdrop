@@ -32,6 +32,8 @@ import { LoyaltyService } from "./loyalty/loyalty.service.js";
 import { ReferralsController } from "./loyalty/referrals.controller.js";
 import { MerchantsController } from "./merchants/merchants.controller.js";
 import { MerchantsService } from "./merchants/merchants.service.js";
+import { MiniappController } from "./miniapp/miniapp.controller.js";
+import { MiniappService } from "./miniapp/miniapp.service.js";
 import { OrdersController } from "./orders/orders.controller.js";
 import { OrdersService } from "./orders/orders.service.js";
 import { SettlementsController } from "./settlements/settlements.controller.js";
@@ -48,6 +50,7 @@ import { TrackingController } from "./tracking/tracking.controller.js";
     OrdersController,
     DriversController,
     MerchantsController, // §3 — إدارة التجار وكتالوجهم
+    MiniappController, // §10.3 — واجهة الـ Mini App (initData + توكن + بيانات)
     SettlementsController,
     SupportController, // §9 — خيوط الدعم (customer↔support)
     LoyaltyController, // §9 — GET /api/loyalty/:userId
@@ -108,6 +111,7 @@ import { TrackingController } from "./tracking/tracking.controller.js";
     OrdersService,
     DriversService,
     MerchantsService, // §3 — إدارة التجار وكتالوجهم
+    MiniappService, // §10.3 — واجهة الـ Mini App
     SettlementsService,
     SupportService, // §9 — خيوط الدعم (customer↔support)
     LoyaltyService, // §9 — الولاء/الكوبونات/الإحالات
