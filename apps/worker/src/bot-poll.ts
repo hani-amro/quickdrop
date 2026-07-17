@@ -1,5 +1,5 @@
 import { createDb, tenants } from "@quickdrop/db";
-import { parseEnv } from "@quickdrop/shared";
+import { installConsoleRedactor, parseEnv } from "@quickdrop/shared";
 import { decryptBotToken, getBotForTenant } from "@quickdrop/telegram";
 import { createStorageClient, tryLoadStorageConfig } from "@quickdrop/storage";
 import { isNotNull } from "drizzle-orm";
@@ -13,6 +13,8 @@ import { registerTenantFlows, type UpdateProcessorDeps } from "./update-processo
 //
 // تشغيل: pnpm --filter @quickdrop/worker bot-poll   (بعد tenant:provision --skip-webhook)
 // **لا يعمل مع أي مستأجر مسجَّل بـ webhook** — تيليغرام لا يسمح بالاثنين معاً (409).
+
+installConsoleRedactor(); // §11 — كل console.* يمرّ بالمنقّح (أسرار/هواتف) قبل الطباعة
 
 const env = parseEnv(
   z.object({

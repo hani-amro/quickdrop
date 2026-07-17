@@ -12,7 +12,7 @@
   "dependencies": {
     "@quickdrop/db": "workspace:*",
     "@quickdrop/shared": "workspace:*",
-    "drizzle-orm": "^0.44.0",
+    "drizzle-orm": "^0.45.2",
     "grammy": "^1.36.0",
     "zod": "^3.24.0"
   },

@@ -21,3 +21,15 @@ export async function bumpOrderRate(redis: ConvRedis, tenantId: string, telegram
   if (count === 1) await redis.expire(key, WINDOW_S); // نافذة تبدأ من أول طلب
   return count;
 }
+
+// §11 — حد رسائل الدعم الواردة لكل مستخدم (نافذة دقيقة): يمنع إغراق خيط الدعم وجداول
+// support_messages/webhook_updates. أكثر تساهلاً من الطلبات (محادثة طبيعية) لكنه يحدّ البث.
+export const SUPPORT_MSG_LIMIT_PER_MINUTE = 10;
+const SUPPORT_WINDOW_S = 60;
+
+export async function bumpSupportRate(redis: ConvRedis, tenantId: string, telegramUserId: number): Promise<number> {
+  const key = `rl:support:${tenantId}:${telegramUserId}`;
+  const count = await redis.incr(key);
+  if (count === 1) await redis.expire(key, SUPPORT_WINDOW_S);
+  return count;
+}

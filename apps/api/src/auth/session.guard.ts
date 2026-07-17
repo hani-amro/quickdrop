@@ -29,9 +29,9 @@ import { parseCookies, SESSION_COOKIE } from "./cookie.js";
  *   أي مسار auth مستقبلي يُحرس افتراضياً، لا فتح مفتوح.
  */
 export function isSessionGuardedPath(rawPath: string): boolean {
-  // §11 — Express case-insensitive: نطبّع الحالة قبل أي مقارنة (وإلا مسار مختلط الأحرف
-  // يتخطّى الحارس؛ نفس فئة ثغرة AdminGuard).
-  const path = rawPath.toLowerCase();
+  // §11 — Express يوجّه case-insensitive ويقبل شرطة زائدة: نطبّع الحالة والشرطة الأخيرة
+  // قبل أي مقارنة (وإلا /API/... أو /api/.../ يتخطّى الحارس أو يقع بتصنيف خاطئ).
+  const path = rawPath.toLowerCase().replace(/\/+$/, "") || "/";
   if (!path.startsWith("/api/")) return false;
   if (
     path === "/api/auth/login" ||
@@ -48,14 +48,22 @@ export function isSessionGuardedPath(rawPath: string): boolean {
   return true;
 }
 
-/** tenantSlug المرسل (جسم أو استعلام) إن وُجد — لمقارنته بنطاق الجلسة. */
-export function readRequestedTenantSlug(body: unknown, query: Record<string, unknown>): string | undefined {
+/**
+ * §11 أمان حرج — كل قيَم tenantSlug المرسلة (**جسم وواستعلام معاً**). سابقاً كنا نقرأ
+ * الجسم ثم نسقط للاستعلام: مهاجم يضع slug نفسه بالجسم (يمرّر الحارس) وslug الضحية
+ * بالاستعلام (تقرؤه خدمات GET) → تسرّب قراءة كامل بين المستأجرين. لذلك نُرجع **كل**
+ * المصادر ونرفض إن اختلف أيٌّ منها عن الجلسة (والحمولة تُفحَص حتى على GET لأن body-parser
+ * يحلّلها لأي طريقة تحمل content-type: application/json).
+ */
+export function readRequestedTenantSlugs(body: unknown, query: Record<string, unknown>): string[] {
+  const slugs: string[] = [];
   if (typeof body === "object" && body !== null && !Array.isArray(body)) {
     const fromBody = (body as Record<string, unknown>)["tenantSlug"];
-    if (typeof fromBody === "string") return fromBody;
+    if (typeof fromBody === "string") slugs.push(fromBody);
   }
   const fromQuery = query["tenantSlug"];
-  return typeof fromQuery === "string" ? fromQuery : undefined;
+  if (typeof fromQuery === "string") slugs.push(fromQuery);
+  return slugs;
 }
 
 /** الطلب بعد نجاح الجلسة يحمل هويتها — للخدمات التي تحتاج فاعلاً (actor) لاحقاً. */
@@ -110,10 +118,11 @@ export class SessionGuard implements CanActivate {
       throw new ForbiddenException("جلسة مشاهدة");
     }
 
-    // §10.2 — نطاق الجلسة مستأجر واحد: tenantSlug المرسل (إن وُجد) يجب أن يطابق
-    // جلسة المستخدم — الأبسط المنصوص: تحقق التطابق بدل إعادة كتابة المدخلات.
-    const requested = readRequestedTenantSlug(request.body, request.query);
-    if (requested !== undefined && requested !== session.tenantSlug) {
+    // §10.2 — نطاق الجلسة مستأجر واحد: **كل** tenantSlug مرسل (جسم أو استعلام) يجب أن
+    // يطابق جلسة المستخدم. فحص المصدرين معاً (لا الأول فقط) يسدّ تسرّب القراءة بين
+    // المستأجرين عبر جسم-خادع/استعلام-ضحية على مسارات GET (ثغرة حرجة §11).
+    const requestedSlugs = readRequestedTenantSlugs(request.body, request.query);
+    if (requestedSlugs.some((slug) => slug !== session.tenantSlug)) {
       // §13 لوغ منظّم — المعرّفات فقط؛ الرد عام (§11): لا نكشف أن الـ slug الآخر موجود
       console.warn(
         JSON.stringify({ action: "session_guard", outcome: "tenant_mismatch", tenant_id: session.tenantId, actor: session.staffId }),

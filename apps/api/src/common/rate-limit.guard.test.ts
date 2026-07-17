@@ -43,6 +43,11 @@ describe("classifyRoute — تصنيف المسار لطبقة الحدّ", () =
     expect(classifyRoute("POST", "/api/auth/totp/verify")).toBe(RATE_TIERS.login);
     expect(classifyRoute("POST", "/api/admin/auth/login")).toBe(RATE_TIERS.login);
   });
+  it("انحدار: شرطة زائدة على مسار الدخول تبقى بطبقة login (لا تنزلق للعامة الواسعة)", () => {
+    expect(classifyRoute("POST", "/api/auth/login/")).toBe(RATE_TIERS.login);
+    expect(classifyRoute("POST", "/api/auth/totp/verify/")).toBe(RATE_TIERS.login);
+    expect(classifyRoute("POST", "/API/Admin/Auth/Login/")).toBe(RATE_TIERS.login); // حالة + شرطة
+  });
   it("GET على مسار الدخول ليس قوة غاشمة → العام", () => {
     expect(classifyRoute("GET", "/api/auth/login")).toBe(RATE_TIERS.global);
   });

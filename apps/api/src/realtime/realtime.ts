@@ -1,17 +1,15 @@
 import type { Server as HttpServer } from "node:http";
-import { tenants, type Db } from "@quickdrop/db";
 import {
+  realtimeTicketKey,
   roomForTenant,
   RT_BOARD_NAMESPACE,
   RT_EVENTS,
   RT_REDIS_CHANNEL,
   rtMessageSchema,
-  secretsEqual,
   type DriverLocationEvent,
   type OrderChangedEvent,
 } from "@quickdrop/shared";
 import { createAdapter } from "@socket.io/redis-adapter";
-import { eq } from "drizzle-orm";
 import { Redis } from "ioredis";
 import { Server, type Namespace } from "socket.io";
 import { z } from "zod";
@@ -23,21 +21,14 @@ import { z } from "zod";
 // والبث عبر الـ adapter كان سيوصل الحدث لكل عميل بعدد العقد؛ الـ adapter يبقى
 // للتوسع الأفقي (أي بث مستقبلي يصدر من عقدة واحدة — من الـ api نفسه — يعبر به).
 //
-// ⚠️ قرار v1 مؤقت موثّق (§10.2): الـ handshake يقبل اتصالاً **بلا سر** —
-// STAFF_API_TOKEN لا يصل المتصفح أبداً (§11) وWS لا يمر بالـ proxy الخادمي للداشبورد،
-// فلا قناة سر متاحة قبل جلسات §10.2 (cookie HttpOnly + Redis). التخفيفات الملزمة:
-// (1) الحمولات المبثوثة معرّفات وحالات وإحداثيات فقط — لا PII ولا مبالغ (عقد
-// packages/shared/realtime.ts)؛ (2) الاتصال يُضم لغرفة الـ slug المعلن حصراً ولا
-// يستطيع الانضمام لغرف أخرى؛ (3) إن قدّم العميل token يُتحقق بـ secretsEqual.
-// جلسات §10.2 تستبدل هذا القرار بأول مرحلة مصادقة — لا تبنِ فوقه.
+// §10.1/§11 — المصادقة بتذكرة: الـ handshake يتطلب auth.ticket صالحة (يصدرها الـ api
+// لجلسة موثّقة عبر POST /api/realtime/ticket، مربوطة بمستأجرها). سابقاً كان يقبل اتصالاً
+// بلا سرّ فأي مَن يعرف slug المستأجر العام يشترك ببث GPS السائقين (تسرّب عابر للمستأجرين).
+// التذكرة تُستهلك لمرة واحدة وتحدّد المستأجر مباشرة (لا اختيار slug من العميل).
 
 export interface RealtimeDeps {
-  /** عملاء Redis الثلاثة (pub/sub للـ adapter + مشترك قناة الـ worker) يُنشأون منه. */
+  /** عملاء Redis (pub/sub للـ adapter + مشترك قناة الـ worker + فحص التذاكر) يُنشأون منه. */
   redisUrl: string;
-  /** مؤقت §10.2 — إن قدّم العميل auth.token يجب أن يطابقه (secretsEqual). */
-  staffToken: string | undefined;
-  /** حل slug → tenantId عند الـ handshake (قراءة tenants — استثناء RLS مسمّى §2.3). */
-  db: Db;
 }
 
 // ثوابت محلية مسماة للأسماء المحسوبة أدناه — النوع مربوط بمصدر الحقيقة (shared):
@@ -64,19 +55,18 @@ export interface RealtimeHandle {
   close(): Promise<void>;
 }
 
-// §11 — حدود النظام تمر بـ Zod: حمولة handshake من متصفح غير موثوق.
+// §11 — حدود النظام تمر بـ Zod: حمولة handshake من متصفح غير موثوق. التذكرة hex 128-bit.
 const handshakeAuthSchema = z.object({
-  // نفس قيد slug عند provision-tenant
-  tenantSlug: z.string().regex(/^[a-z0-9-]{2,32}$/),
-  token: z.string().min(1).optional(),
+  ticket: z.string().regex(/^[0-9a-f]{32}$/),
 });
 
 /**
- * غرفة الاتصال من حمولة الـ handshake، أو null = رفض (السبب باللوغ فقط — §11:
- * العميل يرى "unauthorized" عامة دائماً، لا تفاصيل تفرّق slug مجهولاً عن معلّق).
+ * §10.1/§11 — غرفة الاتصال من التذكرة (تُستهلك لمرة واحدة): GET+DEL ذرّي لمفتاحها بـ Redis
+ * يعيد tenantId المربوطة به عند الإصدار (لجلسة موثّقة). null = رفض عام (السبب باللوغ).
+ * لا اختيار مستأجر من العميل — المستأجر مشتق من التذكرة حصراً.
  */
 async function resolveBoardRoom(
-  deps: RealtimeDeps,
+  ticketRedis: Redis,
   auth: Record<string, unknown>,
 ): Promise<{ room: string; tenantId: string } | null> {
   const parsed = handshakeAuthSchema.safeParse(auth);
@@ -84,31 +74,14 @@ async function resolveBoardRoom(
     console.warn(JSON.stringify({ action: "rt_handshake_rejected", reason: "malformed_auth" }));
     return null;
   }
-
-  // token اختياري v1 (التعليق أعلى الملف) — لكن المقدَّم يجب أن يصح: توكن خاطئ
-  // صراحةً = رفض، وغياب STAFF_API_TOKEN = لا يمكن التحقق فيُرفض المقدَّم (لا فتح مفتوح).
-  if (parsed.data.token !== undefined) {
-    if (deps.staffToken === undefined || !secretsEqual(parsed.data.token, deps.staffToken)) {
-      console.warn(JSON.stringify({ action: "rt_handshake_rejected", reason: "bad_token" })); // لا يُسجَّل التوكن (§11)
-      return null;
-    }
-  }
-
-  // قراءة جدول tenants بالـ slug — استثناء RLS مسمّى (§2.3، نفس بوابة الـ webhook)
-  const rows = await deps.db
-    .select({ id: tenants.id, status: tenants.status })
-    .from(tenants)
-    .where(eq(tenants.slug, parsed.data.tenantSlug))
-    .limit(1);
-  const tenant = rows[0];
-  if (!tenant || tenant.status === "suspended" || tenant.status === "churned") {
-    // §14 — المعلّق/المؤرشف لا يُبث له شيء؛ المجهول لا يكشف وجوده (نفس الرد العام)
-    console.warn(
-      JSON.stringify({ action: "rt_handshake_rejected", reason: "tenant_unavailable", tenantSlug: parsed.data.tenantSlug }),
-    );
+  // GETDEL ذرّي: التذكرة لمرة واحدة (لا يعاد استخدامها من نافذة، ولا سباق يشترك مرتين)
+  const key = realtimeTicketKey(parsed.data.ticket);
+  const tenantId = await ticketRedis.getdel(key);
+  if (tenantId === null) {
+    console.warn(JSON.stringify({ action: "rt_handshake_rejected", reason: "bad_or_used_ticket" })); // لا تُسجَّل التذكرة
     return null;
   }
-  return { room: roomForTenant(tenant.id), tenantId: tenant.id };
+  return { room: roomForTenant(tenantId), tenantId };
 }
 
 /** إعادة بث رسالة قناة الـ worker لغرفة مستأجرها — محلياً (تعليق رأس الملف). */
@@ -163,7 +136,8 @@ export async function createRealtimeServer(httpServer: HttpServer, deps: Realtim
   const board: BoardNamespace = io.of(RT_BOARD_NAMESPACE);
 
   board.use((socket, next) => {
-    resolveBoardRoom(deps, socket.handshake.auth)
+    // pubClient عميل عادي (ليس subscriber) — صالح لـ GETDEL التذكرة
+    resolveBoardRoom(pubClient, socket.handshake.auth)
       .then(async (resolved) => {
         if (resolved === null) {
           next(new Error("unauthorized")); // §11 — رسالة عامة؛ السبب باللوغ أعلاه

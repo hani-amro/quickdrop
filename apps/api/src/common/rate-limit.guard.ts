@@ -71,9 +71,11 @@ export const RATE_TIERS = {
  * وإلا: دخول → طبقة login، تتبّع عام → طبقة track، والباقي → global.
  */
 export function classifyRoute(method: string, rawPath: string): RateTier | null {
-  // §11 — Express case-insensitive: نطبّع قبل التصنيف، وإلا مسار مختلط الأحرف
-  // (/API/auth/login) يقع بالطبقة العامة الواسعة بدل طبقة الدخول الضيقة (تجاوز قوة غاشمة).
-  const path = rawPath.toLowerCase();
+  // §11 — Express يوجّه case-insensitive ويقبل شرطة مائلة زائدة (routing غير صارم): لو
+  // قارنّا بحساسية الأحرف أو دون إزالة الـ'/' الأخيرة، مسارٌ مثل /API/auth/login أو
+  // /api/auth/login/ يصل نفس المعالج لكنه يقع بالطبقة العامة الواسعة بدل طبقة الدخول
+  // الضيقة (تجاوز خنق القوة الغاشمة على الدخول/TOTP/المشرف). نطبّع الحالة والشرطة معاً.
+  const path = rawPath.toLowerCase().replace(/\/+$/, "") || "/";
   if (path === "/health" || path.startsWith("/health/")) return null;
   if (path === "/metrics") return null; // §13 — كشط Prometheus الداخلي: 429 عليه يعمي المراقبة
   if (path.startsWith("/tg/")) return null;

@@ -23,6 +23,17 @@ export function roomForTenant(tenantId: string): string {
   return `tenant:${tenantId}:board`;
 }
 
+// §10.1/§11 — تذكرة اتصال الوقت الحقيقي: الداشبورد (بجلسة صالحة) يطلب تذكرة قصيرة
+// العمر من الـ api عبر الـ proxy، ثم يمرّرها بالـ handshake؛ خادم الـ realtime يتحقق
+// منها (لمرة واحدة) فيربط الاتصال بمستأجر الجلسة. يستبدل قبول الـ handshake بلا سرّ
+// (كان أي مَن يعرف slug عاماً يشترك ببث GPS السائقين). التذكرة عشوائية 128-bit،
+// تُستهلك عند أول استخدام، وقصيرة العمر تحدّ نافذة التسريب.
+export const REALTIME_TICKET_TTL_S = 60;
+
+export function realtimeTicketKey(ticket: string): string {
+  return `rt:ticket:${ticket}`;
+}
+
 // —— أسماء الأحداث (socket.emit/on) — ثوابت لا سلاسل مبعثرة ——
 
 export const RT_EVENTS = {

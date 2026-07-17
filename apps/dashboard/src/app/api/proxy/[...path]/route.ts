@@ -49,18 +49,21 @@ async function forward(req: NextRequest, ctx: Ctx, method: "GET" | "POST"): Prom
     body = JSON.stringify({ ...(json as Record<string, unknown>), tenantSlug: env.TENANT_SLUG });
   }
 
+  // §11 أمان حرج — الجلسة (كوكي qd_session) هي السلطة الوحيدة. سابقاً كنا نحقن
+  // Bearer STAFF_API_TOKEN لأيّ طلب (حتى مجهول بلا كوكي) بافتراض "السقوط لمسار الآلة"،
+  // فكان أي زائر من الإنترنت يصل مسارات الطاقم كاملة عبر هذا الـ proxy. الآن: لا كوكي
+  // = 401 فوراً، ولا حقن توكن آلة أبداً في مسار متصفح؛ حارس الـ API يتحقق من الكوكي.
+  const browserCookie = req.headers.get("cookie");
+  if (browserCookie === null) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
   try {
-    // §10.2 — إن كان للمتصفح جلسة (كوكي qd_session) مرّرها فيتحقق منها حارس الـ API؛
-    // وإلا يبقى Bearer STAFF_API_TOKEN كبديل خادمي (الحارس يقبل أيّهما). الاثنان معاً
-    // آمنان: جلسة صالحة تُقبل، وغيابها يسقط لمسار الآلة.
-    const browserCookie = req.headers.get("cookie");
     const upstream = await fetch(target, {
       method,
       cache: "no-store",
       headers: {
         accept: "application/json",
-        authorization: `Bearer ${env.STAFF_API_TOKEN}`,
-        ...(browserCookie !== null ? { cookie: browserCookie } : {}),
+        cookie: browserCookie,
         ...(body !== undefined ? { "content-type": "application/json" } : {}),
       },
       ...(body !== undefined ? { body } : {}),

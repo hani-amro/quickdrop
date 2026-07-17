@@ -45,13 +45,21 @@ async function forward(req: NextRequest, ctx: Ctx, method: "GET" | "POST"): Prom
     body = JSON.stringify(json);
   }
 
+  // §11 أمان حرج — جلسة المشرف (كوكي qd_admin) هي السلطة الوحيدة. سابقاً كان هذا الـ proxy
+  // يحقن Bearer ADMIN_API_TOKEN لأيّ طلب بلا أي فحص جلسة (والـ middleware يستثني /api)،
+  // فكان أي مجهول من الإنترنت يصير مشرف منصّة كامل (قائمة المستأجرين/انتحال/تعديل). الآن:
+  // لا كوكي = 401، ونمرّر كوكي المتصفح ليتحقق منه AdminGuard؛ لا حقن توكن آلة بمسار متصفح.
+  const browserCookie = req.headers.get("cookie");
+  if (browserCookie === null) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
   try {
     const upstream = await fetch(target, {
       method,
       cache: "no-store",
       headers: {
         accept: "application/json",
-        authorization: `Bearer ${env.ADMIN_API_TOKEN}`,
+        cookie: browserCookie,
         ...(body !== undefined ? { "content-type": "application/json" } : {}),
       },
       ...(body !== undefined ? { body } : {}),

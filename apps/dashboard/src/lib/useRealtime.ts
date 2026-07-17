@@ -17,11 +17,9 @@ import { io } from "socket.io-client";
 // حدث تنفّذ الشاشة refetch فورياً بدل انتظار دورة الـ 3 ثوانٍ. المؤشر بثلاث حالات:
 // أخضر = WS حي، أصفر = polling فقط (WS منقطع/غير مهيأ)، أحمر = فشل الجلب نفسه.
 //
-// ⚠️ قرار v1 مؤقت موثّق (§10.2/§11): الاتصال **بلا سر** — STAFF_API_TOKEN لا يصل
-// المتصفح أبداً (§11)، وWS لا يمرَّر عبر proxy الـ Next الخادمي بسهولة، فلا قناة
-// سر متاحة قبل جلسات §10.2 (cookie HttpOnly + Redis). الخادم يضم الاتصال لغرفة
-// tenantSlug المعلن فقط، والمبثوث معرّفات وحالات وإحداثيات فقط — لا PII ولا مبالغ؛
-// حقيقة البيانات تُجلب دائماً عبر الـ proxy المصادَق. يُستبدل مع جلسات §10.2.
+// §10.1/§11 — المصادقة بتذكرة: قبل كل محاولة اتصال نجلب تذكرة لمرة واحدة عبر الـ proxy
+// المصادَق (كوكي الجلسة) من POST /api/proxy/realtime/ticket، ونمرّرها بالـ handshake.
+// الخادم يشتق المستأجر من التذكرة حصراً — فلا يشترك مَن يعرف slug عاماً ببث مستأجر آخر.
 
 export interface RealtimeHandlers {
   /** طلب تغيّرت حالته — الاستخدام المعتاد: refetch فوري (mutate) للوحة. */
@@ -44,17 +42,25 @@ export function useRealtime(handlers: RealtimeHandlers): RealtimeState {
   useEffect(() => {
     // NEXT_PUBLIC_* تُضمَّن نصياً بحزمة المتصفح وقت البناء — قيم عامة فقط (§11)
     const apiUrl = process.env.NEXT_PUBLIC_API_URL;
-    const tenantSlug = process.env.NEXT_PUBLIC_TENANT_SLUG;
-    if (apiUrl === undefined || apiUrl === "" || tenantSlug === undefined || tenantSlug === "") {
+    if (apiUrl === undefined || apiUrl === "") {
       // غير مهيأ = الشاشة تبقى على polling (أصفر) — تدهور مرئي، لا كسر ولا صمت (§16.12)
-      console.warn(
-        JSON.stringify({ action: "rt_disabled", reason: "missing NEXT_PUBLIC_API_URL / NEXT_PUBLIC_TENANT_SLUG" }),
-      );
+      console.warn(JSON.stringify({ action: "rt_disabled", reason: "missing NEXT_PUBLIC_API_URL" }));
       return;
     }
 
+    // §10.1 — auth callback: Socket.IO يناديه قبل كل محاولة (re)connect، فنجدّد التذكرة
+    // (لمرة واحدة) عبر الـ proxy المصادَق. فشل الجلب → {} → الخادم يرفض → أصفر (polling يغطي).
+    const fetchTicketAuth = (cb: (data: Record<string, unknown>) => void): void => {
+      fetch("/api/proxy/realtime/ticket", { method: "POST" })
+        .then((res) => (res.ok ? res.json() : Promise.reject(new Error(String(res.status)))))
+        .then((data: { ticket?: unknown }) => {
+          cb(typeof data.ticket === "string" ? { ticket: data.ticket } : {});
+        })
+        .catch(() => cb({}));
+    };
+
     // socket.io-client يعيد الاتصال تلقائياً (backoff مدمج) — الأصفر يظهر بين المحاولات
-    const socket = io(`${apiUrl}${RT_BOARD_NAMESPACE}`, { auth: { tenantSlug } });
+    const socket = io(`${apiUrl}${RT_BOARD_NAMESPACE}`, { auth: fetchTicketAuth });
 
     socket.on("connect", () => setWsAlive(true));
     socket.on("disconnect", () => setWsAlive(false));

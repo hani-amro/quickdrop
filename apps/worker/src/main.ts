@@ -2,6 +2,7 @@ import { createDb, fireScheduledOrder, offers, orders, scheduledDelayMs, webhook
 import {
   BROADCAST_QUEUE,
   DISPATCH_QUEUE,
+  installConsoleRedactor,
   NOTIFICATIONS_QUEUE,
   parseEnv,
   SCHEDULED_QUEUE,
@@ -25,6 +26,8 @@ import { startHousekeeping } from "./housekeeping.js";
 import { initSentry, startMetricsServer } from "./observability.js";
 import { startOutboxPoller } from "./outbox-poller.js";
 import { processUpdate, type UpdateProcessorDeps } from "./update-processor.js";
+
+installConsoleRedactor(); // §11 — كل console.* يمرّ بالمنقّح (أسرار/هواتف) قبل الطباعة
 
 const env = parseEnv(
   z.object({

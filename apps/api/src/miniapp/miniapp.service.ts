@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { Inject, Injectable, UnauthorizedException } from "@nestjs/common";
+import { HttpException, HttpStatus, Inject, Injectable, UnauthorizedException } from "@nestjs/common";
 import {
   createOrder,
   findOrCreateTelegramUser,
@@ -25,6 +25,9 @@ import { Redis } from "ioredis";
 const MINI_TOKEN_PREFIX = "mini:";
 const MINI_TOKEN_TTL_S = 900; // §10.3 — 15 دقيقة
 const INIT_DATA_MAX_AGE_S = 300; // §10.3 — رفض auth_date أقدم من 5 دقائق
+// §11 — نفس حد بوت الزبون: 5 طلبات/ساعة لكل زبون. مسار الـ Mini App كان بلا حد (البوت
+// يفرضه) فيُغرِق بوت التاجر بالإشعارات ويضخّم الجداول — نطابق الحد بمفتاح لكل (مستأجر، زبون).
+const MINIAPP_ORDER_LIMIT_PER_HOUR = 5;
 
 const authBodySchema = z.object({
   tenantSlug: slugSchema,
@@ -140,6 +143,14 @@ export class MiniappService {
   async createOrder(authorization: string | undefined, body: unknown): Promise<MiniappOrderResponse> {
     const session = await this.resolveToken(authorization);
     const input = parseOr400(createOrderBodySchema, body, "miniapp_order");
+
+    // §11 — حد المعدل لكل زبون (نافذة ساعة): INCR + EXPIRE عند أول طلب؛ فوق الحد = 429
+    const rateKey = `miniorder:${session.tenantId}:${session.userId}`;
+    const count = await this.redis.incr(rateKey);
+    if (count === 1) await this.redis.expire(rateKey, 3600);
+    if (count > MINIAPP_ORDER_LIMIT_PER_HOUR) {
+      throw new HttpException("too many orders", HttpStatus.TOO_MANY_REQUESTS); // §11 رسالة عامة
+    }
 
     const { order } = await createOrder(this.handle.db, session.tenantId, {
       service: "food",

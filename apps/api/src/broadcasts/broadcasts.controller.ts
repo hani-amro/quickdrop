@@ -1,15 +1,15 @@
 import { Body, Controller, Get, Headers, Post, Query } from "@nestjs/common";
+import { Roles } from "../auth/roles.decorator.js";
 import {
   BroadcastsService,
   type CreateBroadcastResponse,
   type ListBroadcastsResponse,
 } from "./broadcasts.service.js";
 
-// §4.3/§14 — REST البث الجماهيري:
-//   POST /api/broadcasts  → إنشاء بثّة (ودفعها فوراً إن غير مجدولة)
-//   GET  /api/broadcasts  → قائمة البثات بعدّاداتها
-// التحقق (Zod §11) والتخويل المؤقت (Bearer STAFF_API_TOKEN — §10.2 لاحقاً) بالخدمة.
+// §4.3/§14 — REST البث الجماهيري. التحقق (Zod §11) بالخدمة. §10.2/§11 — البث للكل قناة
+// حسّاسة: محصورة بدور owner/dispatcher (RolesGuard)، فلا يبثّ دور support/accountant.
 @Controller("api/broadcasts")
+@Roles("owner", "dispatcher")
 export class BroadcastsController {
   constructor(private readonly broadcasts: BroadcastsService) {}
 

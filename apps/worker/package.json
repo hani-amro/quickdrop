@@ -17,7 +17,7 @@
     "@quickdrop/telegram": "workspace:*",
     "@sentry/node": "^10.65.0",
     "bullmq": "^5.34.0",
-    "drizzle-orm": "^0.44.0",
+    "drizzle-orm": "^0.45.2",
     "grammy": "^1.36.0",
     "ioredis": "^5.11.1",
     "prom-client": "^15.1.3",

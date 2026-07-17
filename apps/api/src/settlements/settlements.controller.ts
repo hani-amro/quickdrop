@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Headers, HttpCode, Post, Query } from "@nestjs/common";
+import { Roles } from "../auth/roles.decorator.js";
 import {
   SettlementsService,
   type AdjustSettlementResponse,
@@ -12,8 +13,10 @@ import {
 //   POST /api/settlements/close             → إغلاق يوم سائق (settlements + قيد remitted §8.2)
 //   POST /api/settlements/adjust            → تصفية بقايا الذمّة بقيد adjustment/payout جديد
 //                                             (append-only — لا إعادة فتح تسوية مغلقة §8.2)
-// التحقق (Zod §11) والتخويل المؤقت (Bearer STAFF_API_TOKEN) بالخدمة — نفس نمط orders.
+// التحقق (Zod §11) بالخدمة. §10.2/§11 — التسوية شأن مالي: محصورة بدور owner/accountant
+// (RolesGuard)، فلا يفتعل دور support/dispatcher قيود payout/adjustment (threat #2).
 @Controller("api/settlements")
+@Roles("owner", "accountant")
 export class SettlementsController {
   constructor(private readonly settlements: SettlementsService) {}
 

@@ -1,5 +1,5 @@
 import { appendInboundMessage, catalogItems, createOrder, merchants, orders, quoteForTenant, users, withTenant, type Db, type User } from "@quickdrop/db";
-import { bumpOrderRate, isOverLimit } from "./rate-limit.js";
+import { bumpOrderRate, bumpSupportRate, isOverLimit, SUPPORT_MSG_LIMIT_PER_MINUTE } from "./rate-limit.js";
 import { formatMoney, fromTelegram, makePoint, type Service } from "@quickdrop/shared";
 import { and, eq, sql } from "drizzle-orm";
 import { InlineKeyboard, Keyboard, type Bot, type Context } from "grammy";
@@ -286,8 +286,10 @@ export function registerCustomerFlow(bot: Bot, deps: CustomerFlowDeps): void {
     guard(deps, "contact", async (ctx) => {
       if (!ctx.from || !ctx.chat) return;
       const contact = ctx.message.contact;
-      // نقبل رقم صاحب المحادثة نفسه فقط — لا جهات اتصال الآخرين
-      if (contact.user_id !== undefined && contact.user_id !== ctx.from.id) {
+      // نقبل رقم صاحب المحادثة نفسه فقط عبر زر request_contact. الرقم بلا user_id (بطاقة
+      // جهة اتصال يدوية لرقم غير مسجّل بتيليغرام) قد يكون رقم ضحية — نرفضه (§11): غياب
+      // user_id = رفض، لا قبول. سابقاً كان الشرط يتخطّى الرفض عند undefined فيُحفَظ رقم أي أحد.
+      if (contact.user_id === undefined || contact.user_id !== ctx.from.id) {
         await ctx.reply("رجاءً شارك رقمك أنت عبر زر «مشاركة رقم الهاتف» 🙏", { reply_markup: phoneKeyboard() });
         return;
       }
@@ -676,6 +678,12 @@ export function registerCustomerFlow(bot: Bot, deps: CustomerFlowDeps): void {
       const text = ctx.message.text.trim();
       if (text.length === 0) {
         await ctx.reply("اكتب رسالتك النصية للمكتب 🙏");
+        return; // نبقى بوضع الدعم
+      }
+      // §11 — حد الإغراق: رسائل الدعم الواردة لكل مستخدم/دقيقة (يحمي جداول الدعم/الـ inbox)
+      const supportCount = await bumpSupportRate(deps.redis, deps.tenantId, ctx.from.id);
+      if (isOverLimit(supportCount, SUPPORT_MSG_LIMIT_PER_MINUTE)) {
+        await ctx.reply("وصلنا كثير رسائل بسرعة 🙏 نظّم رسالتك وابعتها بعد دقيقة.");
         return; // نبقى بوضع الدعم
       }
       // نقصّ الطويل احتياطاً (Telegram ≤ 4096؛ نحدّ 2000 لخيط دعم مرتّب)

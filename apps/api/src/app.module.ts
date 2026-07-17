@@ -18,6 +18,7 @@ import { AnalyticsService } from "./analytics/analytics.service.js";
 import { AuthController } from "./auth/auth.controller.js";
 import { AuthService } from "./auth/auth.service.js";
 import { SessionGuard } from "./auth/session.guard.js";
+import { RolesGuard } from "./auth/roles.guard.js";
 import { RateLimitGuard } from "./common/rate-limit.guard.js";
 import { BroadcastsController } from "./broadcasts/broadcasts.controller.js";
 import { BroadcastsService } from "./broadcasts/broadcasts.service.js";
@@ -33,6 +34,7 @@ import { ReferralsController } from "./loyalty/referrals.controller.js";
 import { MerchantsController } from "./merchants/merchants.controller.js";
 import { MerchantsService } from "./merchants/merchants.service.js";
 import { MiniappController } from "./miniapp/miniapp.controller.js";
+import { RealtimeController } from "./realtime/realtime.controller.js";
 import { MiniappService } from "./miniapp/miniapp.service.js";
 import { OrdersController } from "./orders/orders.controller.js";
 import { OrdersService } from "./orders/orders.service.js";
@@ -51,6 +53,7 @@ import { TrackingController } from "./tracking/tracking.controller.js";
     DriversController,
     MerchantsController, // §3 — إدارة التجار وكتالوجهم
     MiniappController, // §10.3 — واجهة الـ Mini App (initData + توكن + بيانات)
+    RealtimeController, // §10.1 — إصدار تذكرة اتصال الوقت الحقيقي (محروس بالجلسة)
     SettlementsController,
     SupportController, // §9 — خيوط الدعم (customer↔support)
     LoyaltyController, // §9 — GET /api/loyalty/:userId
@@ -74,6 +77,9 @@ import { TrackingController } from "./tracking/tracking.controller.js";
     // §10.2 — حارس عام: مسارات /api/* للطاقم تتطلب جلسة cookie أو Bearer STAFF_API_TOKEN
     // (session.guard يعفي auth/admin/العامة). دفاع مزدوج مع تحقق طبقة الخدمات.
     { provide: APP_GUARD, useClass: SessionGuard },
+    // §10.2/§11 — فصل الصلاحيات: **بعد** SessionGuard كي يقرأ staffSession.role. يفرض
+    // @Roles على المعالجات الحساسة (تسوية مالية، بث) — يمنع دور support من أفعال accountant.
+    { provide: APP_GUARD, useClass: RolesGuard },
     // §10.2 — حارس عام مستقل لكونسول المشرف: /api/admin/* تتطلب جلسة qd_admin أو Bearer
     // ADMIN_API_TOKEN (admin.guard يعفي /api/admin/auth الذاتية). دفاع مزدوج مع الخدمة.
     { provide: APP_GUARD, useClass: AdminGuard },
@@ -121,6 +127,7 @@ import { TrackingController } from "./tracking/tracking.controller.js";
     AdminAuthService, // §10.2 — مصادقة المشرف الحقيقية (admin_users + جلسات qd_admin)
     AuthService, // §10.2 — مصادقة الطاقم (argon2id + جلسات Redis + TOTP)
     SessionGuard, // مزوّد الحارس العام أعلاه
+    RolesGuard, // مزوّد حارس الأدوار العام أعلاه (Reflector يُحقن تلقائياً)
     AdminGuard, // مزوّد حارس المشرف العام أعلاه
   ],
 })

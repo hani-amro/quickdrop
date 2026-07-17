@@ -8,8 +8,9 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      # 5433 عالمضيف — 5432 محجوز عادةً لـ PostgreSQL أصلي مركّب على الجهاز
-      - "5433:5432"
+      # 5433 عالمضيف — 5432 محجوز عادةً لـ PostgreSQL أصلي مركّب على الجهاز.
+      # §11 — loopback فقط: 0.0.0.0 يكشف Postgres (بباسورد dev ثابت) لأي شبكة عليها المطوّر.
+      - "127.0.0.1:5433:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./initdb:/docker-entrypoint-initdb.d:ro
@@ -23,7 +24,9 @@ services:
     image: redis:7-alpine
     command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
     ports:
-      - "6379:6379"
+      # §11 — loopback فقط: Redis dev بلا باسورد؛ كشفه على 0.0.0.0 = وصول غير مصادَق
+      # لمخزن الجلسات/الطوابير من أي شبكة. الإنتاج على شبكة داخلية بلا ports.
+      - "127.0.0.1:6379:6379"
     volumes:
       - redisdata:/data
     healthcheck:

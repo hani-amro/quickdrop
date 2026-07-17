@@ -21,10 +21,10 @@ import { ADMIN_SESSION_COOKIE } from "./admin-cookie.js";
  *   يقرآن الكوكي بنفسيهما) — أي مسار admin مستقبلي يُحرس افتراضياً.
  */
 export function isAdminGuardedPath(rawPath: string): boolean {
-  // §11 — Express يوجّه case-insensitive؛ لو قارنّا بحساسية الأحرف لتخطّى مهاجمٌ الحارس
-  // بمسار مختلط الأحرف (/API/admin/...) ووصل للمعالج بلا حراسة (ثغرة انتحال مستأجر).
-  // نطبّع مرة (المسارات ASCII) ونقارن الكل به.
-  const path = rawPath.toLowerCase();
+  // §11 — Express يوجّه case-insensitive ويقبل شرطة زائدة؛ لو قارنّا بحساسية الأحرف أو
+  // دون إزالة الـ'/' الأخيرة لتخطّى مهاجمٌ الحارس بمسار مختلط الأحرف (/API/admin/...)
+  // أو بشرطة زائدة ووصل للمعالج بلا حراسة. نطبّع الحالة والشرطة ونقارن الكل به.
+  const path = rawPath.toLowerCase().replace(/\/+$/, "") || "/";
   if (!(path === "/api/admin" || path.startsWith("/api/admin/"))) return false;
   if (
     path === "/api/admin/auth/login" ||

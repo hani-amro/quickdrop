@@ -23,6 +23,10 @@ const SESSION_KEY_PREFIX = "sess:";
 /** §10.2 — تحدّي TOTP وسيط (بعد كلمة السر، قبل الجلسة): يحمل هوية الموظف بمهلة قصيرة. */
 const MFA_CHALLENGE_PREFIX = "mfa:";
 const MFA_CHALLENGE_TTL_S = 5 * 60; // 5 دقائق لإدخال الرمز
+// §11 — سقف محاولات TOTP لكل تحدٍّ: بعده يُبطَل التحدّي فيلزم دخول جديد بكلمة السر.
+// حاجز على مستوى الحساب فوق حد المعدل لكل IP (يمنع تخمين الرمز السداسي موزّعاً على IPات).
+const MFA_ATTEMPTS_PREFIX = "mfa:att:";
+const MAX_MFA_ATTEMPTS = 5;
 
 /** §10.2 — سرّ تسجيل TOTP معلّق (بين enroll وconfirm): لا يُثبَّت بـ staff حتى تأكيد رمز صحيح. */
 const TOTP_ENROLL_PREFIX = "mfa_enroll:";
@@ -220,10 +224,20 @@ export class AuthService {
       return this.failTotp("staff_or_secret_missing");
     }
     if (!verifyTotp(member.totpSecret, input.token)) {
-      return this.failTotp("bad_totp"); // التحدّي يبقى حياً — يعيد المستخدم المحاولة ضمن مهلته
+      // §11 — عدّاد محاولات لكل تحدٍّ: بعد MAX نُبطل التحدّي (لا يبقى حياً للتخمين)
+      const attempts = await this.redis.incr(MFA_ATTEMPTS_PREFIX + input.challenge);
+      if (attempts === 1) await this.redis.expire(MFA_ATTEMPTS_PREFIX + input.challenge, MFA_CHALLENGE_TTL_S);
+      if (attempts >= MAX_MFA_ATTEMPTS) {
+        await this.redis.del(MFA_CHALLENGE_PREFIX + input.challenge);
+        console.warn(
+          JSON.stringify({ action: "auth_totp_verify", outcome: "challenge_locked", tenant_id: payload.tenantId, actor: payload.staffId }),
+        );
+      }
+      return this.failTotp("bad_totp");
     }
 
     await this.redis.del(MFA_CHALLENGE_PREFIX + input.challenge);
+    await this.redis.del(MFA_ATTEMPTS_PREFIX + input.challenge); // نجاح — نظّف عدّاد المحاولات
     const sessionId = await this.issueSession(
       { staffId: payload.staffId, tenantId: payload.tenantId, tenantSlug: payload.tenantSlug, role: payload.role },
       SESSION_TTL_S,

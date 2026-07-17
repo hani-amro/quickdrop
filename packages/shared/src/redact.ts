@@ -40,3 +40,30 @@ export function redactSecrets(text: string): string {
     .replace(BOT_TOKEN_RE, REDACTED_TOKEN)
     .replace(E164_RE, (_match, digits: string) => maskPhone(digits));
 }
+
+/** وسيط لوغ منقَّح: النص يمرّ بـ redactSecrets، والخطأ يُطبع أثره منقَّحاً (لا كائنه الخام). */
+function redactArg(arg: unknown): unknown {
+  if (typeof arg === "string") return redactSecrets(arg);
+  if (arg instanceof Error) return redactSecrets(arg.stack ?? `${arg.name}: ${arg.message}`);
+  return arg; // بدائيّ/كائن: أسطر اللوغ المنظّمة تُسلسَل نصاً قبل الطباعة فيلتقطها فرع النص
+}
+
+let consoleRedactorInstalled = false;
+
+/**
+ * §11 — يثبّت غلافاً على console.* يمرّر كل وسيط نصي/خطأ عبر redactSecrets قبل الطباعة.
+ * يُستدعى مرة عند إقلاع كل عملية (api/worker/bot-poll) — يجعل «المنقّح» فعّالاً على كل
+ * مواقع اللوغ الخام (بما فيها console.error(error) بكامل الأثر) بلا لمس ~175 موقعاً.
+ * الفخ 15: بلا هذا كان المنقّح شيفرة ميتة والأسرار تُطبع خاماً برسائل الأخطاء.
+ */
+export function installConsoleRedactor(): void {
+  if (consoleRedactorInstalled) return;
+  consoleRedactorInstalled = true;
+  const methods = ["log", "warn", "error", "info", "debug"] as const;
+  for (const method of methods) {
+    const original = console[method].bind(console) as (...args: unknown[]) => void;
+    console[method] = (...args: unknown[]): void => {
+      original(...args.map(redactArg));
+    };
+  }
+}
