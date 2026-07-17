@@ -31,7 +31,7 @@ fail() { log "error" "$1" "$2"; exit 1; }
 # يُسقط القاعدة العابرة وينظّف اللقطة المسحوبة مهما كان سبب الخروج.
 cleanup() {
   if command -v psql >/dev/null 2>&1 && [ -n "${RESTORE_ADMIN_URL:-}" ]; then
-    psql "${RESTORE_ADMIN_URL}" -v ON_ERROR_STOP=0 -q \
+    psql -d "${RESTORE_ADMIN_URL}" -v ON_ERROR_STOP=0 -q \
       -c "DROP DATABASE IF EXISTS \"${SCRATCH_DB}\" WITH (FORCE);" >/dev/null 2>&1 || true
   fi
   [ "${DOWNLOADED}" = "1" ] && rm -f "${LOCAL_DUMP}" 2>/dev/null || true
@@ -80,7 +80,7 @@ head -c 5 "${LOCAL_DUMP}" | grep -q "PGDMP" || fail "dump_corrupt" "not a valid 
 # ── 2) استرجاع في قاعدة عابرة (قياس RTO) ────────────────────────────────
 START_EPOCH="$(date -u +%s)"
 log "info" "createdb" "${SCRATCH_DB}"
-psql "${RESTORE_ADMIN_URL}" -v ON_ERROR_STOP=1 -q \
+psql -d "${RESTORE_ADMIN_URL}" -v ON_ERROR_STOP=1 -q \
   -c "CREATE DATABASE \"${SCRATCH_DB}\";" \
   || fail "createdb_failed" "could not create scratch database"
 
@@ -98,11 +98,11 @@ RTO_SECONDS=$(( END_EPOCH - START_EPOCH ))
 
 # ── 3) استعلامات السلامة ────────────────────────────────────────────────
 # جدول أساسي موجود ومملوء + جدول الدفتر المالي موجود (السجل الحرج §8.1).
-TENANTS="$(psql "${SCRATCH_URL}" -tAc "SELECT count(*) FROM tenants;" 2>/dev/null || echo "ERR")"
+TENANTS="$(psql -d "${SCRATCH_URL}" -tAc "SELECT count(*) FROM tenants;" 2>/dev/null || echo "ERR")"
 [ "${TENANTS}" != "ERR" ] || fail "sanity_failed" "tenants table missing after restore"
 [ "${TENANTS}" -ge 1 ] 2>/dev/null || fail "sanity_failed" "tenants table empty after restore"
 
-LEDGER_OK="$(psql "${SCRATCH_URL}" -tAc "SELECT to_regclass('public.ledger_entries') IS NOT NULL;" 2>/dev/null || echo "f")"
+LEDGER_OK="$(psql -d "${SCRATCH_URL}" -tAc "SELECT to_regclass('public.ledger_entries') IS NOT NULL;" 2>/dev/null || echo "f")"
 [ "${LEDGER_OK}" = "t" ] || fail "sanity_failed" "ledger_entries table missing after restore"
 
 log "info" "restore_test_ok" "tenants=${TENANTS} rto_seconds=${RTO_SECONDS} target_rto_seconds=7200"
