@@ -1,0 +1,17 @@
+{
+  "name": "@quickdrop/e2e",
+  "version": "0.0.1",
+  "private": true,
+  "description": "End-to-end Playwright harness for the QuickDrop dashboard + API (unauthenticated, deterministic flows).",
+  "scripts": {
+    "test:e2e": "playwright test",
+    "test:e2e:api": "playwright test tests/api.spec.ts",
+    "test:e2e:browser": "playwright test tests/login.spec.ts tests/redirect.spec.ts tests/tracking.spec.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.61.1",
+    "@types/node": "^24.13.3",
+    "typescript": "^5.9.3"
+  }
+}
