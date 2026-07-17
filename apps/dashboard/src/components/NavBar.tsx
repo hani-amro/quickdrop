@@ -8,6 +8,7 @@ const LINKS = [
   { href: "/", label: "الإرسال" },
   { href: "/orders/new", label: "طلب جديد" },
   { href: "/drivers", label: "السائقون" },
+  { href: "/merchants", label: "المطاعم" }, // §3 — إدارة التجار وكتالوجهم
   { href: "/settlements", label: "التسوية" },
   { href: "/analytics", label: "التحليلات" },
   { href: "/broadcasts", label: "البث" },

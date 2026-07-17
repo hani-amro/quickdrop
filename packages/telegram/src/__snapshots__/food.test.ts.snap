@@ -1,0 +1,12 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`food cards (§3/§4.4) > foodMenuCard lists lines with quantities and the goods total 1`] = `
+"<b>🍽 مطعم الأصيل</b>
+
+🛒 <b>سلتك:</b>
+• شاورما ×⁦2⁩ — ⁦‏٦٬٠٠٠ ل.س.‏⁩
+• بطاطا ×⁦1⁩ — ⁦‏٢٬٠٠٠ ل.س.‏⁩
+الإجمالي (قيمة البضاعة): <b>⁦‏٨٬٠٠٠ ل.س.‏⁩</b>
+
+تابع الإضافة أو اضغط «تم، حدد التوصيل» 👇"
+`;

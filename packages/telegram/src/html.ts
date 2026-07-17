@@ -69,6 +69,64 @@ export function quoteCard(input: { components: PriceComponents; distanceM: numbe
   return lines.join("\n");
 }
 
+// —— §3 بطاقات تدفق الطعام (منيو/سلة/تأكيد) — منطق نصوص صافٍ قابل للاختبار ——
+
+/** §3 — سطر عرض لطلب طعام: اسم الصنف (يُهرَّب §4.3) + الكمية + سعر الوحدة (لقطة D5). */
+export interface FoodDisplayLine {
+  nameAr: string;
+  qty: number;
+  unitPrice: bigint;
+}
+
+/** أسطر «صنف ×كمية — إجمالي السطر» مهرَّبة ومعزولة bidi (§10.1). */
+function foodLineRows(lines: FoodDisplayLine[], fmt: (amount: bigint) => string): string[] {
+  return lines.map(
+    (l) => `• ${escapeHtml(l.nameAr)} ×${bidiIsolate(String(l.qty))} — ${fmt(l.unitPrice * BigInt(l.qty))}`,
+  );
+}
+
+/**
+ * §3 — بطاقة منيو المطعم مع السلة الجارية: تُعرض/تُحدَّث بعد كل ضغطة إضافة (ci:).
+ * الأصناف أزرار inline (تُبنى بالمستدعي)؛ النص هنا يلخّص السلة وقيمة البضاعة.
+ * أجرة التوصيل تُحسب على مسافة التسليم لاحقاً (§8: المطابقة بمنطقة dropoff) — لا تُعرض هنا.
+ */
+export function foodMenuCard(input: { merchantName: string; lines: FoodDisplayLine[]; currency: string }): string {
+  const fmt = (amount: bigint): string => bidiIsolate(escapeHtml(formatMoney(amount, "ar-SY", input.currency)));
+  const header = `<b>🍽 ${escapeHtml(input.merchantName)}</b>`;
+  if (input.lines.length === 0) {
+    return [header, "", "سلتك فاضية 🛒 — اضغط أي صنف لإضافته."].join("\n");
+  }
+  const goods = input.lines.reduce((sum, l) => sum + l.unitPrice * BigInt(l.qty), 0n);
+  return [
+    header,
+    "",
+    "🛒 <b>سلتك:</b>",
+    ...foodLineRows(input.lines, fmt),
+    `الإجمالي (قيمة البضاعة): <b>${fmt(goods)}</b>`,
+    "",
+    "تابع الإضافة أو اضغط «تم، حدد التوصيل» 👇",
+  ].join("\n");
+}
+
+/**
+ * §3/§4.4 — بطاقة تأكيد طلب الطعام قبل إنشاء أي صف: الأصناف + قيمة البضاعة + تنويه
+ * أن أجرة التوصيل تُحسب وتُضاف عند التأكيد (لا سعر مفاجئ §4.4). زر التأكيد يُبنى بالمستدعي.
+ */
+export function foodConfirmCard(input: { merchantName: string; lines: FoodDisplayLine[]; currency: string }): string {
+  const fmt = (amount: bigint): string => bidiIsolate(escapeHtml(formatMoney(amount, "ar-SY", input.currency)));
+  const goods = input.lines.reduce((sum, l) => sum + l.unitPrice * BigInt(l.qty), 0n);
+  return [
+    "<b>🍔 تأكيد طلب الطعام</b>",
+    `المطعم: <b>${escapeHtml(input.merchantName)}</b>`,
+    "",
+    ...foodLineRows(input.lines, fmt),
+    `قيمة البضاعة: <b>${fmt(goods)}</b>`,
+    "",
+    "➕ أجرة التوصيل بتنحسب وتنضاف عند التأكيد.",
+    "تأكيد الطلب؟ 👇",
+  ].join("\n");
+}
+
 // —— بطاقات بوت السائق (§4.3/§6) — منطق صافٍ قابل للاختبار مثل بقية الملف ——
 
 /** نقطة بلا نص عنوان (dropoff_text/pickup_text فارغان) — بديل عرض ثابت. */

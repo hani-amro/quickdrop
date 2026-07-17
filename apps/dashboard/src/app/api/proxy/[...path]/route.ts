@@ -8,8 +8,9 @@ import { getEnv } from "@/env";
 
 export const dynamic = "force-dynamic";
 
-// مقاطع مسار آمنة فقط (uuid/أسماء موارد) — لا نقاط ولا "/" (منع traversal §11)
-const pathSchema = z.array(z.string().regex(/^[A-Za-z0-9_-]{1,64}$/)).min(1).max(4);
+// مقاطع مسار آمنة فقط (uuid/أسماء موارد) — لا نقاط ولا "/" (منع traversal §11).
+// السقف 5 مقاطع: أعمق مسار v1 = merchants/:id/catalog/:itemId/availability (§3).
+const pathSchema = z.array(z.string().regex(/^[A-Za-z0-9_-]{1,64}$/)).min(1).max(5);
 
 interface Ctx {
   params: Promise<{ path: string[] }>;

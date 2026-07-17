@@ -30,6 +30,8 @@ import { CouponsController } from "./loyalty/coupons.controller.js";
 import { LoyaltyController } from "./loyalty/loyalty.controller.js";
 import { LoyaltyService } from "./loyalty/loyalty.service.js";
 import { ReferralsController } from "./loyalty/referrals.controller.js";
+import { MerchantsController } from "./merchants/merchants.controller.js";
+import { MerchantsService } from "./merchants/merchants.service.js";
 import { OrdersController } from "./orders/orders.controller.js";
 import { OrdersService } from "./orders/orders.service.js";
 import { SettlementsController } from "./settlements/settlements.controller.js";
@@ -43,6 +45,7 @@ import { TrackingController } from "./tracking/tracking.controller.js";
     HealthController,
     OrdersController,
     DriversController,
+    MerchantsController, // §3 — إدارة التجار وكتالوجهم
     SettlementsController,
     LoyaltyController, // §9 — GET /api/loyalty/:userId
     CouponsController, // §9 — POST/GET /api/coupons
@@ -101,6 +104,7 @@ import { TrackingController } from "./tracking/tracking.controller.js";
     TelegramGatewayService,
     OrdersService,
     DriversService,
+    MerchantsService, // §3 — إدارة التجار وكتالوجهم
     SettlementsService,
     LoyaltyService, // §9 — الولاء/الكوبونات/الإحالات
     BroadcastsService, // §4.3/§14 — البث الجماهيري

@@ -12,8 +12,10 @@ import {
 import { Algorithm, hash } from "@node-rs/argon2";
 import { and, eq, isNull } from "drizzle-orm";
 import {
+  catalogItems,
   createDb,
   drivers,
+  merchants,
   pricingRules,
   staff,
   tenants,
@@ -94,6 +96,47 @@ const CUSTOMER_SEEDS: readonly PersonSeed[] = [
 const DRIVER_SEEDS: readonly (PersonSeed & { point: Point })[] = [
   { firstName: "أحمد", phoneE164: "+963955000001", point: makePoint(33.51, 36.29) },
   { firstName: "خالد", phoneE164: "+963955000002", point: makePoint(33.52, 36.31) },
+];
+
+// §3 — مطعمان تجريبيان داخل مربع دمشق (lat 33.35→33.65، lng 36.10→36.45) مع أصنافهما.
+// D5: الأسعار bigint بأصغر وحدة (قرش سوري). idempotent بالاسم (لا قيد فريد عليه).
+interface CatalogSeed {
+  nameAr: string;
+  price: bigint;
+  sortOrder: number;
+}
+interface MerchantSeed {
+  name: string;
+  phone: string;
+  point: Point; // makePoint(lat, lng) — التخزين WKT بترتيب lng lat (D7)
+  prepMinutesDefault: number;
+  items: readonly CatalogSeed[];
+}
+
+const MERCHANT_SEEDS: readonly MerchantSeed[] = [
+  {
+    name: "مطعم الشام",
+    phone: "+963955100001",
+    point: makePoint(33.513, 36.292),
+    prepMinutesDefault: 20,
+    items: [
+      { nameAr: "شاورما دجاج", price: 15000n, sortOrder: 1 },
+      { nameAr: "فروج مشوي", price: 40000n, sortOrder: 2 },
+      { nameAr: "حمص", price: 8000n, sortOrder: 3 },
+      { nameAr: "بطاطا مقلية", price: 6000n, sortOrder: 4 },
+    ],
+  },
+  {
+    name: "بيت الفروج",
+    phone: "+963955100002",
+    point: makePoint(33.52, 36.3),
+    prepMinutesDefault: 25,
+    items: [
+      { nameAr: "نص فروج", price: 25000n, sortOrder: 1 },
+      { nameAr: "فروج كامل", price: 45000n, sortOrder: 2 },
+      { nameAr: "صحن مخللات", price: 5000n, sortOrder: 3 },
+    ],
+  },
 ];
 
 type EnsureOutcome = "created" | "existing";
@@ -199,6 +242,64 @@ async function ensureDriver(
   return "created";
 }
 
+// §3 — تاجر تجريبي: العَود بفحص الوجود بالاسم (لا قيد فريد؛ seed أحادي العملية).
+async function ensureMerchant(
+  tx: Tx,
+  tenantId: string,
+  seed: MerchantSeed,
+): Promise<{ merchantId: string; outcome: EnsureOutcome }> {
+  const found = await tx
+    .select({ id: merchants.id })
+    .from(merchants)
+    .where(and(eq(merchants.tenantId, tenantId), eq(merchants.name, seed.name)))
+    .limit(1);
+  const existing = found[0];
+  if (existing) return { merchantId: existing.id, outcome: "existing" };
+  const inserted = await tx
+    .insert(merchants)
+    .values({
+      tenantId,
+      name: seed.name,
+      phone: seed.phone,
+      category: "restaurant",
+      point: toPostgisWkt(seed.point), // D7: WKT بترتيب lng lat
+      prepMinutesDefault: seed.prepMinutesDefault,
+    })
+    .returning({ id: merchants.id });
+  const row = inserted[0];
+  if (!row) throw new Error("seed-dev: merchants insert returned no row");
+  return { merchantId: row.id, outcome: "created" };
+}
+
+// §3 — صنف كتالوج تجريبي: العَود بفحص (المستأجر، المطعم، الاسم العربي).
+async function ensureCatalogItem(
+  tx: Tx,
+  tenantId: string,
+  merchantId: string,
+  seed: CatalogSeed,
+): Promise<EnsureOutcome> {
+  const found = await tx
+    .select({ id: catalogItems.id })
+    .from(catalogItems)
+    .where(
+      and(
+        eq(catalogItems.tenantId, tenantId),
+        eq(catalogItems.merchantId, merchantId),
+        eq(catalogItems.nameAr, seed.nameAr),
+      ),
+    )
+    .limit(1);
+  if (found[0]) return "existing";
+  await tx.insert(catalogItems).values({
+    tenantId,
+    merchantId,
+    nameAr: seed.nameAr,
+    price: seed.price, // D5: bigint
+    sortOrder: seed.sortOrder,
+  });
+  return "created";
+}
+
 async function main(): Promise<void> {
   const url = process.env["DATABASE_URL"];
   if (!url) throw new Error("DATABASE_URL is required (app_user)");
@@ -240,9 +341,20 @@ async function main(): Promise<void> {
         driverCounts[await ensureDriver(tx, tenant.id, userId, seed.point)] += 1;
       }
 
+      // §3 — مطعمان + أصنافهما داخل منطقة دمشق (طلبات food التجريبية)
+      const merchantCounts = { created: 0, existing: 0 };
+      const itemCounts = { created: 0, existing: 0 };
+      for (const seed of MERCHANT_SEEDS) {
+        const { merchantId, outcome } = await ensureMerchant(tx, tenant.id, seed);
+        merchantCounts[outcome] += 1;
+        for (const item of seed.items) {
+          itemCounts[await ensureCatalogItem(tx, tenant.id, merchantId, item)] += 1;
+        }
+      }
+
       const staffOutcome = await ensureStaff(tx, tenant.id);
 
-      return { zoneOutcome, rules, customers, driverCounts, staffOutcome };
+      return { zoneOutcome, rules, customers, driverCounts, merchantCounts, itemCounts, staffOutcome };
     });
 
     // الملخص أسماء وأعداد فقط — لا معرّفات ولا هواتف (§11).
@@ -255,6 +367,8 @@ async function main(): Promise<void> {
           pricingRules: { services: SERVICES, ...summary.rules },
           customers: { names: CUSTOMER_SEEDS.map((c) => c.firstName), ...summary.customers },
           drivers: { names: DRIVER_SEEDS.map((d) => d.firstName), ...summary.driverCounts },
+          merchants: { names: MERCHANT_SEEDS.map((m) => m.name), ...summary.merchantCounts },
+          catalogItems: { total: MERCHANT_SEEDS.reduce((n, m) => n + m.items.length, 0), ...summary.itemCounts },
           staff: { email: DEMO_STAFF.email, outcome: summary.staffOutcome }, // كلمة السر بالـ README
         },
         null,

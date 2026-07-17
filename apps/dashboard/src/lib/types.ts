@@ -1,4 +1,4 @@
-import type { BroadcastStatus, DriverStatus, OrderStatus, Service } from "@quickdrop/shared";
+import type { BroadcastStatus, DriverStatus, MerchantCategory, OrderStatus, Service } from "@quickdrop/shared";
 
 // أشكال عقد الـ REST كما يراها المتصفح (عبر /api/proxy).
 // D5 — كل مال يعبر الـ JSON سلسلة نصية؛ لا يُحوَّل لـ Number أبداً (العرض فقط عند الحافة).
@@ -211,4 +211,60 @@ export interface CreateBroadcastRequest {
 export interface CreateBroadcastResponse {
   broadcast: BroadcastSummary;
   enqueued: boolean;
+}
+
+// §3 — إدارة التجار وكتالوجهم (شاشة المطاعم). المال string (D5)؛ النقطة {lat,lng} (الفخ 6).
+export interface MerchantView {
+  id: string;
+  name: string;
+  phone: string | null;
+  category: MerchantCategory;
+  isActive: boolean;
+  prepMinutesDefault: number | null;
+  point: Point;
+  createdAt: string;
+}
+
+export interface ListMerchantsResponse {
+  merchants: MerchantView[];
+}
+
+export interface CreateMerchantRequest {
+  name: string;
+  phone?: string;
+  category: MerchantCategory;
+  point: Point;
+  prepMinutesDefault?: number;
+}
+
+export interface CreateMerchantResponse {
+  merchant: MerchantView;
+}
+
+export interface CatalogItemView {
+  id: string;
+  merchantId: string;
+  nameAr: string;
+  nameEn: string | null;
+  price: string; // D5: مال سلسلة — لا Number
+  isAvailable: boolean;
+  sortOrder: number;
+  createdAt: string;
+}
+
+export interface ListCatalogResponse {
+  items: CatalogItemView[];
+}
+
+// §3 — إنشاء/تحديث صنف (upsert): id موجود = تحديث؛ غائب = إنشاء
+export interface UpsertCatalogItemRequest {
+  id?: string;
+  nameAr: string;
+  nameEn?: string;
+  price: string; // D5
+  sortOrder?: number;
+}
+
+export interface CatalogItemResponse {
+  item: CatalogItemView;
 }

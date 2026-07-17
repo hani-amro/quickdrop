@@ -1,18 +1,24 @@
 import type {
   AnalyticsResponse,
+  CatalogItemResponse,
   CloseSettlementResponse,
   CreateBroadcastRequest,
   CreateBroadcastResponse,
+  CreateMerchantRequest,
+  CreateMerchantResponse,
   CreateOrderRequest,
   CreateOrderResponse,
   ListBroadcastsResponse,
+  ListCatalogResponse,
   ListDriversResponse,
+  ListMerchantsResponse,
   ListOrdersResponse,
   MerchantConfirmResponse,
   OrderDetailResponse,
   QuoteRequest,
   QuoteResponse,
   SettlementBoardResponse,
+  UpsertCatalogItemRequest,
 } from "./types";
 
 // عميل المتصفح — كل النداءات عبر /api/proxy (route handler خادمي يحقن التوكن
@@ -72,6 +78,15 @@ export const api = {
   listBroadcasts: (): Promise<ListBroadcastsResponse> => request("broadcasts"),
   createBroadcast: (body: CreateBroadcastRequest): Promise<CreateBroadcastResponse> =>
     request("broadcasts", { method: "POST", body }),
+  // §3 — إدارة التجار وكتالوجهم (شاشة المطاعم): قائمة/إنشاء تاجر، كتالوج، upsert صنف، قلب توفّر
+  listMerchants: (): Promise<ListMerchantsResponse> => request("merchants"),
+  createMerchant: (body: CreateMerchantRequest): Promise<CreateMerchantResponse> =>
+    request("merchants", { method: "POST", body }),
+  listCatalog: (merchantId: string): Promise<ListCatalogResponse> => request(`merchants/${merchantId}/catalog`),
+  upsertCatalogItem: (merchantId: string, body: UpsertCatalogItemRequest): Promise<CatalogItemResponse> =>
+    request(`merchants/${merchantId}/catalog`, { method: "POST", body }),
+  setItemAvailability: (merchantId: string, itemId: string, isAvailable: boolean): Promise<CatalogItemResponse> =>
+    request(`merchants/${merchantId}/catalog/${itemId}/availability`, { method: "POST", body: { isAvailable } }),
   // §10.2 — تسجيل TOTP للطاقم (إلزامي owner/accountant): البدء يولّد سرّاً معلّقاً ويرجع
   // otpauth URL؛ التأكيد بالرمز يثبّته. الجلسة (كوكي qd_session) تُمرَّر عبر الـ proxy.
   totpEnroll: (): Promise<{ otpauthUrl: string }> => request("auth/totp/enroll", { method: "POST", body: {} }),

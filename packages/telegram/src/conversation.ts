@@ -24,13 +24,32 @@ const convPointSchema = z.object({
   lng: z.number().min(-180).max(180),
 });
 
+// §3 — سطر سلة طلب الطعام: معرّف صنف الكتالوج + الكمية (السعر لقطة تُحسم عند الإنشاء).
+const cartLineSchema = z.object({
+  catalogItemId: z.string().uuid(),
+  qty: z.number().int().positive(),
+});
+export type CartLine = z.infer<typeof cartLineSchema>;
+
 export const convStateSchema = z.object({
-  step: z.enum(["idle", "awaiting_pickup", "awaiting_dropoff", "awaiting_confirm"]),
-  service: z.enum(["p2p", "parcel"]).optional(),
-  pickup: convPointSchema.optional(),
+  // §3 — خطوات الطعام: اختيار مطعم ← منيو/سلة ← موقع التسليم ← تأكيد.
+  step: z.enum([
+    "idle",
+    "awaiting_pickup",
+    "awaiting_dropoff",
+    "awaiting_confirm",
+    "food_pick_merchant",
+    "food_menu",
+    "food_dropoff",
+    "food_confirm",
+  ]),
+  service: z.enum(["p2p", "parcel", "food"]).optional(),
+  pickup: convPointSchema.optional(), // للطعام: موقع المطعم (نقطة الاستلام) المخزَّن لتمريره
   dropoff: convPointSchema.optional(),
   // D5: bigint لا يمر بـ JSON — الإجمالي المعروض يُحفظ نصاً للمقارنة فقط، لا للحساب
   quoteTotal: z.string().regex(/^-?\d+$/).optional(),
+  merchantId: z.string().uuid().optional(), // §3 — المطعم المختار لتدفق الطعام
+  cart: z.array(cartLineSchema).optional(), // §3 — سلة أصناف الطعام الجارية
 });
 
 export type ConvState = z.infer<typeof convStateSchema>;
