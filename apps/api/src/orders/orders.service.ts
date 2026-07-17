@@ -28,6 +28,7 @@ import { createStorageClient, tryLoadStorageConfig, type StorageClient } from "@
 import {
   ORDER_STATUSES,
   SERVICES,
+  scheduledJobId,
   type OfferStatus,
   type OrderActorType,
   type OrderStatus,
@@ -326,13 +327,14 @@ export class OrdersService {
       });
 
       // §6.3 — طلب بموعد مستقبلي (status='scheduled'): ادفع مهمة مؤجّلة تطلقه عند الموعد.
-      // jobId حتمي = 'sched:{orderId}' → idempotent مع إعادة جدولة الـ worker عند الإقلاع.
+      // jobId حتمي = 'sched-{orderId}' → idempotent مع إعادة جدولة الـ worker عند الإقلاع.
+      // ملاحظة: BullMQ يمنع ':' في custom jobId (يستخدمه داخلياً بمفاتيح Redis) — لذا '-'.
       if (order.status === "scheduled" && input.scheduledAt !== undefined) {
         await this.scheduledQueue.add(
           "fire-scheduled",
           { tenantId: tenant.id, orderId: order.id },
           {
-            jobId: `sched:${order.id}`,
+            jobId: scheduledJobId(order.id),
             delay: Math.max(0, input.scheduledAt.getTime() - Date.now()),
             attempts: 5,
             backoff: { type: "exponential", delay: 1000 },

@@ -5,6 +5,7 @@ import {
   NOTIFICATIONS_QUEUE,
   parseEnv,
   SCHEDULED_QUEUE,
+  scheduledJobId,
   TG_UPDATES_QUEUE,
   type BroadcastJob,
   type DispatchJob,
@@ -50,7 +51,6 @@ const notificationsQueue = new Queue<NotificationJob>(NOTIFICATIONS_QUEUE, { con
 const dispatchQueue = new Queue<DispatchJob>(DISPATCH_QUEUE, { connection: redis });
 const scheduledQueue = new Queue<ScheduledOrderJob>(SCHEDULED_QUEUE, { connection: redis });
 
-const scheduledJobId = (orderId: string): string => `sched:${orderId}`;
 
 // §11 — عميل تخزين إثبات التسليم (S3/MinIO). غياب إعداد S3 → null → POD معطّل بلطف.
 const storageConfig = tryLoadStorageConfig(process.env);
@@ -112,7 +112,7 @@ async function rescanPendingOffers(): Promise<void> {
 }
 
 // §6.3/§12 — القاعدة مصدر الحقيقة للجدولة: عند الإقلاع أعد جدولة كل طلب scheduled
-// (مهمة api الأصلية قد تكون ضاعت مع Redis). jobId حتمي = 'sched:{orderId}' يجعلها
+// (مهمة api الأصلية قد تكون ضاعت مع Redis). jobId حتمي = 'sched-{orderId}' يجعلها
 // idempotentة مع المهمة الأصلية؛ الفائت موعده → delay 0 فيُطلق فوراً.
 async function rescanScheduledOrders(): Promise<void> {
   const scheduled = await scanDb.db
@@ -285,7 +285,7 @@ async function main(): Promise<void> {
   console.log(
     JSON.stringify({
       action: "worker_started",
-      queues: [TG_UPDATES_QUEUE, NOTIFICATIONS_QUEUE, DISPATCH_QUEUE, BROADCAST_QUEUE],
+      queues: [TG_UPDATES_QUEUE, NOTIFICATIONS_QUEUE, DISPATCH_QUEUE, BROADCAST_QUEUE, SCHEDULED_QUEUE],
     }),
   );
 }

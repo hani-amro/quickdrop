@@ -58,11 +58,21 @@ export interface BroadcastJob {
 // §6.3 — طابور الطلبات المجدولة: الـ api يدفع مهمة مؤجّلة عند إنشاء طلب بموعد مستقبلي
 // (delay = scheduled_at − الآن)، والـ worker يستهلكها عند الموعد فيطلق الطلب
 // scheduled→pending بفاعل system. القاعدة مصدر الحقيقة لا الطابور (§12): orders.scheduled_at
-// يبقى بعد ضياع Redis، وjobId حتمي = 'sched:{orderId}' يزيل تكرار at-least-once ويجعل
+// يبقى بعد ضياع Redis، وjobId حتمي = 'sched-{orderId}' يزيل تكرار at-least-once ويجعل
 // إعادةَ جدولة الـ worker عند الإقلاع idempotentة مع مهمة الـ api الأصلية.
 export const SCHEDULED_QUEUE = "scheduled";
 
 export interface ScheduledOrderJob {
   tenantId: string;
   orderId: string;
+}
+
+/**
+ * jobId الحتمي لمهمة الطلب المجدّل — يجب أن يكون **مصدراً واحداً** يستورده الـ api
+ * (منتج المهمة) والـ worker (معيد الجدولة عند الإقلاع) كي لا يتباعدا فتنكسر الـ
+ * idempotency. **BullMQ يمنع ':' في custom jobId** (محجوز لمفاتيح Redis الداخلية،
+ * يرمي "Custom Id cannot contain :") — لذا الفاصل '-' لا ':'.
+ */
+export function scheduledJobId(orderId: string): string {
+  return `sched-${orderId}`;
 }
