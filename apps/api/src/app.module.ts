@@ -36,6 +36,8 @@ import { OrdersController } from "./orders/orders.controller.js";
 import { OrdersService } from "./orders/orders.service.js";
 import { SettlementsController } from "./settlements/settlements.controller.js";
 import { SettlementsService } from "./settlements/settlements.service.js";
+import { SupportController } from "./support/support.controller.js";
+import { SupportService } from "./support/support.service.js";
 import { TelegramGatewayController } from "./telegram-gateway/gateway.controller.js";
 import { TelegramGatewayService } from "./telegram-gateway/gateway.service.js";
 import { TrackingController } from "./tracking/tracking.controller.js";
@@ -47,6 +49,7 @@ import { TrackingController } from "./tracking/tracking.controller.js";
     DriversController,
     MerchantsController, // §3 — إدارة التجار وكتالوجهم
     SettlementsController,
+    SupportController, // §9 — خيوط الدعم (customer↔support)
     LoyaltyController, // §9 — GET /api/loyalty/:userId
     CouponsController, // §9 — POST/GET /api/coupons
     ReferralsController, // §9 — POST /api/referrals
@@ -106,6 +109,7 @@ import { TrackingController } from "./tracking/tracking.controller.js";
     DriversService,
     MerchantsService, // §3 — إدارة التجار وكتالوجهم
     SettlementsService,
+    SupportService, // §9 — خيوط الدعم (customer↔support)
     LoyaltyService, // §9 — الولاء/الكوبونات/الإحالات
     BroadcastsService, // §4.3/§14 — البث الجماهيري
     AnalyticsService, // §13 — تحليلات اللوحة

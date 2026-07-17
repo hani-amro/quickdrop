@@ -1,4 +1,4 @@
-import { catalogItems, createOrder, merchants, orders, quoteForTenant, users, withTenant, type Db, type User } from "@quickdrop/db";
+import { appendInboundMessage, catalogItems, createOrder, merchants, orders, quoteForTenant, users, withTenant, type Db, type User } from "@quickdrop/db";
 import { bumpOrderRate, isOverLimit } from "./rate-limit.js";
 import { formatMoney, fromTelegram, makePoint, type Service } from "@quickdrop/shared";
 import { and, eq, sql } from "drizzle-orm";
@@ -31,6 +31,7 @@ export interface CustomerFlowDeps {
 export const BTN_P2P = "🛵 طلب توصيل";
 export const BTN_PARCEL = "📦 إرسال طرد";
 export const BTN_FOOD = "🍔 طلب طعام"; // §3 — يبدأ تدفق الطعام الفرعي
+export const BTN_SUPPORT = "🆘 الدعم"; // §9 — يبدأ وضع مراسلة المكتب
 
 // callback_data قصيرة (§4.4: حد 64 بايت — معرّفات قصيرة، لا JSON)
 export const CB_CONFIRM = "ord:confirm";
@@ -42,8 +43,11 @@ const GENERIC_ERROR_AR = "عذراً، صار عندنا خطأ مؤقت 🙏 ج
 const MERCHANT_LIST_LIMIT = 30;
 const MENU_ITEM_LIMIT = 40;
 
+// §9 — سقف طول رسالة الدعم الواحدة (نصوص تيليغرام ≤ 4096؛ نقصّها احتياطاً لـ 2000)
+const SUPPORT_MSG_MAX = 2000;
+
 function mainMenuKeyboard(): Keyboard {
-  return new Keyboard().text(BTN_P2P).text(BTN_PARCEL).row().text(BTN_FOOD).resized();
+  return new Keyboard().text(BTN_P2P).text(BTN_PARCEL).row().text(BTN_FOOD).text(BTN_SUPPORT).resized();
 }
 
 function phoneKeyboard(): Keyboard {
@@ -337,6 +341,18 @@ export function registerCustomerFlow(bot: Bot, deps: CustomerFlowDeps): void {
       }
       await saveConv(deps.redis, deps.tenantId, ctx.chat.id, { step: "food_pick_merchant", service: "food" });
       await ctx.reply("اختار المطعم 🍽", { reply_markup: merchantsKeyboard(restaurants) });
+    }),
+  );
+
+  // —— 🆘 الدعم: يدخل وضع المراسلة (step=support) — كل نص لاحق يُلحَق بخيط الزبون (§9) ——
+  bot.hears(
+    BTN_SUPPORT,
+    guard(deps, "support_start", async (ctx) => {
+      if (!ctx.from || !ctx.chat) return;
+      // الدعم متاح بلا رقم هاتف (مراسلة نصية بحتة) — ننشئ صف المستخدم فقط
+      await ensureCustomer(deps, ctx.from);
+      await saveConv(deps.redis, deps.tenantId, ctx.chat.id, { step: "support" });
+      await ctx.reply("اكتب رسالتك للمكتب وبنرد عليك بأسرع وقت 👇 (اضغط /start للرجوع للقائمة)");
     }),
   );
 
@@ -645,6 +661,29 @@ export function registerCustomerFlow(bot: Bot, deps: CustomerFlowDeps): void {
       await clearConv(deps.redis, deps.tenantId, ctx.chat.id);
       await removeConfirmButtons(ctx, deps);
       await ctx.reply("ولا يهمك، ما أنشأنا شي 👌 اختار من جديد وقت ما تحب:", { reply_markup: mainMenuKeyboard() });
+    }),
+  );
+
+  // —— §9 رسالة الدعم: **آخر** معالج نصي كي تُطابَق أزرار القائمة والأوامر أولاً (bot.hears/
+  // bot.command أعلاه لا تستدعي next). خارج وضع الدعم لا نتدخّل بأي تدفق آخر — رجوع صامت. ——
+  bot.on(
+    "message:text",
+    guard(deps, "support_msg", async (ctx) => {
+      if (!ctx.from || !ctx.chat) return;
+      const conv = await loadConv(deps.redis, deps.tenantId, ctx.chat.id);
+      if (conv.step !== "support") return; // ليس بوضع الدعم — لا شيء (لا يمسّ أي تدفق آخر)
+
+      const text = ctx.message.text.trim();
+      if (text.length === 0) {
+        await ctx.reply("اكتب رسالتك النصية للمكتب 🙏");
+        return; // نبقى بوضع الدعم
+      }
+      // نقصّ الطويل احتياطاً (Telegram ≤ 4096؛ نحدّ 2000 لخيط دعم مرتّب)
+      const clipped = text.length > SUPPORT_MSG_MAX ? text.slice(0, SUPPORT_MSG_MAX) : text;
+
+      const user = await ensureCustomer(deps, ctx.from);
+      await appendInboundMessage(deps.db, deps.tenantId, user.id, clipped, ctx.message.message_id);
+      await ctx.reply("وصلت رسالتك للمكتب ✅ رح نرد عليك قريباً."); // نبقى بوضع الدعم
     }),
   );
 }

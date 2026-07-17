@@ -1,0 +1,2 @@
+CREATE UNIQUE INDEX "support_messages_tg_dedup" ON "support_messages" USING btree ("tenant_id","thread_id","tg_message_id") WHERE tg_message_id IS NOT NULL;--> statement-breakpoint
+CREATE UNIQUE INDEX "support_threads_one_open_per_user" ON "support_threads" USING btree ("tenant_id","user_id") WHERE status = 'open';

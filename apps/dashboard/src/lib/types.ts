@@ -1,4 +1,12 @@
-import type { BroadcastStatus, DriverStatus, MerchantCategory, OrderStatus, Service } from "@quickdrop/shared";
+import type {
+  BroadcastStatus,
+  DriverStatus,
+  MerchantCategory,
+  MessageDirection,
+  OrderStatus,
+  Service,
+  SupportThreadStatus,
+} from "@quickdrop/shared";
 
 // أشكال عقد الـ REST كما يراها المتصفح (عبر /api/proxy).
 // D5 — كل مال يعبر الـ JSON سلسلة نصية؛ لا يُحوَّل لـ Number أبداً (العرض فقط عند الحافة).
@@ -274,4 +282,53 @@ export interface BindCodeResponse {
 
 export interface CatalogItemResponse {
   item: CatalogItemView;
+}
+
+// §9 — خيوط الدعم (customer↔support): القائمة + التفاصيل + الرد/الإغلاق.
+export interface SupportThreadSummary {
+  id: string;
+  userId: string;
+  userName: string | null;
+  userPhone: string | null;
+  status: SupportThreadStatus;
+  assignedStaffId: string | null;
+  lastMessageText: string | null;
+  lastMessageAt: string | null;
+  messageCount: number;
+  createdAt: string;
+}
+
+export interface ListSupportThreadsResponse {
+  threads: SupportThreadSummary[];
+}
+
+export interface SupportMessageView {
+  id: string;
+  direction: MessageDirection; // in = من الزبون، out = من المكتب
+  text: string;
+  createdAt: string;
+}
+
+export interface SupportThreadDetail {
+  id: string;
+  userId: string;
+  userName: string | null;
+  userPhone: string | null;
+  status: SupportThreadStatus;
+  assignedStaffId: string | null;
+  createdAt: string;
+}
+
+export interface SupportThreadDetailResponse {
+  thread: SupportThreadDetail;
+  messages: SupportMessageView[];
+}
+
+export interface SupportReplyResponse {
+  threadId: string;
+}
+
+export interface SupportCloseResponse {
+  threadId: string;
+  status: "closed";
 }

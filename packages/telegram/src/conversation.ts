@@ -42,6 +42,7 @@ export const convStateSchema = z.object({
     "food_menu",
     "food_dropoff",
     "food_confirm",
+    "support", // §9 — الزبون بوضع مراسلة الدعم: كل نص يُلحَق بخيطه حتى /start أو زر قائمة
   ]),
   service: z.enum(["p2p", "parcel", "food"]).optional(),
   pickup: convPointSchema.optional(), // للطعام: موقع المطعم (نقطة الاستلام) المخزَّن لتمريره

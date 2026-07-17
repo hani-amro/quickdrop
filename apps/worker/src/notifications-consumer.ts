@@ -4,6 +4,7 @@ import {
   offers,
   orderItems,
   orders,
+  supportThreads,
   tenants,
   trackingTokens,
   users,
@@ -119,6 +120,11 @@ export const dispatchExhaustedPayloadSchema = z.object({
 export const merchantNewOrderPayloadSchema = z.object({
   orderId: z.string().uuid(),
   merchantId: z.string().uuid(),
+});
+
+export const supportReplyPayloadSchema = z.object({
+  threadId: z.string().uuid(),
+  text: z.string().min(1),
 });
 
 // —— أدوات مشتركة ——
@@ -606,6 +612,58 @@ async function handleMerchantNewOrder(deps: NotificationsConsumerDeps, job: Noti
   }
 }
 
+// —— support.reply: إيصال رد المكتب على خيط الدعم إلى الزبون عبر البوت (§9) ——
+
+async function handleSupportReply(deps: NotificationsConsumerDeps, job: NotificationJob): Promise<void> {
+  const payload = supportReplyPayloadSchema.parse(job.payload);
+
+  const tenant = await loadActiveTenant(deps, job.tenantId, job.topic);
+  if (!tenant) return;
+
+  const row = await withTenant(deps.appDb, job.tenantId, async (tx) => {
+    const rows = await tx
+      .select({
+        userId: users.id,
+        telegramUserId: users.telegramUserId,
+        blockedAt: users.blockedAt,
+      })
+      .from(supportThreads)
+      .innerJoin(users, and(eq(users.tenantId, supportThreads.tenantId), eq(users.id, supportThreads.userId)))
+      .where(eq(supportThreads.id, payload.threadId))
+      .limit(1);
+    return rows[0];
+  });
+  if (!row) {
+    // §16.12: صف outbox عن خيط غير موجود = فساد بيانات — فشل صاخب (retry ثم DLQ)
+    throw new Error(`notifications: support thread ${payload.threadId} not found for support.reply`);
+  }
+
+  if (row.telegramUserId === null) {
+    // D15 — زبون تلفون بلا تيليغرام: لا قناة بوت؛ المكتب يرد هاتفياً — تخطٍّ بصمت مع لوغ
+    console.log(
+      JSON.stringify({ action: "support_reply_skipped_no_telegram", tenantId: job.tenantId, threadId: payload.threadId }),
+    );
+    return;
+  }
+  if (row.blockedAt !== null) {
+    // §4.3 — محظور سابقاً: لا إرسال ولا إعادة محاولة
+    console.log(
+      JSON.stringify({ action: "support_reply_skipped_user_blocked", tenantId: job.tenantId, userId: row.userId }),
+    );
+    return;
+  }
+
+  const bot = await getTenantBot(deps, job.tenantId, tenant);
+  await sendOrMarkBlocked(deps, {
+    tenantId: job.tenantId,
+    bot,
+    chatId: row.telegramUserId,
+    userId: row.userId,
+    // نص المكتب مدخل مستخدم → escapeHtml (parse_mode HTML افتراضي من المصنع §4.3)
+    text: `💬 <b>رد المكتب:</b>\n${escapeHtml(payload.text)}`,
+  });
+}
+
 /**
  * D9/§12 — معالج طابور الإشعارات (NOTIFICATIONS_QUEUE): يوزّع حسب topic.
  * §16.12: لا ابتلاع أخطاء — الرمي يعيد الجدولة عبر BullMQ backoff؛ الحالات التي
@@ -631,6 +689,9 @@ export function createNotificationsProcessor(deps: NotificationsConsumerDeps): (
         return;
       case "merchant.new_order":
         await handleMerchantNewOrder(deps, job);
+        return;
+      case "support.reply":
+        await handleSupportReply(deps, job);
         return;
       default:
         // topic مجهول (منتج أحدث/أقدم): لوغ تحذيري بلا رمي — retry بلا فائدة (§16.12

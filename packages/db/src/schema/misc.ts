@@ -4,6 +4,7 @@ import {
   OUTBOX_STATUSES,
   SUPPORT_THREAD_STATUSES,
 } from "@quickdrop/shared";
+import { sql } from "drizzle-orm";
 import {
   bigint,
   foreignKey,
@@ -33,6 +34,10 @@ export const supportThreads = pgTable(
   },
   (t) => [
     uniqueIndex("support_threads_tenant_id_id_uq").on(t.tenantId, t.id), // أب لمفاتيح مركّبة
+    // §9 — خيط مفتوح واحد كحدّ أقصى لكل زبون: يجعل «ابحث-أو-أنشئ» في appendInboundMessage
+    // آمناً ضد السباق (رسالتان متزامنتان من نفس الزبون لا تخلقان خيطين). القاعدة تفرض
+    // اللا-متغيّر declaratively — READ COMMITTED وحده لا يمنع الـ phantom.
+    uniqueIndex("support_threads_one_open_per_user").on(t.tenantId, t.userId).where(sql`status = 'open'`),
     foreignKey({ columns: [t.tenantId, t.userId], foreignColumns: [users.tenantId, users.id], name: "support_threads_user_fk" }),
     foreignKey({ columns: [t.tenantId, t.assignedStaffId], foreignColumns: [staff.tenantId, staff.id], name: "support_threads_staff_fk" }),
   ],
@@ -52,6 +57,10 @@ export const supportMessages = pgTable(
   },
   (t) => [
     index("support_messages_tenant_thread_idx").on(t.tenantId, t.threadId), // §2.3
+    // §9/§12 — إزالة تكرار الرسائل الواردة عند إعادة تسليم التحديث (worker انهار قبل
+    // markProcessed → البوت يعالجه ثانية). tg_message_id فريد ضمن الدردشة، فالمفتاح
+    // (tenant, thread, tg_message_id) يمنع صفاً مكرراً؛ الرسائل الصادرة (tg_message_id NULL) خارجه.
+    uniqueIndex("support_messages_tg_dedup").on(t.tenantId, t.threadId, t.tgMessageId).where(sql`tg_message_id IS NOT NULL`),
     foreignKey({ columns: [t.tenantId, t.threadId], foreignColumns: [supportThreads.tenantId, supportThreads.id], name: "support_messages_thread_fk" }),
   ],
 );

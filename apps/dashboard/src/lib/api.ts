@@ -1,3 +1,4 @@
+import type { SupportThreadStatus } from "@quickdrop/shared";
 import type {
   AnalyticsResponse,
   BindCodeResponse,
@@ -14,11 +15,15 @@ import type {
   ListDriversResponse,
   ListMerchantsResponse,
   ListOrdersResponse,
+  ListSupportThreadsResponse,
   MerchantConfirmResponse,
   OrderDetailResponse,
   QuoteRequest,
   QuoteResponse,
   SettlementBoardResponse,
+  SupportCloseResponse,
+  SupportReplyResponse,
+  SupportThreadDetailResponse,
   UpsertCatalogItemRequest,
 } from "./types";
 
@@ -91,6 +96,14 @@ export const api = {
   // §3 (بوت التاجر) — كود/رابط ربط لمرة واحدة يفتحه المشغّل بتيليغرام فيربط حسابه بالمطعم
   createMerchantBindCode: (merchantId: string): Promise<BindCodeResponse> =>
     request(`merchants/${merchantId}/bind-code`, { method: "POST", body: {} }),
+  // §9 — خيوط الدعم: القائمة (?status اختياري)، التفاصيل، رد الموظف، الإغلاق
+  listSupportThreads: (status?: SupportThreadStatus): Promise<ListSupportThreadsResponse> =>
+    request(status === undefined ? "support" : `support?status=${status}`),
+  getSupportThread: (threadId: string): Promise<SupportThreadDetailResponse> => request(`support/${threadId}`),
+  supportReply: (threadId: string, text: string): Promise<SupportReplyResponse> =>
+    request(`support/${threadId}/reply`, { method: "POST", body: { text } }),
+  supportClose: (threadId: string): Promise<SupportCloseResponse> =>
+    request(`support/${threadId}/close`, { method: "POST", body: {} }),
   // §10.2 — تسجيل TOTP للطاقم (إلزامي owner/accountant): البدء يولّد سرّاً معلّقاً ويرجع
   // otpauth URL؛ التأكيد بالرمز يثبّته. الجلسة (كوكي qd_session) تُمرَّر عبر الـ proxy.
   totpEnroll: (): Promise<{ otpauthUrl: string }> => request("auth/totp/enroll", { method: "POST", body: {} }),

@@ -7,6 +7,7 @@ export * from "./outbox.js";
 export * from "./orders-service.js";
 export * from "./merchants-service.js";
 export * from "./merchant-bot.js";
+export * from "./support.js";
 export * from "./scheduling.js";
 export * from "./dispatch.js";
 export * from "./settlement.js";

@@ -9,6 +9,7 @@ import {
   offerRejectCallbackData,
   offerTimeoutDelayMs,
   orderStatusChangedPayloadSchema,
+  supportReplyPayloadSchema,
 } from "./notifications-consumer.js";
 
 // §15 — وحدات: منطق صافٍ فقط، بلا أي اتصال قاعدة/Redis/تيليغرام.
@@ -128,5 +129,15 @@ describe("§11 تحقق حمولات الطوابير عند الاستهلاك"
         expiresAt: "2026-01-01T12:00:45.000Z",
       }),
     ).toThrow();
+  });
+
+  it("support.reply: threadId + نص غير فارغ يمر", () => {
+    const parsed = supportReplyPayloadSchema.parse({ threadId: ORDER_ID, text: "أهلاً، كيف نساعدك؟" });
+    expect(parsed.text).toBe("أهلاً، كيف نساعدك؟");
+  });
+
+  it("support.reply: نص فارغ أو threadId غير UUID يُرفض (§11)", () => {
+    expect(() => supportReplyPayloadSchema.parse({ threadId: ORDER_ID, text: "" })).toThrow();
+    expect(() => supportReplyPayloadSchema.parse({ threadId: "not-a-uuid", text: "مرحبا" })).toThrow();
   });
 });

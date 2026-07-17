@@ -12,6 +12,7 @@ const LINKS = [
   { href: "/settlements", label: "التسوية" },
   { href: "/analytics", label: "التحليلات" },
   { href: "/broadcasts", label: "البث" },
+  { href: "/support", label: "الدعم" }, // §9 — خيوط الدعم (customer↔support)
   { href: "/settings/security", label: "الأمان" }, // §10.2 — تسجيل المصادقة الثنائية
 ] as const;
 
