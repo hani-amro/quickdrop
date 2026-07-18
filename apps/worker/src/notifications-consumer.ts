@@ -1,10 +1,10 @@
 import {
+  conversations,
   drivers,
   listOperatorChatsForMerchant,
   offers,
   orderItems,
   orders,
-  supportThreads,
   tenants,
   trackingTokens,
   users,
@@ -620,6 +620,7 @@ async function handleSupportReply(deps: NotificationsConsumerDeps, job: Notifica
   const tenant = await loadActiveTenant(deps, job.tenantId, job.topic);
   if (!tenant) return;
 
+  // P2.4c — الخيط الآن محادثة موحّدة (conversations)؛ نحلّ صاحبها لإرسال الرد عبر تيليغرام.
   const row = await withTenant(deps.appDb, job.tenantId, async (tx) => {
     const rows = await tx
       .select({
@@ -627,15 +628,15 @@ async function handleSupportReply(deps: NotificationsConsumerDeps, job: Notifica
         telegramUserId: users.telegramUserId,
         blockedAt: users.blockedAt,
       })
-      .from(supportThreads)
-      .innerJoin(users, and(eq(users.tenantId, supportThreads.tenantId), eq(users.id, supportThreads.userId)))
-      .where(eq(supportThreads.id, payload.threadId))
+      .from(conversations)
+      .innerJoin(users, and(eq(users.tenantId, conversations.tenantId), eq(users.id, conversations.userId)))
+      .where(eq(conversations.id, payload.threadId))
       .limit(1);
     return rows[0];
   });
   if (!row) {
-    // §16.12: صف outbox عن خيط غير موجود = فساد بيانات — فشل صاخب (retry ثم DLQ)
-    throw new Error(`notifications: support thread ${payload.threadId} not found for support.reply`);
+    // §16.12: صف outbox عن محادثة غير موجودة = فساد بيانات — فشل صاخب (retry ثم DLQ)
+    throw new Error(`notifications: conversation ${payload.threadId} not found for support.reply`);
   }
 
   if (row.telegramUserId === null) {

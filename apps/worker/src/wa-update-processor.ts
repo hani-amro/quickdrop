@@ -182,7 +182,7 @@ export async function processWaUpdate(deps: WaUpdateProcessorDeps, job: WaUpdate
         await publishSpineEvent(tx, job.tenantId, "contact.created", { userId: customer.userId, channel: "whatsapp" });
       }
       // §4.4 — الحفظ بالمخزن الموحّد: خيط الزبون + الرسالة (idempotent بـ wa_message_id)
-      const conversationId = await getOrCreateConversation(tx, job.tenantId, customer.userId);
+      const { id: conversationId } = await getOrCreateConversation(tx, job.tenantId, customer.userId);
       const extracted = extractWaMessage(message as Record<string, unknown>);
       await recordInboundMessage(tx, {
         tenantId: job.tenantId,

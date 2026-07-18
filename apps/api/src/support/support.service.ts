@@ -1,4 +1,4 @@
-import { ConflictException, Inject, Injectable, NotFoundException } from "@nestjs/common";
+import { Inject, Injectable, NotFoundException } from "@nestjs/common";
 import {
   closeSupportThread,
   getSupportThread,
@@ -153,7 +153,7 @@ export class SupportService {
 
   // §9 — رد الموظف: staffReplyToThread يكتب رسالة out + outbox 'support.reply' بنفس الترانزاكشن.
   // أمان مؤقت: لا هوية موظف مع التوكن الثابت — staffId=null (كنمط orders/merchants §10.2 لاحقاً).
-  // not_found→404، closed→409 (رسائل عامة §11).
+  // P2.4c: الخيوط الموحّدة لا تُغلق أمام الرد (رد على resolved يعيد فتحه) — لا حالة closed.
   async reply(authorization: string | undefined, id: string, body: unknown): Promise<SupportReplyResponse> {
     assertStaffToken(this.env.STAFF_API_TOKEN, authorization);
     const threadId = parseOr400(uuidSchema, id, "support_reply_id");
@@ -161,17 +161,11 @@ export class SupportService {
     const tenant = await resolveActiveTenant(this.handle.db, input.tenantSlug);
 
     const result = await staffReplyToThread(this.handle.db, tenant.id, threadId, null, input.text);
-    switch (result.outcome) {
-      case "not_found":
-        throw new NotFoundException("not found");
-      case "closed":
-        throw new ConflictException("support thread is closed");
-      case "sent":
-        console.log(
-          JSON.stringify({ action: "support_reply_sent", tenant_id: tenant.id, thread_id: threadId, actor: "staff" }),
-        );
-        return { threadId: result.threadId };
-    }
+    if (result.outcome === "not_found") throw new NotFoundException("not found");
+    console.log(
+      JSON.stringify({ action: "support_reply_sent", tenant_id: tenant.id, thread_id: threadId, actor: "staff" }),
+    );
+    return { threadId: result.threadId };
   }
 
   // §9 — إغلاق خيط؛ غير موجود = 404. الإغلاق idempotent فعلياً (إغلاق مغلق = closed).

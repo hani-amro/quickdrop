@@ -21,7 +21,7 @@ describe.skipIf(!hasDb)("crm-read (تكامل، قاعدة حية)", () => {
       const u = await tx.insert(users).values({ tenantId, role: "customer", phoneE164: "+60133334444", firstName: "Layla", waId: "60133334444" }).returning({ id: users.id });
       userId = u[0]!.id;
       await tx.insert(customerProfiles).values({ tenantId, userId, lifecycleStage: "loyal", rfmScore: 90, orderCount: 6, totalSpent: 144_000n });
-      convId = await getOrCreateConversation(tx, tenantId, userId);
+      convId = (await getOrCreateConversation(tx, tenantId, userId)).id;
       await recordInboundMessage(tx, { tenantId, conversationId: convId, channel: "whatsapp", externalId: "in1", type: "text", content: "مرحبا" });
       await recordInboundMessage(tx, { tenantId, conversationId: convId, channel: "whatsapp", externalId: "in2", type: "text", content: "طلب" });
       await recordOutboundMessage(tx, { tenantId, conversationId: convId, channel: "whatsapp", type: "text", content: "أهلاً" });

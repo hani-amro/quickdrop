@@ -8,20 +8,20 @@ import type { Tx } from "./with-tenant.js";
 // external_id) — إعادة إرسال Meta/تيليغرام لا تُضاعف.
 
 /** خيط الزبون — ينشئه إن غاب (سباق رسالتين متزامنتين يحسمه الفريد على (tenant, user)). */
-export async function getOrCreateConversation(tx: Tx, tenantId: string, userId: string): Promise<string> {
+export async function getOrCreateConversation(tx: Tx, tenantId: string, userId: string): Promise<{ id: string; created: boolean }> {
   const existing = await tx
     .select({ id: conversations.id })
     .from(conversations)
     .where(and(eq(conversations.tenantId, tenantId), eq(conversations.userId, userId)))
     .limit(1);
-  if (existing[0]) return existing[0].id;
+  if (existing[0]) return { id: existing[0].id, created: false };
 
   const inserted = await tx
     .insert(conversations)
     .values({ tenantId, userId })
     .onConflictDoNothing({ target: [conversations.tenantId, conversations.userId] })
     .returning({ id: conversations.id });
-  if (inserted[0]) return inserted[0].id;
+  if (inserted[0]) return { id: inserted[0].id, created: true };
 
   // خسرنا السباق — الصف موجود الآن حتماً
   const winner = await tx
@@ -30,14 +30,15 @@ export async function getOrCreateConversation(tx: Tx, tenantId: string, userId: 
     .where(and(eq(conversations.tenantId, tenantId), eq(conversations.userId, userId)))
     .limit(1);
   if (!winner[0]) throw new Error(`getOrCreateConversation: lost race but no row (tenant ${tenantId})`); // §16.12
-  return winner[0].id;
+  return { id: winner[0].id, created: false };
 }
 
 export interface RecordInboundInput {
   tenantId: string;
   conversationId: string;
   channel: MessageChannel;
-  externalId: string; // wa_message_id / tg_message_id — مفتاح إزالة التكرار
+  /** wa_message_id / tg_message_id — مفتاح إزالة التكرار؛ غيابه = لا dedup (رسالة جديدة دائماً). */
+  externalId?: string;
   type: MessageType;
   content?: string;
   mediaUrl?: string;
@@ -49,33 +50,35 @@ export interface RecordInboundInput {
 export type RecordInboundOutcome = "inserted" | "duplicate";
 
 /**
- * رسالة واردة: إدراج idempotent (dedup على external_id) + تحديث ملخّص المحادثة
+ * رسالة واردة: إدراج idempotent (dedup على external_id إن وُجد) + تحديث ملخّص المحادثة
  * (last_message_at/preview/unread++) **فقط عند الإدراج الجديد** (لا تضخيم unread بالإعادة).
  */
 export async function recordInboundMessage(tx: Tx, input: RecordInboundInput): Promise<RecordInboundOutcome> {
   const at = input.at ?? new Date();
-  const inserted = await tx
-    .insert(messages)
-    .values({
-      tenantId: input.tenantId,
-      conversationId: input.conversationId,
-      channel: input.channel,
-      direction: "in",
-      type: input.type,
-      externalId: input.externalId,
-      status: "delivered",
-      ...(input.content !== undefined ? { content: input.content } : {}),
-      ...(input.mediaUrl !== undefined ? { mediaUrl: input.mediaUrl } : {}),
-      ...(input.mediaMime !== undefined ? { mediaMime: input.mediaMime } : {}),
-      ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
-      createdAt: at,
-    })
-    // الفهرس جزئي (WHERE external_id IS NOT NULL) — لازم targetWhere كي يستدلّ Postgres عليه
-    .onConflictDoNothing({
-      target: [messages.tenantId, messages.channel, messages.externalId],
-      where: sql`external_id IS NOT NULL`,
-    })
-    .returning({ id: messages.id });
+  const base = tx.insert(messages).values({
+    tenantId: input.tenantId,
+    conversationId: input.conversationId,
+    channel: input.channel,
+    direction: "in",
+    type: input.type,
+    status: "delivered",
+    ...(input.externalId !== undefined ? { externalId: input.externalId } : {}),
+    ...(input.content !== undefined ? { content: input.content } : {}),
+    ...(input.mediaUrl !== undefined ? { mediaUrl: input.mediaUrl } : {}),
+    ...(input.mediaMime !== undefined ? { mediaMime: input.mediaMime } : {}),
+    ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
+    createdAt: at,
+  });
+  // dedup فقط عند وجود external_id (الفهرس جزئي WHERE external_id IS NOT NULL — لازم where للاستدلال)
+  const inserted =
+    input.externalId !== undefined
+      ? await base
+          .onConflictDoNothing({
+            target: [messages.tenantId, messages.channel, messages.externalId],
+            where: sql`external_id IS NOT NULL`,
+          })
+          .returning({ id: messages.id })
+      : await base.returning({ id: messages.id });
 
   if (inserted.length === 0) return "duplicate"; // إعادة إرسال — لا تحديث للملخّص
 
