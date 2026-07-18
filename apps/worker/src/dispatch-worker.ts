@@ -15,14 +15,19 @@ export interface DispatchProcessorDeps {
   dispatchQueue: Queue<DispatchJob>;
 }
 
-/** jobId حتمي لجولة إسناد: 'd:{orderId}:{round}' — التكرار (at-least-once §12) يُزال بالطابور. */
+/**
+ * jobId حتمي لجولة إسناد — التكرار (at-least-once §12) يُزال بالطابور.
+ * **BullMQ يرمي "Custom Id cannot contain :"** (مثبت تجريبياً ضد Redis الحي) —
+ * الفاصل '-' حصراً؛ الصيغ القديمة 'd:{id}:{round}' و'ot:{id}' كانت تُفشل كل
+ * enqueue (فتُعاد المهمة الحاملة له حتى استنفاد محاولاتها).
+ */
 export function dispatchOrderJobId(orderId: string, round: number): string {
-  return `d:${orderId}:${round}`;
+  return `d-${orderId}-${round}`;
 }
 
-/** jobId حتمي لمهلة عرض: 'ot:{offerId}' — نفس المفتاح من مستهلك الإشعارات ومن rescan الإقلاع. */
+/** jobId حتمي لمهلة عرض — نفس المفتاح من مستهلك الإشعارات ومن rescan الإقلاع (بلا ':'). */
 export function offerTimeoutJobId(offerId: string): string {
-  return `ot:${offerId}`;
+  return `ot-${offerId}`;
 }
 
 // §12 — خيارات BullMQ الموحّدة لمهام الإسناد (attempts/backoff/removeOnComplete).

@@ -8,6 +8,7 @@ import {
   SCHEDULED_QUEUE,
   scheduledJobId,
   TG_UPDATES_QUEUE,
+  tgUpdateJobId,
   type BroadcastJob,
   type DispatchJob,
   type NotificationJob,
@@ -81,7 +82,7 @@ async function rescanPending(): Promise<void> {
   for (const row of pending) {
     const job: TgUpdateJob = { tenantId: row.tenantId, updateId: row.updateId };
     await queue.add("process-update", job, {
-      jobId: `${row.tenantId}:${row.updateId}`, // نفس مفتاح البوابة — لا ازدواج
+      jobId: tgUpdateJobId(row.tenantId, row.updateId), // نفس مفتاح البوابة — لا ازدواج (بلا ':')
       attempts: 5,
       backoff: { type: "exponential", delay: 1000 },
       removeOnComplete: { count: 1000 },

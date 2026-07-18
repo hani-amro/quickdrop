@@ -82,10 +82,10 @@ describe("§4.4 callback_data ≤ 64 بايت", () => {
 });
 
 describe("معرّفات مهام الإسناد (إزالة تكرار at-least-once §12)", () => {
-  it("حتمية: نفس المدخلات → نفس jobId", () => {
-    expect(dispatchOrderJobId(ORDER_ID, 1)).toBe(`d:${ORDER_ID}:1`);
-    expect(dispatchOrderJobId(ORDER_ID, 3)).toBe(`d:${ORDER_ID}:3`);
-    expect(offerTimeoutJobId(OFFER_ID)).toBe(`ot:${OFFER_ID}`);
+  it("حتمية: نفس المدخلات → نفس jobId (بلا ':' — BullMQ يرمي Custom Id cannot contain :)", () => {
+    expect(dispatchOrderJobId(ORDER_ID, 1)).toBe(`d-${ORDER_ID}-1`);
+    expect(dispatchOrderJobId(ORDER_ID, 3)).toBe(`d-${ORDER_ID}-3`);
+    expect(offerTimeoutJobId(OFFER_ID)).toBe(`ot-${OFFER_ID}`);
   });
 
   it("خيارات BullMQ الموحّدة (§12): attempts/backoff/removeOnComplete", () => {

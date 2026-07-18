@@ -1,6 +1,6 @@
 import { Inject, Injectable } from "@nestjs/common";
 import { tenants, webhookUpdates, withTenant, type DbHandle } from "@quickdrop/db";
-import { decryptSecret, secretsEqual, type TgUpdateJob } from "@quickdrop/shared";
+import { decryptSecret, secretsEqual, tgUpdateJobId, type TgUpdateJob } from "@quickdrop/shared";
 import type { Queue } from "bullmq";
 import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
@@ -75,7 +75,8 @@ export class TelegramGatewayService {
 
     const job: TgUpdateJob = { tenantId: found.id, updateId };
     await this.queue.add("process-update", job, {
-      jobId: `${found.id}:${updateId}`,
+      // tgUpdateJobId — مصدر واحد مع rescan الـ worker؛ BullMQ يرفض ':' بالـ jobId
+      jobId: tgUpdateJobId(found.id, updateId),
       attempts: 5,
       backoff: { type: "exponential", delay: 1000 },
       removeOnComplete: { count: 1000 },

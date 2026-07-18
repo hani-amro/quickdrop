@@ -76,3 +76,27 @@ export interface ScheduledOrderJob {
 export function scheduledJobId(orderId: string): string {
   return `sched-${orderId}`;
 }
+
+/**
+ * jobId حتمي لتحديث تيليغرام — مصدر واحد للـ api (المنتج) والـ worker (rescan).
+ * BullMQ يمنع ':' بالـ custom jobId — الفاصل '-' (uuid وupdate_id بلا شرطات ملتبسة).
+ */
+export function tgUpdateJobId(tenantId: string, updateId: number): string {
+  return `tg-${tenantId}-${updateId}`;
+}
+
+// ——— دمج WaFlow (MERGE_PLAN §3.1) — طابور تحديثات واتساب: مرآة tg-updates ———
+// البوابة تحفظ الحدث بجدول wa_webhook_updates (durable) ثم ترد 200 ثم تدفع المهمة؛
+// المهمة تحمل معرّف صف الـ inbox فقط — الحمولة تُقرأ من القاعدة (مصدر الحقيقة §12).
+export const WA_UPDATES_QUEUE = "wa-updates";
+
+export interface WaUpdateJob {
+  tenantId: string;
+  /** uuid صف wa_webhook_updates */
+  updateId: string;
+}
+
+/** jobId حتمي (بلا ':' — قيد BullMQ) — واحد للمنتج والـ rescan. */
+export function waUpdateJobId(updateId: string): string {
+  return `wa-${updateId}`;
+}
