@@ -2,12 +2,8 @@
 // في الخدمات (التي تعيد استيرادها من هنا)؛ وإلا حلقة الاستيراد تجعلها undefined.
 import { BROADCAST_Q, DB, ENV, REDIS, SCHEDULED_Q, TG_QUEUE, WA_QUEUE } from "./tokens.js";
 export { BROADCAST_Q, DB, ENV, REDIS, SCHEDULED_Q, TG_QUEUE, WA_QUEUE };
-import { Inject, Module, type OnApplicationShutdown } from "@nestjs/common";
+import { Module } from "@nestjs/common";
 import { APP_GUARD, APP_INTERCEPTOR } from "@nestjs/core";
-import { createDb, type DbHandle } from "@quickdrop/db";
-import { BROADCAST_QUEUE, SCHEDULED_QUEUE, TG_UPDATES_QUEUE, WA_UPDATES_QUEUE, type BroadcastJob, type ScheduledOrderJob, type WaUpdateJob } from "@quickdrop/shared";
-import { Queue } from "bullmq";
-import { Redis } from "ioredis";
 import { AdminController } from "./admin/admin.controller.js";
 import { AdminService } from "./admin/admin.service.js";
 import { AdminAuthController } from "./admin/admin-auth.controller.js";
@@ -24,7 +20,6 @@ import { BroadcastsController } from "./broadcasts/broadcasts.controller.js";
 import { BroadcastsService } from "./broadcasts/broadcasts.service.js";
 import { DriversController } from "./drivers/drivers.controller.js";
 import { DriversService } from "./drivers/drivers.service.js";
-import { loadEnv, type ApiEnv } from "./env.js";
 import { HealthController } from "./health/health.controller.js";
 import { MetricsController, MetricsInterceptor } from "./observability/metrics.js";
 import { CouponsController } from "./loyalty/coupons.controller.js";
@@ -45,10 +40,11 @@ import { SupportService } from "./support/support.service.js";
 import { TelegramGatewayController } from "./telegram-gateway/gateway.controller.js";
 import { TelegramGatewayService } from "./telegram-gateway/gateway.service.js";
 import { TrackingController } from "./tracking/tracking.controller.js";
-import { WaGatewayController } from "./wa-gateway/wa-gateway.controller.js";
-import { WaGatewayService } from "./wa-gateway/wa-gateway.service.js";
+import { CoreModule } from "./core.module.js";
+import { WaModule } from "./wa-gateway/wa.module.js";
 
 @Module({
+  imports: [CoreModule, WaModule],
   controllers: [
     HealthController,
     OrdersController,
@@ -69,7 +65,6 @@ import { WaGatewayService } from "./wa-gateway/wa-gateway.service.js";
     AuthController, // §10.2 — دخول/خروج/هوية الطاقم (jلسات cookie)
     MetricsController, // §13 — GET /metrics لـ Prometheus (معفى من الحارسَين)
     TelegramGatewayController,
-    WaGatewayController, // دمج WaFlow §3.1 — /wa/webhook (توقيع Meta هو المصادقة)
   ],
   providers: [
     // §13 — interceptor عام يقيس زمن كل طلب (histogram Prometheus)
@@ -86,43 +81,6 @@ import { WaGatewayService } from "./wa-gateway/wa-gateway.service.js";
     // §10.2 — حارس عام مستقل لكونسول المشرف: /api/admin/* تتطلب جلسة qd_admin أو Bearer
     // ADMIN_API_TOKEN (admin.guard يعفي /api/admin/auth الذاتية). دفاع مزدوج مع الخدمة.
     { provide: APP_GUARD, useClass: AdminGuard },
-    { provide: ENV, useFactory: (): ApiEnv => loadEnv() },
-    {
-      provide: DB,
-      useFactory: (env: ApiEnv): DbHandle => createDb(env.DATABASE_URL),
-      inject: [ENV],
-    },
-    {
-      provide: REDIS,
-      useFactory: (env: ApiEnv): Redis => new Redis(env.REDIS_URL, { maxRetriesPerRequest: null }),
-      inject: [ENV],
-    },
-    {
-      provide: TG_QUEUE,
-      useFactory: (redis: Redis): Queue => new Queue(TG_UPDATES_QUEUE, { connection: redis }),
-      inject: [REDIS],
-    },
-    {
-      // §4.3/§14 — منتج طابور البث: الـ api يدفع مهمة لكل بثّة غير مجدولة
-      provide: BROADCAST_Q,
-      useFactory: (redis: Redis): Queue<BroadcastJob> =>
-        new Queue<BroadcastJob>(BROADCAST_QUEUE, { connection: redis }),
-      inject: [REDIS],
-    },
-    {
-      // §6.3 — منتج طابور الجدولة: يدفع مهمة مؤجّلة عند إنشاء طلب بموعد مستقبلي
-      provide: SCHEDULED_Q,
-      useFactory: (redis: Redis): Queue<ScheduledOrderJob> =>
-        new Queue<ScheduledOrderJob>(SCHEDULED_QUEUE, { connection: redis }),
-      inject: [REDIS],
-    },
-    {
-      // دمج WaFlow §3.1 — منتج طابور تحديثات واتساب (البوابة تدفع بعد الحفظ durable)
-      provide: WA_QUEUE,
-      useFactory: (redis: Redis): Queue<WaUpdateJob> => new Queue<WaUpdateJob>(WA_UPDATES_QUEUE, { connection: redis }),
-      inject: [REDIS],
-    },
-    WaGatewayService,
     TelegramGatewayService,
     OrdersService,
     DriversService,
@@ -141,21 +99,4 @@ import { WaGatewayService } from "./wa-gateway/wa-gateway.service.js";
     AdminGuard, // مزوّد حارس المشرف العام أعلاه
   ],
 })
-export class AppModule implements OnApplicationShutdown {
-  constructor(
-    @Inject(DB) private readonly db: DbHandle,
-    @Inject(REDIS) private readonly redis: Redis,
-    @Inject(TG_QUEUE) private readonly queue: Queue,
-    @Inject(BROADCAST_Q) private readonly broadcastQueue: Queue<BroadcastJob>,
-    @Inject(SCHEDULED_Q) private readonly scheduledQueue: Queue<ScheduledOrderJob>,
-  ) {}
-
-  // §12 — إغلاق نظيف: استنزف ثم أغلق؛ وإلا كل نشرة deploy بتقطع طلبات بنصها.
-  async onApplicationShutdown(): Promise<void> {
-    await this.queue.close();
-    await this.broadcastQueue.close();
-    await this.scheduledQueue.close();
-    this.redis.disconnect();
-    await this.db.close();
-  }
-}
+export class AppModule {}
