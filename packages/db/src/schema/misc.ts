@@ -1,69 +1,10 @@
-import {
-  BROADCAST_STATUSES,
-  MESSAGE_DIRECTIONS,
-  OUTBOX_STATUSES,
-  SUPPORT_THREAD_STATUSES,
-} from "@quickdrop/shared";
+import { BROADCAST_STATUSES, OUTBOX_STATUSES } from "@quickdrop/shared";
 import { sql } from "drizzle-orm";
-import {
-  bigint,
-  foreignKey,
-  index,
-  integer,
-  jsonb,
-  pgTable,
-  text,
-  uniqueIndex,
-  uuid,
-} from "drizzle-orm/pg-core";
+import { index, integer, jsonb, pgTable, text, uuid } from "drizzle-orm/pg-core";
 import { createdAt, idPk, money, tenantId, timestamptz, updatedAt } from "./_common.js";
-import { staff } from "./staff.js";
-import { users } from "./users.js";
 
-// §3 v1.1 — support_threads: خيط دعم لكل مستخدم؛ الإسناد لموظف support.
-export const supportThreads = pgTable(
-  "support_threads",
-  {
-    id: idPk(),
-    tenantId: tenantId(),
-    userId: uuid("user_id").notNull(),
-    status: text("status", { enum: SUPPORT_THREAD_STATUSES }).notNull().default("open"),
-    assignedStaffId: uuid("assigned_staff_id"),
-    createdAt: createdAt(),
-    updatedAt: updatedAt(),
-  },
-  (t) => [
-    uniqueIndex("support_threads_tenant_id_id_uq").on(t.tenantId, t.id), // أب لمفاتيح مركّبة
-    // §9 — خيط مفتوح واحد كحدّ أقصى لكل زبون: يجعل «ابحث-أو-أنشئ» في appendInboundMessage
-    // آمناً ضد السباق (رسالتان متزامنتان من نفس الزبون لا تخلقان خيطين). القاعدة تفرض
-    // اللا-متغيّر declaratively — READ COMMITTED وحده لا يمنع الـ phantom.
-    uniqueIndex("support_threads_one_open_per_user").on(t.tenantId, t.userId).where(sql`status = 'open'`),
-    foreignKey({ columns: [t.tenantId, t.userId], foreignColumns: [users.tenantId, users.id], name: "support_threads_user_fk" }),
-    foreignKey({ columns: [t.tenantId, t.assignedStaffId], foreignColumns: [staff.tenantId, staff.id], name: "support_threads_staff_fk" }),
-  ],
-);
-
-// §3 v1.1 — support_messages: رسائل الخيط (تيليغرام in/out)؛ append-only عملياً — لا updated_at.
-export const supportMessages = pgTable(
-  "support_messages",
-  {
-    id: idPk(),
-    tenantId: tenantId(),
-    threadId: uuid("thread_id").notNull(),
-    direction: text("direction", { enum: MESSAGE_DIRECTIONS }).notNull(),
-    text: text("text").notNull(),
-    tgMessageId: bigint("tg_message_id", { mode: "number" }),
-    createdAt: createdAt(),
-  },
-  (t) => [
-    index("support_messages_tenant_thread_idx").on(t.tenantId, t.threadId), // §2.3
-    // §9/§12 — إزالة تكرار الرسائل الواردة عند إعادة تسليم التحديث (worker انهار قبل
-    // markProcessed → البوت يعالجه ثانية). tg_message_id فريد ضمن الدردشة، فالمفتاح
-    // (tenant, thread, tg_message_id) يمنع صفاً مكرراً؛ الرسائل الصادرة (tg_message_id NULL) خارجه.
-    uniqueIndex("support_messages_tg_dedup").on(t.tenantId, t.threadId, t.tgMessageId).where(sql`tg_message_id IS NOT NULL`),
-    foreignKey({ columns: [t.tenantId, t.threadId], foreignColumns: [supportThreads.tenantId, supportThreads.id], name: "support_messages_thread_fk" }),
-  ],
-);
+// P2.4c step 3 — support_threads/support_messages أُسقِطا (ترحيل 0018) بعد اندماج الدعم
+// في المخزن الموحّد conversations/messages (خيط واحد لكل زبون عبر كل القنوات).
 
 // §3 v1.1 — broadcasts: بث جماهيري بمعدل مضبوط (§4.3)؛ العدّادات تتحدث أثناء الإرسال.
 export const broadcasts = pgTable("broadcasts", {
@@ -115,9 +56,6 @@ export const tenantPayments = pgTable("tenant_payments", {
   createdAt: createdAt(),
 });
 
-export type SupportThread = typeof supportThreads.$inferSelect;
-export type SupportMessage = typeof supportMessages.$inferSelect;
-export type NewSupportMessage = typeof supportMessages.$inferInsert;
 export type Broadcast = typeof broadcasts.$inferSelect;
 export type OutboxMessage = typeof outbox.$inferSelect;
 export type NewOutboxMessage = typeof outbox.$inferInsert;

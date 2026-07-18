@@ -127,6 +127,13 @@
       "when": 1784412717139,
       "tag": "0017_conversations_messages",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1784415147114,
+      "tag": "0018_drop_legacy_support",
+      "breakpoints": true
     }
   ]
 }

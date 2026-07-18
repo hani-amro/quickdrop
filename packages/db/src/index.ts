@@ -21,4 +21,3 @@ export * from "./tenant-admin.js";
 export * from "./admin-auth.js";
 export * from "./conversations-service.js";
 export * from "./crm-read.js";
-export * from "./support-migrate.js";
