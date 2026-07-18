@@ -1,7 +1,14 @@
 #!/usr/bin/env node
-// D5/D11 — حارس المال الستاتيكي (حاجب بالـ CI): يمنع أي float/parseFloat/تنسيق كسري
-// على المال في الكود المصدري. المال = BIGINT بأصغر وحدة حصراً، والتسعير من محرك
-// التسعير الخادمي فقط. أي استثناء جديد هنا قرار معماري يُكتب بالوثيقة أولاً.
+// D5/D11 — حارس المال الستاتيكي (حاجب بالـ CI): يمنع float/parseFloat/تنسيق كسري على
+// المال بالكود المصدري. المال = BIGINT بأصغر وحدة حصراً، والتسعير من محرك التسعير
+// الخادمي فقط. أي استثناء جديد = قرار معماري يُكتب بالوثيقة، أو سطر بتعليق
+// `money-guard-ignore` مرئي بالمراجعة.
+//
+// حدود معروفة (قُوّيت بعد مراجعة Phase 1 العدائية): الفحص نصّي (regex)، فيتهرّب منه
+// **التسمية الوسيطة** (`const x = order.total; Number(x)`) لأنها تتطلب تحليل أنواع.
+// الحارس الحقيقي الدائم لـ D5 هو حارس السكيما (packages/db/scripts/check-money.ts):
+// عمود المال لا يمكن أن يكون float **في القاعدة** مهما فعل الكود. هذا الحارس دفاعٌ
+// بالعمق ضد حساب float **أثناء النقل**، لا بديلٌ عن حارس السكيما.
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 
@@ -11,37 +18,60 @@ const SKIP_DIRS = new Set(["node_modules", "dist", ".next", ".turbo", "coverage"
 const SOURCE_RE = /\.(ts|tsx|mts|cts)$/;
 const TEST_RE = /\.(test|spec)\.(ts|tsx)$/;
 
-// أسماء الحقول المالية — مطابقة على حدود مقاطع snake_case/camelCase:
-// "cod" و"codAmount" و"price_total" تُمسك؛ "publicCode" و"trackingCode" لا.
-const MONEY_TERMS = "price|amount|total|fee|cost|cod|goods|wallet|spent|revenue|balance|subtotal|tax";
-const MONEY_TERMS_CAP = MONEY_TERMS.replace(/(^|\|)([a-z])/g, (_, sep, ch) => `${sep}${ch.toUpperCase()}`);
-const MONEY_ID = `(?:(?<![A-Za-z])(?:${MONEY_TERMS})|(?:${MONEY_TERMS_CAP}))(?![a-z])`;
+// أسماء الحقول المالية — مفرد وجمع صريحان (الجمع أُضيف بعد مراجعة Phase 1: 'fees'
+// و'prices' و'orderTotals' كانت تتهرّب). الأطول أولاً كي تفوز alternation. 'cod'
+// مفرد فقط عمداً (تجنّب 'codes'/'public_code'). المطابقة على حدود المقاطع:
+// 'codAmount'/'price_total'/'orderTotals' تُمسك؛ 'publicCode'/'trackingCode' لا.
+const MONEY_TERMS = [
+  "prices", "price", "amounts", "amount", "subtotals", "subtotal", "totals", "total",
+  "fees", "fee", "costs", "cost", "goods", "wallets", "wallet", "spent",
+  "revenues", "revenue", "balances", "balance", "taxes", "tax", "cod",
+].join("|");
+const cap = (terms) => terms.replace(/(^|\|)([a-z])/g, (_, sep, ch) => `${sep}${ch.toUpperCase()}`);
+// فرعان: مصطلح بحدّ يسار غير-حرف (snake_case/بداية)، أو مصطلح مكبّر أول حرف (camelCase suffix)
+const MONEY_ID = `(?:(?<![A-Za-z])(?:${MONEY_TERMS})|(?:${cap(MONEY_TERMS)}))(?![a-z])`;
 
 const RULES = [
   {
-    name: "parseFloat is banned everywhere (money or not — use integer parsing or toMinor)",
+    name: "parseFloat is banned everywhere (use integer parsing / toMinor)",
     re: /\bparseFloat\s*\(/,
-    appliesTo: () => true,
+    perLine: true,
   },
   {
-    name: "float formatting on a money identifier (.toFixed on price/amount/total/…)",
-    re: new RegExp(`${MONEY_ID}[A-Za-z0-9_]*\\s*(\\)|\\])?\\s*\\.toFixed\\s*\\(`),
-    appliesTo: () => true,
+    // بعد المعرّف المالي أي شيء ثم .toFixed — يمسك '(total / 100).toFixed(2)' وليس فقط 'total.toFixed'
+    name: "fractional formatting of money (.toFixed after a money identifier)",
+    re: new RegExp(`${MONEY_ID}[^;]*?\\.toFixed\\s*\\(`),
+    perLine: true,
   },
   {
-    name: "Number() coercion of a money identifier (Decimal→float drift)",
-    re: new RegExp(`\\bNumber\\s*\\([^)]*${MONEY_ID}`),
-    appliesTo: () => true,
+    // تنسيق العملة بـ toLocaleString على المال (نفس خطيئة toFixed — كسور عائمة للعرض)
+    name: "fractional formatting of money (.toLocaleString after a money identifier)",
+    re: new RegExp(`${MONEY_ID}[^;]*?\\.toLocaleString\\s*\\(`),
+    perLine: true,
   },
   {
-    name: "float column type in Drizzle schema (money must be money()/bigint; rates must be *_bp integers)",
+    // Number(...money...) — يُفحص على كامل الملف كي يمسك lf داخل الأقواس (Prettier wrap)
+    name: "Number() coercion of a money identifier (Decimal/BigInt → float drift)",
+    re: new RegExp(`\\bNumber\\s*\\([^;{}]*?${MONEY_ID}`),
+    wholeFile: true,
+  },
+  {
+    // + أحادي (coercion) مباشرة على معرّف مالي بعد فاصل/مُشغّل — يماثل Number()
+    name: "unary + coercion of a money identifier",
+    re: new RegExp(`(?:[=,([:?]|=>|&&|\\|\\||return)\\s*\\+\\s*[A-Za-z0-9_.$\\[\\]]*${MONEY_ID}`),
+    wholeFile: true,
+  },
+  {
+    name: "float column type in Drizzle schema (money must be money()/bigint; rates = *_bp integers)",
     re: /\b(numeric|decimal|real)\s*\(/,
-    appliesTo: (file) => file.includes(join("packages", "db", "src", "schema")),
+    perLine: true,
+    files: (file) => file.includes(join("packages", "db", "src", "schema")),
   },
   {
     name: "doublePrecision outside the named non-money allowlist (rating_avg, speed_kmh)",
     re: /\bdoublePrecision\s*\(\s*"(?!rating_avg"|speed_kmh")/,
-    appliesTo: (file) => file.includes(join("packages", "db", "src", "schema")),
+    perLine: true,
+    files: (file) => file.includes(join("packages", "db", "src", "schema")),
   },
 ];
 
@@ -55,19 +85,39 @@ function* walk(dir) {
   }
 }
 
+/** رقم السطر لموضع char داخل نص كامل. */
+function lineOf(text, index) {
+  let n = 1;
+  for (let i = 0; i < index && i < text.length; i += 1) if (text[i] === "\n") n += 1;
+  return n;
+}
+
 const failures = [];
 for (const scanRoot of SCAN_ROOTS) {
   for (const file of walk(join(ROOT, scanRoot))) {
     const rel = relative(ROOT, file);
-    const lines = readFileSync(file, "utf8").split(/\r?\n/);
-    lines.forEach((line, i) => {
-      if (line.includes("money-guard-ignore")) return; // استثناء صريح مرئي بالمراجعة
-      for (const rule of RULES) {
-        if (rule.appliesTo(file) && rule.re.test(line)) {
-          failures.push(`${rel}:${i + 1} — ${rule.name}\n    ${line.trim()}`);
+    const text = readFileSync(file, "utf8");
+    const lines = text.split(/\r?\n/);
+
+    for (const rule of RULES) {
+      if (rule.files && !rule.files(file)) continue;
+
+      if (rule.perLine) {
+        lines.forEach((line, i) => {
+          if (line.includes("money-guard-ignore")) return;
+          if (rule.re.test(line)) failures.push(`${rel}:${i + 1} — ${rule.name}\n    ${line.trim()}`);
+        });
+      } else if (rule.wholeFile) {
+        // fresh regex بعلم g كي نمرّ على كل التطابقات ونحدّد أسطرها
+        const g = new RegExp(rule.re.source, "g");
+        let m;
+        while ((m = g.exec(text)) !== null) {
+          const ln = lineOf(text, m.index);
+          if (lines[ln - 1]?.includes("money-guard-ignore")) continue;
+          failures.push(`${rel}:${ln} — ${rule.name}\n    ${(lines[ln - 1] ?? "").trim()}`);
         }
       }
-    });
+    }
   }
 }
 

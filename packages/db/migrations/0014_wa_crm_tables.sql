@@ -57,7 +57,7 @@ CREATE TABLE "customer_profiles" (
   "rfm_score" integer NOT NULL DEFAULT 0,
   "order_count" integer NOT NULL DEFAULT 0,
   "total_spent" bigint NOT NULL DEFAULT 0,
-  "avg_order_value" bigint NOT NULL DEFAULT 0,
+  "avg_order_amount" bigint NOT NULL DEFAULT 0,
   "last_order_at" timestamptz,
   "favorite_items" jsonb,
   "churn_risk_at" timestamptz,

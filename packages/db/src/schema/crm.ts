@@ -20,7 +20,8 @@ export const customerProfiles = pgTable(
     rfmScore: integer("rfm_score").notNull().default(0),
     orderCount: integer("order_count").notNull().default(0), // عدّاد لا مال — الاسم يوضّح (حارس D5 يفرض bigint على total_*)
     totalSpent: money("total_spent").notNull().default(sql`0`), // D5 — كاش bigint
-    avgOrderValue: money("avg_order_value").notNull().default(sql`0`),
+    // "amount" لا "value": الاسم مالي صريح كي يراه حارسا المال (كود+سكيما) — مراجعة Phase 1
+    avgOrderAmount: money("avg_order_amount").notNull().default(sql`0`),
     lastOrderAt: timestamptz("last_order_at"),
     favoriteItems: jsonb("favorite_items"), // [{catalogItemId, count}] — بالمعرّف لا بالاسم (§3.3 landing)
     churnRiskAt: timestamptz("churn_risk_at"),
