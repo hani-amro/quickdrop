@@ -113,6 +113,13 @@
       "when": 1784399675494,
       "tag": "0015_users_channel_ids",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1784412485556,
+      "tag": "0016_loyalty_rate_config",
+      "breakpoints": true
     }
   ]
 }

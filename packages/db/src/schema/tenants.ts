@@ -37,6 +37,12 @@ export const tenants = pgTable("tenants", {
   driverFeeShareBp: integer("driver_fee_share_bp").notNull().default(10000),
   // §9 v1.1: معدلات الولاء أعمدة لكل مستأجر لا ثوابت. المنح عند delivered فقط.
   loyaltyPointsPerOrder: integer("loyalty_points_per_order").notNull().default(10),
+  // دمج WaFlow (ترحيل 0016، جدول التعارضات #13) — نموذج WaFlow: نقاط لكل وحدة عملة +
+  // معدّل استبدال، بأعداد صحيحة basis points (كان Float RM). 0 = معطّل (النموذج الافتراضي
+  // يبقى loyaltyPointsPerOrder). التحويل من WaFlow: round(pointsPerRM*10000)،
+  // round(redeemRate*10000). المنح الفعلي بهذا النموذج يُوصَل بـPhase 3 (طلبات WA المسعّرة).
+  loyaltyPointsPerCurrencyUnitBp: integer("loyalty_points_per_currency_unit_bp").notNull().default(0),
+  loyaltyRedeemRateBp: integer("loyalty_redeem_rate_bp").notNull().default(0),
   referralBonusPoints: integer("referral_bonus_points").notNull().default(100),
   referralMonthlyCap: integer("referral_monthly_cap").notNull().default(5), // منع مزارع الإحالات
   botTokenEncrypted: bytea("bot_token_encrypted"),
