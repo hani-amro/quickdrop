@@ -79,6 +79,11 @@ export function classifyRoute(method: string, rawPath: string): RateTier | null 
   if (path === "/health" || path.startsWith("/health/")) return null;
   if (path === "/metrics") return null; // §13 — كشط Prometheus الداخلي: 429 عليه يعمي المراقبة
   if (path.startsWith("/tg/")) return null;
+  // دمج WaFlow (مراجعة Phase 1، HIGH) — بوابة واتساب معفاة كالتيليغرام: Meta يرسل
+  // webhooks كل المستأجرين من مجموعة IP صغيرة مشتركة (والـ XFF آخره IP ميتا)، فحد
+  // 300/5د العام يُطلق 429 → Meta يتراجع/يعطّل الاشتراك → رسائل تضيع (خرق R-12).
+  // آمنٌ للإعفاء: البوابة موقّعة (توقيع Meta) وذات inbox dedup — نفس مبرّر /tg/.
+  if (path.startsWith("/wa/")) return null;
   // §11 — كل مسارات إثبات الهوية (كلمة سر أو TOTP، للطاقم أو المشرف) بطبقة login الأضيق:
   // قوة غاشمة على أيّها تُخنق بنفس الحد (10/دقيقة/IP) — بما فيها تخمين رمز TOTP السداسي.
   if (

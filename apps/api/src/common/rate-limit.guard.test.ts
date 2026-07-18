@@ -31,10 +31,13 @@ describe("fixedWindowExceeded — العدّاد بعد الزيادة مقاب�
 });
 
 describe("classifyRoute — تصنيف المسار لطبقة الحدّ", () => {
-  it("يعفي مسبار الحياة و webhook تيليغرام (null)", () => {
+  it("يعفي مسبار الحياة و webhook تيليغرام وواتساب (null)", () => {
     expect(classifyRoute("GET", "/health")).toBeNull();
     expect(classifyRoute("GET", "/health/ready")).toBeNull();
     expect(classifyRoute("POST", "/tg/acme")).toBeNull();
+    // مراجعة Phase 1 (HIGH): بوابة واتساب معفاة كالتيليغرام (توقيع + inbox dedup)
+    expect(classifyRoute("POST", "/wa/webhook")).toBeNull();
+    expect(classifyRoute("GET", "/wa/webhook")).toBeNull();
   });
   it("POST /api/auth/login → طبقة login الأضيق", () => {
     expect(classifyRoute("POST", "/api/auth/login")).toBe(RATE_TIERS.login);

@@ -45,6 +45,31 @@ async function main(): Promise<void> {
       failures.push(`table "${row.relname}" has RLS enabled but no policy`);
     }
 
+    // مراجعة Phase 1 (isolation) — تحقق **بنية** تعبير سياسة tenant_isolation، لا مجرد
+    // وجودها: سياسة USING تشير إلى current_setting لكن لا تساوي tenant_id (مثل
+    // `USING (current_setting('app.tenant_id')::uuid IS NOT NULL)`) تجتاز فحص "وجود
+    // سياسة" وترمي بلا سياق (تجتاز مسبار العزل السلوكي على جدول فارغ) لكنها تُرجع كل
+    // صفوف كل المستأجرين داخل أي سياق. نفرض المساواة الحرفية على USING وWITH CHECK معاً.
+    const CANONICAL = "(tenant_id = (current_setting('app.tenant_id'::text))::uuid)";
+    const badPolicy = await pool.query<{ relname: string; using_expr: string | null; check_expr: string | null }>(
+      `SELECT c.relname,
+              pg_get_expr(p.polqual, p.polrelid) AS using_expr,
+              pg_get_expr(p.polwithcheck, p.polrelid) AS check_expr
+         FROM pg_policy p
+         JOIN pg_class c ON c.oid = p.polrelid
+         JOIN pg_namespace n ON n.oid = c.relnamespace AND n.nspname = 'public'
+        WHERE p.polname = 'tenant_isolation'
+        ORDER BY c.relname`,
+    );
+    for (const row of badPolicy.rows) {
+      if (row.using_expr !== CANONICAL) {
+        failures.push(`policy tenant_isolation on "${row.relname}" has a non-canonical USING: ${row.using_expr ?? "NULL"}`);
+      }
+      if (row.check_expr !== CANONICAL) {
+        failures.push(`policy tenant_isolation on "${row.relname}" has a non-canonical WITH CHECK: ${row.check_expr ?? "NULL"}`);
+      }
+    }
+
     // §2.3: FK بين جدولي أعمال لازم يتضمن tenant_id (فحص الـ FK يتجاوز RLS)
     const nonCompositeFks = await pool.query<{ conname: string; src: string; dst: string }>(
       `SELECT con.conname, src.relname AS src, dst.relname AS dst
