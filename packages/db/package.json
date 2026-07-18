@@ -14,7 +14,8 @@
     "encrypt-secrets": "tsx scripts/encrypt-secrets-at-rest.ts",
     "check-invariants": "tsx scripts/check-invariants.ts",
     "seed-dev": "tsx scripts/seed-dev.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "migrate-support": "tsx scripts/migrate-support-to-unified.ts"
   },
   "dependencies": {
     "@quickdrop/geo": "workspace:*",
