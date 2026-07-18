@@ -49,6 +49,10 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      # D5/D11 — حارس المال الستاتيكي: يعمل قبل كل شيء (لا يحتاج قاعدة)
+      - name: Money guard (static)
+        run: pnpm check:money-code
+
       - name: Bootstrap database roles
         run: PGPASSWORD=postgres psql -h localhost -U postgres -d quickdrop -v ON_ERROR_STOP=1 -f infra/compose/initdb/01-roles.sql
 
@@ -64,6 +68,10 @@ jobs:
       # §2.3 — الحارس: جدول أعمال بلا RLS مفعّل ومُجبَر = فشل الـ CI
       - name: RLS coverage check
         run: pnpm db:check-rls
+
+      # D5 — حارس المال على السكيما المرحَّلة: عمود float/NUMERIC أو عمود مالي غير bigint = فشل
+      - name: Money guard (schema)
+        run: pnpm db:check-money
 
       # §15 — أهم اختبار بالمشروع: عزل المستأجرين يعمل بكل CI
       - name: Tests

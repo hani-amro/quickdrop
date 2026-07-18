@@ -10,6 +10,7 @@
     "generate": "drizzle-kit generate",
     "migrate": "tsx scripts/migrate.ts",
     "check-rls": "tsx scripts/check-rls.ts",
+    "check-money": "tsx scripts/check-money.ts",
     "check-invariants": "tsx scripts/check-invariants.ts",
     "recalc-tiers": "tsx scripts/recalc-tiers.ts",
     "seed-dev": "tsx scripts/seed-dev.ts",
