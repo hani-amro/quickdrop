@@ -134,6 +134,13 @@
       "when": 1784415147114,
       "tag": "0018_drop_legacy_support",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1784415404314,
+      "tag": "0019_journeys",
+      "breakpoints": true
     }
   ]
 }

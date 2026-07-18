@@ -120,3 +120,12 @@ export type MessageType = (typeof MESSAGE_TYPES)[number];
 
 export const MESSAGE_STATUSES = ["sent", "delivered", "read", "failed"] as const;
 export type MessageStatus = (typeof MESSAGE_STATUSES)[number];
+
+// ——— دمج WaFlow (MERGE_PLAN §3.4) — Journeys: محرك الأتمتة الوحيد ———
+// حالة تسجيل الزبون بالرحلة (WaFlow استخدم نصاً؛ عندنا enum مضبوط).
+export const JOURNEY_RUN_STATUSES = ["active", "completed", "cancelled"] as const;
+export type JourneyRunStatus = (typeof JOURNEY_RUN_STATUSES)[number];
+
+// أنواع خطوات الرحلة (WaFlow: send_message|ai_handoff|add_tag|wait).
+export const JOURNEY_STEP_TYPES = ["send_message", "ai_handoff", "add_tag", "wait"] as const;
+export type JourneyStepType = (typeof JOURNEY_STEP_TYPES)[number];

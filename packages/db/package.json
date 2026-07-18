@@ -20,7 +20,8 @@
     "@quickdrop/geo": "workspace:*",
     "@quickdrop/shared": "workspace:*",
     "drizzle-orm": "^0.45.2",
-    "pg": "^8.16.0"
+    "pg": "^8.16.0",
+    "zod": "^3.24.0"
   },
   "devDependencies": {
     "@node-rs/argon2": "^2.0.2",
