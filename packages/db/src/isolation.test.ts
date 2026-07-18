@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDb, type DbHandle } from "./client.js";
 import { tenants, webhookUpdates } from "./schema/index.js";
+import { pgError } from "./test-helpers.js";
 import { withTenant } from "./with-tenant.js";
 
 // §15 — أهم اختبار بالمشروع: عزل المستأجرين. يعمل بكل CI.
@@ -59,11 +60,16 @@ describe.skipIf(!hasDb)("tenant isolation (RLS)", () => {
   });
 
   it("inserting a row for another tenant is rejected by WITH CHECK", async () => {
-    await expect(
-      withTenant(app.db, tenantA, (tx) =>
-        tx.insert(webhookUpdates).values({ tenantId: tenantB, updateId: 99, payload: {} }),
-      ),
-    ).rejects.toThrow(/row-level security/);
+    // drizzle 0.45 يلفّ خطأ pg بـ DrizzleQueryError — نفحص عبر pgError (سلسلة cause) لا نص الغلاف
+    const info = await withTenant(app.db, tenantA, (tx) =>
+      tx.insert(webhookUpdates).values({ tenantId: tenantB, updateId: 99, payload: {} }),
+    ).then(
+      () => null,
+      (e: unknown) => pgError(e),
+    );
+    expect(info).not.toBeNull();
+    expect(info!.code).toBe("42501"); // new row violates row-level security policy
+    expect(info!.message).toMatch(/row-level security/);
   });
 
   it("updates scoped to tenant A cannot touch tenant B rows", async () => {
@@ -75,11 +81,14 @@ describe.skipIf(!hasDb)("tenant isolation (RLS)", () => {
   });
 
   it("duplicate update_id for the same tenant conflicts (inbox key)", async () => {
-    await expect(
-      withTenant(app.db, tenantA, (tx) =>
-        tx.insert(webhookUpdates).values({ tenantId: tenantA, updateId: 1, payload: {} }),
-      ),
-    ).rejects.toThrow(/duplicate key/);
+    const info = await withTenant(app.db, tenantA, (tx) =>
+      tx.insert(webhookUpdates).values({ tenantId: tenantA, updateId: 1, payload: {} }),
+    ).then(
+      () => null,
+      (e: unknown) => pgError(e),
+    );
+    expect(info).not.toBeNull();
+    expect(info!.code).toBe("23505"); // unique_violation — مفتاح الـ inbox (tenant_id, update_id)
   });
 
   it.skipIf(!WORKER_URL)("app_worker can scan across tenants (pickup policy, read-only)", async () => {

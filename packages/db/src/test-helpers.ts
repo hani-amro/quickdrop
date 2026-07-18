@@ -185,7 +185,8 @@ export async function seedPricingRule(db: Db, tenantId: string, opts: SeedPricin
       .insert(pricingRules)
       .values({
         tenantId,
-        service: opts.service ?? "food",
+        // p2p افتراضياً — يطابق افتراضي makeOrder (food صار يتطلب merchantId+items §3)
+        service: opts.service ?? "p2p",
         base: opts.base ?? 5_000n,
         perKm: opts.perKm ?? 1_000n,
         perKg: 0n,
@@ -260,7 +261,7 @@ export interface SeedWorld {
 /** عالم لكل اختبار سباق: مستأجر مستقل = عزل RLS كامل (سائقو اختبار لا يلتقطهم غيره §6.1). */
 export async function seedWorld(db: Db, opts: SeedTenantOpts = {}): Promise<SeedWorld> {
   const tenantId = await seedTenant(db, opts);
-  await seedPricingRule(db, tenantId);
+  await seedPricingRule(db, tenantId); // p2p — يطابق افتراضي makeOrder
   const customerId = await seedCustomer(db, tenantId);
   return { tenantId, customerId };
 }
@@ -286,7 +287,9 @@ export async function makeOrder(
   opts: MakeOrderOpts,
 ): Promise<{ order: Order; trackingToken: string }> {
   const input: CreateOrderInput = {
-    service: opts.service ?? "food",
+    // p2p افتراضياً: طلبات food صارت تتطلب merchantId+items (§3 موجة الطعام)،
+    // واختبارات السباق/التدفق محايدة للخدمة — goodsAmount مدخل مباشر لغير الطعام فيبقى D13 مغطى.
+    service: opts.service ?? "p2p",
     customerId: opts.customerId,
     pickup: opts.pickup ?? DEFAULT_PICKUP,
     dropoff: opts.dropoff ?? DEFAULT_DROPOFF,
