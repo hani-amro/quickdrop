@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { audienceFilterSchema, journeyStepsSchema, matchesAudience, type AudienceProfile } from "./journeys-service.js";
+import { audienceFilterSchema, matchesAudience, type AudienceProfile } from "./audience.js";
+import { journeyStepsSchema } from "./journeys-service.js";
 
 const prof = (o: Partial<AudienceProfile> = {}): AudienceProfile => ({ lifecycleStage: "active", rfmScore: 50, tags: [], ...o });
 

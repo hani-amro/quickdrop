@@ -1,7 +1,8 @@
-import { Body, Controller, Get, Headers, Post, Query } from "@nestjs/common";
+import { Body, Controller, Get, Headers, HttpCode, Post, Query } from "@nestjs/common";
 import { Roles } from "../auth/roles.decorator.js";
 import {
   BroadcastsService,
+  type AudienceCountResponse,
   type CreateBroadcastResponse,
   type ListBroadcastsResponse,
 } from "./broadcasts.service.js";
@@ -27,5 +28,15 @@ export class BroadcastsController {
     @Query() query: unknown,
   ): Promise<ListBroadcastsResponse> {
     return this.broadcasts.list(authorization, query);
+  }
+
+  // معاينة الوصول (قراءة فقط، لا إرسال) → 200. POST لأن الفلتر جسم مركّب (مصفوفات).
+  @Post("audience-count")
+  @HttpCode(200)
+  async audienceCount(
+    @Headers("authorization") authorization: string | undefined,
+    @Body() body: unknown,
+  ): Promise<AudienceCountResponse> {
+    return this.broadcasts.audienceCount(authorization, body);
   }
 }

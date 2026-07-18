@@ -1,6 +1,7 @@
-import { and, eq, isNotNull, isNull } from "drizzle-orm";
+import { eq } from "drizzle-orm";
+import { audienceFilterSchema, selectAudience, type AudienceFilter, type AudienceMember } from "./audience.js";
 import type { Db } from "./client.js";
-import { broadcasts, users, type Broadcast } from "./schema/index.js";
+import { broadcasts, type Broadcast } from "./schema/index.js";
 import { withTenant } from "./with-tenant.js";
 
 // §4.3/§14 v1.1 — البث الجماهيري. المبدأ: صف broadcasts هو مصدر الحقيقة للتقدّم
@@ -14,10 +15,10 @@ export interface CreateBroadcastInput {
   /** نص البثّة — إلزامي. يُهرَّب HTML عند الإرسال (§4.3). */
   body: string;
   /**
-   * فلتر الجمهور المستقبلي (v1: يُخزَّن ولا يُطبَّق — الجمهور = كل الزبائن الواصلين).
-   * jsonb حرّ كي لا يقيّد المخطط تطوّر الفلاتر (منطقة/شريحة) لاحقاً.
+   * فلتر الجمهور (Campaigns): يُخزَّن ويُطبَّق عند البدء (enqueueBroadcast → selectAudience).
+   * غيابه = بثّ لكل الزبائن الواصلين. يُتحقّق منه الـ API بـ audienceFilterSchema (§11).
    */
-  audienceFilter?: Record<string, unknown>;
+  audienceFilter?: AudienceFilter;
   /** موعد مستقبلي (D6: UTC) — وجوده يجعل الحالة 'scheduled' بدل 'draft'. */
   scheduledAt?: Date;
 }
@@ -49,11 +50,8 @@ export async function createBroadcast(db: Db, tenantId: string, input: CreateBro
   });
 }
 
-/** §4.3 — عضو جمهور البث: المعرّف الداخلي + معرّف تيليغرام (chat_id) للإرسال. */
-export interface BroadcastAudienceMember {
-  userId: string;
-  telegramUserId: number;
-}
+/** §4.3 — عضو جمهور البث: المعرّف الداخلي + معرّف تيليغرام (chat_id). موحّد مع audience.ts. */
+export type BroadcastAudienceMember = AudienceMember;
 
 /**
  * نتيجة بدء البث. alreadyFinalized يميّز "منتهية سلفاً" (إعادة جدولة at-least-once §12)
@@ -74,19 +72,20 @@ export class BroadcastNotFoundError extends Error {
 }
 
 /**
- * §4.3 — بدء الإرسال: علّم status='sending' واجلب الجمهور المستهدف بلقطة واحدة
- * (ترانزاكشن withTenant واحدة — §16.10 لا N+1). الجمهور v1 = كل الزبائن الواصلين:
- * role='customer'، telegram_user_id NOT NULL (لا زبون تلفون D15)، blocked_at IS NULL
- * (§4.3: المحظور لا يُرسَل له). audience_filter محفوظ ولا يُطبَّق بعد (v1).
+ * §4.3/§4.3-campaigns — بدء الإرسال: علّم status='sending' واجلب الجمهور المستهدف بلقطة
+ * واحدة (ترانزاكشن withTenant واحدة — §16.10 لا N+1). الجمهور الأساس = زبائن واصلون
+ * (role='customer'، telegram NOT NULL، غير محظورين §4.3). **الحملات**: إن حمل الصف
+ * audience_filter صالحاً يُضيَّق الجمهور بـ JOIN على customer_profiles (selectAudience) —
+ * فلتر فارغ/غير موجود = بثّ للجميع (سلوك v1). فلتر مخزّن فاسد (لا يجب أن يحدث — الـ API
+ * يتحقّق §11) → يُرمى (DLQ لا بثّ أعمى للكل §16.12).
  *
  * حارس idempotency (at-least-once §12): لا نُحيي بثّة منتهية — إن كانت 'done'/'failed'
  * لا نعيدها 'sending'، ونرجع جمهوراً فارغاً كي لا يُعاد الإرسال بإعادة جدولة المهمة.
  *
  * أما 'sending' فحالة **قابلة للاستئناف** لا منتهية: إعادة تشغيل المهمة (at-least-once §12)
  * تعيد الجمهور كاملاً هنا، ويتكفّل مستهلك البث بمجموعة "المُسلَّم إليهم" بـ Redis
- * (bcast:sent:{id}) بتخطّي من سُلِّم إليه — فلا إرسال مكرّر للكل، يُرسَل الذيل فقط. لا نُزيل
- * تكرار الجمهور هنا (الاستعلام يبقى) لأن مجموعة Redis + at-least-once تعطي أمان الاستئناف.
- * الجمهور يُقصي المحظور (blocked_at IS NULL) فلا حاجة لتخطّيه في المستهلك (§4.3).
+ * (bcast:sent:{id}) بتخطّي من سُلِّم إليه — فلا إرسال مكرّر للكل، يُرسَل الذيل فقط. الجمهور
+ * يُقصي المحظور (blocked_at IS NULL) فلا حاجة لتخطّيه في المستهلك (§4.3).
  */
 export async function enqueueBroadcast(
   db: Db,
@@ -94,9 +93,9 @@ export async function enqueueBroadcast(
   broadcastId: string,
 ): Promise<EnqueueBroadcastResult> {
   return withTenant(db, tenantId, async (tx) => {
-    // الحارس الصريح: اقرأ الحالة الحالية أولاً ثم قرّر (§16.11 — قراءة ثم كتابة)
+    // الحارس الصريح: اقرأ الحالة + الفلتر أولاً ثم قرّر (§16.11 — قراءة ثم كتابة)
     const rows = await tx
-      .select({ id: broadcasts.id, status: broadcasts.status })
+      .select({ id: broadcasts.id, status: broadcasts.status, audienceFilter: broadcasts.audienceFilter })
       .from(broadcasts)
       .where(eq(broadcasts.id, broadcastId))
       .limit(1);
@@ -109,28 +108,23 @@ export async function enqueueBroadcast(
       return { alreadyFinalized: true, audience: [] };
     }
 
+    // الفلتر المخزّن: null → للجميع؛ صالح → يُطبَّق؛ فاسد → رمي (§16.12)
+    let filter = null;
+    if (current.audienceFilter !== null) {
+      const parsed = audienceFilterSchema.safeParse(current.audienceFilter);
+      if (!parsed.success) {
+        throw new Error(`broadcast ${broadcastId}: stored audience_filter is malformed`);
+      }
+      filter = parsed.data;
+    }
+
     await tx
       .update(broadcasts)
       .set({ status: "sending", updatedAt: new Date() })
       .where(eq(broadcasts.id, broadcastId));
 
-    const rows2 = await tx
-      .select({ userId: users.id, telegramUserId: users.telegramUserId })
-      .from(users)
-      .where(
-        and(
-          eq(users.tenantId, tenantId), // فوق RLS — يقود فهرس (tenant_id, ...)
-          eq(users.role, "customer"),
-          isNotNull(users.telegramUserId),
-          isNull(users.blockedAt),
-        ),
-      )
-      .orderBy(users.createdAt); // ترتيب حتمي — الأقدم أولاً
-
-    const audience = rows2.flatMap((r) =>
-      // telegram_user_id NOT NULL مضمون بالـ WHERE؛ الحارس هنا يرضي المدقّق فقط
-      r.telegramUserId === null ? [] : [{ userId: r.userId, telegramUserId: r.telegramUserId }],
-    );
+    // selectAudience يبني الاستعلام (JOIN مشروط) داخل نفس الترانزاكشن المستأجرة
+    const audience = await selectAudience(tx, tenantId, filter);
     return { alreadyFinalized: false, audience };
   });
 }

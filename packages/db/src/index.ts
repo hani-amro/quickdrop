@@ -15,6 +15,7 @@ export * from "./settlement.js";
 export * from "./loyalty.js";
 export * from "./coupons.js";
 export * from "./loyalty-redeem.js";
+export * from "./audience.js";
 export * from "./broadcasts.js";
 export * from "./analytics.js";
 export * from "./tenant-admin.js";

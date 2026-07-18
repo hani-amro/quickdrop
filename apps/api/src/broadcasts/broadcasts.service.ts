@@ -1,5 +1,5 @@
 import { Inject, Injectable } from "@nestjs/common";
-import { broadcasts, createBroadcast, tenants, withTenant, type DbHandle } from "@quickdrop/db";
+import { audienceFilterSchema, broadcasts, countAudience, createBroadcast, tenants, withTenant, type DbHandle } from "@quickdrop/db";
 import { type BroadcastJob, type BroadcastStatus } from "@quickdrop/shared";
 import type { Queue } from "bullmq";
 import { and, desc, eq } from "drizzle-orm";
@@ -35,10 +35,18 @@ const createBodySchema = z.object({
   tenantSlug: slugSchema,
   title: titleSchema.optional(),
   body: bodySchema,
+  // Campaigns (§4.3): فلتر جمهور اختياري (شريحة). غيابه = بثّ لكل الزبائن الواصلين.
+  audienceFilter: audienceFilterSchema.optional(),
   scheduledAt: scheduledAtSchema.optional(),
 });
 
 const listQuerySchema = z.object({ tenantSlug: slugSchema });
+
+// معاينة الوصول قبل الإرسال: عدد المستهدفين لفلتر شريحة (أو الكل عند غيابه).
+const audienceCountBodySchema = z.object({
+  tenantSlug: slugSchema,
+  audienceFilter: audienceFilterSchema.optional(),
+});
 
 export interface BroadcastSummary {
   id: string;
@@ -59,6 +67,11 @@ export interface CreateBroadcastResponse {
 
 export interface ListBroadcastsResponse {
   broadcasts: BroadcastSummary[];
+}
+
+export interface AudienceCountResponse {
+  /** عدد الزبائن الواصلين المطابقين للفلتر (أو الكل عند غيابه) — معاينة الوصول. */
+  count: number;
 }
 
 @Injectable()
@@ -92,6 +105,7 @@ export class BroadcastsService {
     const created = await createBroadcast(this.handle.db, tenant.id, {
       body: input.body,
       ...(input.title !== undefined ? { title: input.title } : {}),
+      ...(input.audienceFilter !== undefined ? { audienceFilter: input.audienceFilter } : {}),
       ...(input.scheduledAt !== undefined ? { scheduledAt: input.scheduledAt } : {}),
     });
 
@@ -146,6 +160,16 @@ export class BroadcastsService {
     );
 
     return { broadcasts: rows.map((r) => toSummary(r)) };
+  }
+
+  // §4.3 (Campaigns) — معاينة الوصول: عدد المستهدفين لفلتر شريحة قبل إنشاء الحملة. قراءة
+  // فقط (لا استهلاك حصّة بث — لا يُرسل شيء). نفس التخويل وحلّ المستأجر وانضباط Zod.
+  async audienceCount(authorization: string | undefined, body: unknown): Promise<AudienceCountResponse> {
+    assertStaffToken(this.env.STAFF_API_TOKEN, authorization);
+    const input = parseOr400(audienceCountBodySchema, body, "broadcasts_audience_count");
+    const tenant = await resolveActiveTenant(this.handle.db, input.tenantSlug);
+    const count = await countAudience(this.handle.db, tenant.id, input.audienceFilter ?? null);
+    return { count };
   }
 }
 

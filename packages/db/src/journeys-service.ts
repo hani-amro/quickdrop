@@ -1,6 +1,7 @@
 import { JOURNEY_TRIGGERS, type LifecycleStage } from "@quickdrop/shared";
 import { and, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
+import { audienceFilterSchema, matchesAudience, type AudienceFilter, type AudienceProfile } from "./audience.js";
 import type { Db } from "./client.js";
 import { getOrCreateConversation, recordOutboundMessage } from "./conversations-service.js";
 import { writeOutbox } from "./outbox.js";
@@ -9,16 +10,7 @@ import { withTenant, type Tx } from "./with-tenant.js";
 
 // دمج WaFlow (MERGE_PLAN §3.4) — Journeys: منطق المحرك الوحيد. الخطوات/الجمهور بـ Zod
 // (§11). التنفيذ داخل ترانزاكشن مستأجر؛ الإرسال عبر outbox (D9، لا نداء شبكي هنا).
-
-// —— Zod: الجمهور والخطوات (حدود §11) ——
-export const audienceFilterSchema = z
-  .object({
-    lifecycleStage: z.array(z.string()).optional(),
-    minRfm: z.number().int().min(0).max(100).optional(),
-    tags: z.array(z.string()).optional(),
-  })
-  .strict();
-export type AudienceFilter = z.infer<typeof audienceFilterSchema>;
+// فلتر الجمهور مصدره الموحّد audience.ts (تشاركه الحملات) — يُستورد لا يُعرَّف هنا.
 
 export const journeyStepSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("send_message"), delayHours: z.number().min(0).max(8760), template: z.string().min(1).max(2000) }),
@@ -54,25 +46,6 @@ export const updateJourneySchema = z
   .strict()
   .refine((v) => Object.keys(v).length > 0, { message: "empty update" });
 export type UpdateJourneyInput = z.infer<typeof updateJourneySchema>;
-
-// —— مطابقة الجمهور (نقية، قابلة للاختبار) ——
-export interface AudienceProfile {
-  lifecycleStage: LifecycleStage | null;
-  rfmScore: number | null;
-  tags: string[];
-}
-
-export function matchesAudience(profile: AudienceProfile, filter: AudienceFilter | null): boolean {
-  if (!filter) return true;
-  if (filter.lifecycleStage && filter.lifecycleStage.length > 0) {
-    if (profile.lifecycleStage === null || !filter.lifecycleStage.includes(profile.lifecycleStage)) return false;
-  }
-  if (filter.minRfm !== undefined && (profile.rfmScore ?? 0) < filter.minRfm) return false;
-  if (filter.tags && filter.tags.length > 0) {
-    if (!filter.tags.every((t) => profile.tags.includes(t))) return false;
-  }
-  return true;
-}
 
 const HOUR_MS = 3_600_000;
 
