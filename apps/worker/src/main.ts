@@ -1,9 +1,11 @@
-import { createDb, fireScheduledOrder, offers, orders, outbox, scheduledDelayMs, webhookUpdates } from "@quickdrop/db";
+import { createDb, dueJourneyRuns, fireScheduledOrder, offers, orders, outbox, scheduledDelayMs, webhookUpdates } from "@quickdrop/db";
 import {
   BRAIN_QUEUE,
   BROADCAST_QUEUE,
   DISPATCH_QUEUE,
   installConsoleRedactor,
+  JOURNEYS_QUEUE,
+  journeyStepJobId,
   NOTIFICATIONS_QUEUE,
   parseEnv,
   SCHEDULED_QUEUE,
@@ -12,6 +14,7 @@ import {
   tgUpdateJobId,
   WA_UPDATES_QUEUE,
   waUpdateJobId,
+  type JourneyStepJob,
   type WaUpdateJob,
   type BroadcastJob,
   type DispatchJob,
@@ -34,6 +37,7 @@ import { processUpdate, type UpdateProcessorDeps } from "./update-processor.js";
 import { pendingWaUpdates, processWaUpdate, WA_RESCAN_BATCH } from "./wa-update-processor.js";
 import { createBrainProcessor } from "./brain-consumer.js";
 import { startBrainSweep } from "./brain-sweep.js";
+import { createJourneyEnrollProcessor, createJourneyStepProcessor } from "./journeys-consumer.js";
 
 installConsoleRedactor(); // §11 — كل console.* يمرّ بالمنقّح (أسرار/هواتف) قبل الطباعة
 
@@ -63,6 +67,7 @@ const dispatchQueue = new Queue<DispatchJob>(DISPATCH_QUEUE, { connection: redis
 const scheduledQueue = new Queue<ScheduledOrderJob>(SCHEDULED_QUEUE, { connection: redis });
 const waQueue = new Queue<WaUpdateJob>(WA_UPDATES_QUEUE, { connection: redis }); // دمج WaFlow §3.1
 const brainQueue = new Queue<NotificationJob>(BRAIN_QUEUE, { connection: redis }); // دمج WaFlow §3.3
+const journeysQueue = new Queue<JourneyStepJob>(JOURNEYS_QUEUE, { connection: redis }); // دمج WaFlow §3.4
 
 
 // §11 — عميل تخزين إثبات التسليم (S3/MinIO). غياب إعداد S3 → null → POD معطّل بلطف.
@@ -179,11 +184,29 @@ async function rescanWaUpdates(): Promise<void> {
   }
 }
 
+// §3.4/§12 — القاعدة مصدر الحقيقة للرحلات: عند الإقلاع أعد جدولة كل خطوة مستحقة
+// (next_run_at <= now لتسجيلات active). jobId حتمي (run, currentStep) → dedup مع أي مهمة
+// مجدولة حية؛ remove-then-add يعيد إحياء مهمة فُقدت (Redis flush) دون ازدواج التنفيذ.
+async function rescanJourneyRuns(): Promise<void> {
+  const due = await dueJourneyRuns(scanDb.db, new Date());
+  for (const run of due) {
+    const jobId = journeyStepJobId(run.id, run.currentStep);
+    await journeysQueue.remove(jobId).catch(() => undefined);
+    await journeysQueue.add(
+      "journey-step",
+      { tenantId: run.tenantId, runId: run.id },
+      { jobId, attempts: 5, backoff: { type: "exponential", delay: 1000 }, removeOnComplete: { count: 1000 } },
+    );
+  }
+  if (due.length > 0) console.log(JSON.stringify({ action: "rescan_journeys_enqueued", count: due.length }));
+}
+
 async function main(): Promise<void> {
   await rescanPending();
   await rescanPendingOffers();
   await rescanScheduledOrders();
   await rescanWaUpdates();
+  await rescanJourneyRuns();
 
   // D9/§12 — بعد إعادة بناء الفائت: شغّل عامل التقاط الـ outbox (كل ثانية → طابور الإشعارات).
   // R-16: صف يفشل التقاطه يُحاسَب (backoff أسّي ثم failed بعد السقف) — التسميم يُبلَّغ Sentry.
@@ -197,13 +220,16 @@ async function main(): Promise<void> {
     },
   });
 
-  // §3.3 — دماغ الزبون: مستهلك أحداث (order.delivered/payment.paid) + كنس ليلي يعالج
-  // تدهور المرحلة (يحلّ محل recalc-tiers — الدماغ مالك المستوى الآن).
+  // §3.3/§3.4 — طابور الأتمتة (BRAIN_QUEUE، fan-out): لكل حدث (أ) دماغ الزبون يعيد الحساب
+  // و(ب) Journeys تسجّل الرحلات المطابقة وتجدول خطواتها. كلاهما idempotent؛ رمي أيٍّ منهما
+  // يعيد الجدولة (والآخر يُعاد لكنه idempotent).
   const processBrain = createBrainProcessor({ appDb: appDb.db });
+  const processJourneyEnroll = createJourneyEnrollProcessor({ appDb: appDb.db, journeysQueue });
   const brainWorker = new Worker<NotificationJob>(
     BRAIN_QUEUE,
     async (job) => {
-      await processBrain(job.data); // idempotent — الرمي يعيد الجدولة عبر backoff
+      await processBrain(job.data);
+      await processJourneyEnroll(job.data);
     },
     { connection: redis, concurrency: 5 },
   );
@@ -213,6 +239,21 @@ async function main(): Promise<void> {
     );
   });
   const brainSweep = startBrainSweep({ scanDb: scanDb.db, appDb: appDb.db });
+
+  // §3.4 — منفّذ خطوات الرحلات (JOURNEYS_QUEUE، مهام مؤجّلة): ينفّذ الخطوة ويجدول التالية.
+  const processJourneyStep = createJourneyStepProcessor({ appDb: appDb.db, journeysQueue });
+  const journeysWorker = new Worker<JourneyStepJob>(
+    JOURNEYS_QUEUE,
+    async (job) => {
+      await processJourneyStep(job.data);
+    },
+    { connection: redis, concurrency: 5 },
+  );
+  journeysWorker.on("failed", (job, error) => {
+    console.error(
+      JSON.stringify({ action: "job_failed", queue: JOURNEYS_QUEUE, jobId: job?.id, attempts: job?.attemptsMade, message: error.message }),
+    );
+  });
 
   // §3/§16.25 — تنظيف الجداول الساخنة كل ساعة (webhook_updates >48س، driver_locations >90ي،
   // outbox: sent >7ي وfailed >30ي — R-16)
@@ -227,6 +268,7 @@ async function main(): Promise<void> {
       [DISPATCH_QUEUE]: dispatchQueue,
       [WA_UPDATES_QUEUE]: waQueue,
       [BRAIN_QUEUE]: brainQueue,
+      [JOURNEYS_QUEUE]: journeysQueue,
     },
     countOutboxFailed: async () => {
       // scanDb (app_worker، سياسة worker_scan للقراءة) — عدّ عابر للمستأجرين بلا سياق
@@ -369,6 +411,7 @@ async function main(): Promise<void> {
     await worker.close();
     await waWorker.close();
     await brainWorker.close();
+    await journeysWorker.close();
     await notificationsWorker.close();
     await dispatchWorker.close();
     await broadcastWorker.close();
@@ -376,6 +419,7 @@ async function main(): Promise<void> {
     await queue.close();
     await waQueue.close();
     await brainQueue.close();
+    await journeysQueue.close();
     await notificationsQueue.close();
     await dispatchQueue.close();
     await scheduledQueue.close();
@@ -390,7 +434,7 @@ async function main(): Promise<void> {
   console.log(
     JSON.stringify({
       action: "worker_started",
-      queues: [TG_UPDATES_QUEUE, WA_UPDATES_QUEUE, BRAIN_QUEUE, NOTIFICATIONS_QUEUE, DISPATCH_QUEUE, BROADCAST_QUEUE, SCHEDULED_QUEUE],
+      queues: [TG_UPDATES_QUEUE, WA_UPDATES_QUEUE, BRAIN_QUEUE, JOURNEYS_QUEUE, NOTIFICATIONS_QUEUE, DISPATCH_QUEUE, BROADCAST_QUEUE, SCHEDULED_QUEUE],
     }),
   );
 }

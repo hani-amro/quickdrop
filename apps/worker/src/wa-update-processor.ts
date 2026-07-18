@@ -1,4 +1,5 @@
 import {
+  cancelActiveJourneyRuns,
   customerProfiles,
   getOrCreateConversation,
   recordInboundMessage,
@@ -199,6 +200,8 @@ export async function processWaUpdate(deps: WaUpdateProcessorDeps, job: WaUpdate
         conversationId,
         userId: customer.userId,
       });
+      // §3.4 stop-on-reply — رد الزبون يلغي تسجيلاته النشطة بالرحلات (لا نطارد من تفاعل)
+      await cancelActiveJourneyRuns(tx, job.tenantId, customer.userId);
     }
     // مفاتيح status:{wamid}:{status} — تحديث حالة رسالة صادرة: يُوصَل مع الإرسال الصادر
 

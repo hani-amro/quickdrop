@@ -49,8 +49,9 @@ describe.skipIf(!hasDb)("journeys-service (تكامل، قاعدة حية)", () 
   });
 
   it("التسجيل يطابق الجمهور (at_risk) وينشئ run نشطاً بموعد فوري", async () => {
-    const n = await withTenant(app.db, tenantId, (tx) => enrollInJourneys(tx, tenantId, userId, "crm.lifecycle_changed"));
-    expect(n).toBe(1);
+    const enrolled = await withTenant(app.db, tenantId, (tx) => enrollInJourneys(tx, tenantId, userId, "crm.lifecycle_changed"));
+    expect(enrolled).toHaveLength(1);
+    expect(enrolled[0]!.currentStep).toBe(0);
     const run = await withTenant(app.db, tenantId, async (tx) => {
       const rows = await tx.select().from(journeyRuns).where(and(eq(journeyRuns.tenantId, tenantId), eq(journeyRuns.userId, userId)));
       return rows[0]!;
@@ -60,8 +61,8 @@ describe.skipIf(!hasDb)("journeys-service (تكامل، قاعدة حية)", () 
   });
 
   it("تسجيل ثانٍ لنفس (رحلة، زبون) لا يضاعف (فريد once-ever)", async () => {
-    const n = await withTenant(app.db, tenantId, (tx) => enrollInJourneys(tx, tenantId, userId, "crm.lifecycle_changed"));
-    expect(n).toBe(0);
+    const enrolled = await withTenant(app.db, tenantId, (tx) => enrollInJourneys(tx, tenantId, userId, "crm.lifecycle_changed"));
+    expect(enrolled).toHaveLength(0);
   });
 
   it("تنفيذ الخطوة 0 (send_message): رسالة صادرة + outbox 'journey.message'، ثم يتقدّم للخطوة 1", async () => {
@@ -70,7 +71,7 @@ describe.skipIf(!hasDb)("journeys-service (تكامل، قاعدة حية)", () 
       return rows[0]!.id;
     });
     const outcome = await withTenant(app.db, tenantId, (tx) => executeJourneyStep(tx, tenantId, runId, "مطعمنا"));
-    expect(outcome).toBe("advanced");
+    expect(outcome.outcome).toBe("advanced");
 
     const check = await withTenant(app.db, tenantId, async (tx) => {
       const msg = await tx.select({ content: messages.content, dir: messages.direction }).from(messages).where(and(eq(messages.tenantId, tenantId), eq(messages.direction, "out")));
@@ -89,7 +90,7 @@ describe.skipIf(!hasDb)("journeys-service (تكامل، قاعدة حية)", () 
       return rows[0]!.id;
     });
     const outcome = await withTenant(app.db, tenantId, (tx) => executeJourneyStep(tx, tenantId, runId, "مطعمنا"));
-    expect(outcome).toBe("completed");
+    expect(outcome.outcome).toBe("completed");
     const check = await withTenant(app.db, tenantId, async (tx) => {
       const p = await tx.select({ tags: customerProfiles.tags }).from(customerProfiles).where(and(eq(customerProfiles.tenantId, tenantId), eq(customerProfiles.userId, userId)));
       const run = await tx.select({ status: journeyRuns.status }).from(journeyRuns).where(eq(journeyRuns.id, runId));

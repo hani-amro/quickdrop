@@ -665,6 +665,47 @@ async function handleSupportReply(deps: NotificationsConsumerDeps, job: Notifica
   });
 }
 
+// —— journey.message: إيصال رسالة رحلة أتمتة إلى الزبون عبر البوت (§3.4) ——
+
+const journeyMessagePayloadSchema = z.object({ userId: z.string().uuid(), text: z.string().min(1) }).passthrough();
+
+async function handleJourneyMessage(deps: NotificationsConsumerDeps, job: NotificationJob): Promise<void> {
+  const payload = journeyMessagePayloadSchema.parse(job.payload);
+  const tenant = await loadActiveTenant(deps, job.tenantId, job.topic);
+  if (!tenant) return;
+
+  const row = await withTenant(deps.appDb, job.tenantId, async (tx) => {
+    const rows = await tx
+      .select({ userId: users.id, telegramUserId: users.telegramUserId, blockedAt: users.blockedAt })
+      .from(users)
+      .where(and(eq(users.tenantId, job.tenantId), eq(users.id, payload.userId)))
+      .limit(1);
+    return rows[0];
+  });
+  if (!row) {
+    // §16.12 — رسالة رحلة لزبون غير موجود = فساد بيانات — فشل صاخب
+    throw new Error(`notifications: user ${payload.userId} not found for journey.message`);
+  }
+  if (row.telegramUserId === null) {
+    // WA-only أو زبون تلفون: نقل واتساب للرحلات مؤجّل (R-11، Phase 3) — تخطٍّ بلوغ
+    console.log(JSON.stringify({ action: "journey_message_skipped_no_telegram", tenantId: job.tenantId, userId: row.userId }));
+    return;
+  }
+  if (row.blockedAt !== null) {
+    console.log(JSON.stringify({ action: "journey_message_skipped_user_blocked", tenantId: job.tenantId, userId: row.userId }));
+    return;
+  }
+
+  const bot = await getTenantBot(deps, job.tenantId, tenant);
+  await sendOrMarkBlocked(deps, {
+    tenantId: job.tenantId,
+    bot,
+    chatId: row.telegramUserId,
+    userId: row.userId,
+    text: escapeHtml(payload.text), // نص قالب مُصاغ من المكتب — HTML escape (§4.3)
+  });
+}
+
 /**
  * D9/§12 — معالج طابور الإشعارات (NOTIFICATIONS_QUEUE): يوزّع حسب topic.
  * §16.12: لا ابتلاع أخطاء — الرمي يعيد الجدولة عبر BullMQ backoff؛ الحالات التي
@@ -693,6 +734,9 @@ export function createNotificationsProcessor(deps: NotificationsConsumerDeps): (
         return;
       case "support.reply":
         await handleSupportReply(deps, job);
+        return;
+      case "journey.message":
+        await handleJourneyMessage(deps, job);
         return;
       default:
         // topic مجهول (منتج أحدث/أقدم): لوغ تحذيري بلا رمي — retry بلا فائدة (§16.12

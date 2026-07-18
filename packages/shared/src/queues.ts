@@ -107,10 +107,30 @@ export function waUpdateJobId(updateId: string): string {
 // الإشعارات. jobId = outbox.id (نفس مفتاح إزالة التكرار §12). المستهلك idempotent.
 export const BRAIN_QUEUE = "brain";
 
-/** المواضيع التي تُدفَع لطابور الدماغ (المستهلك يرشّح داخلها — مثلاً to='delivered'). */
-export const BRAIN_TOPICS: ReadonlySet<string> = new Set(["order.status_changed", "payment.paid"]);
+/** المواضيع التي تُدفَع لطابور الدماغ/الأتمتة (الدماغ + تسجيل الرحلات يرشّحان داخلها). */
+export const BRAIN_TOPICS: ReadonlySet<string> = new Set([
+  "order.status_changed",
+  "payment.paid",
+  "crm.lifecycle_changed",
+  "contact.created",
+]);
 
 /** jobId حتمي لمهمة الدماغ (بلا ':' — قيد BullMQ) — نفس معرّف صف الـ outbox. */
 export function brainJobId(outboxId: string): string {
   return `brain-${outboxId}`;
+}
+
+// ——— دمج WaFlow (MERGE_PLAN §3.4) — طابور تنفيذ خطوات الرحلات (delayed jobs) ———
+// التسجيل (بالـ brain-queue على أحداث spine) يجدول مهمة مؤجّلة عند next_run_at لكل run؛
+// تنفيذ الخطوة يجدول التالية أو ينهي. القاعدة مصدر الحقيقة (§12) — rescan عند الإقلاع.
+export const JOURNEYS_QUEUE = "journeys";
+
+export interface JourneyStepJob {
+  tenantId: string;
+  runId: string;
+}
+
+/** jobId حتمي لخطوة رحلة (بلا ':' — قيد BullMQ) — (run, step) كي تتقدّم الجدولة idempotent. */
+export function journeyStepJobId(runId: string, step: number): string {
+  return `jrs-${runId}-${step}`;
 }

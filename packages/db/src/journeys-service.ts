@@ -55,12 +55,18 @@ const HOUR_MS = 3_600_000;
  * لكل رحلة (فريد (tenant, journey, user) → تسجيل مرة واحدة، السباق يحسمه القيد)،
  * وnext_run_at = الآن + delayHours لأول خطوة. يعيد عدد التسجيلات الجديدة.
  */
-export async function enrollInJourneys(tx: Tx, tenantId: string, userId: string, trigger: string, now = new Date()): Promise<number> {
+export interface EnrolledRun {
+  runId: string;
+  currentStep: number;
+  nextRunAt: Date;
+}
+
+export async function enrollInJourneys(tx: Tx, tenantId: string, userId: string, trigger: string, now = new Date()): Promise<EnrolledRun[]> {
   const active = await tx
     .select({ id: journeys.id, audienceFilter: journeys.audienceFilter, steps: journeys.steps })
     .from(journeys)
     .where(and(eq(journeys.tenantId, tenantId), eq(journeys.trigger, trigger), eq(journeys.isActive, true)));
-  if (active.length === 0) return 0;
+  if (active.length === 0) return [];
 
   const prof = await tx
     .select({ lifecycleStage: customerProfiles.lifecycleStage, rfmScore: customerProfiles.rfmScore, tags: customerProfiles.tags })
@@ -73,7 +79,7 @@ export async function enrollInJourneys(tx: Tx, tenantId: string, userId: string,
     tags: prof[0]?.tags ?? [],
   };
 
-  let enrolled = 0;
+  const enrolled: EnrolledRun[] = [];
   for (const j of active) {
     const filter = j.audienceFilter ? audienceFilterSchema.safeParse(j.audienceFilter) : null;
     const audience = filter && filter.success ? filter.data : null;
@@ -81,15 +87,16 @@ export async function enrollInJourneys(tx: Tx, tenantId: string, userId: string,
     const steps = journeyStepsSchema.safeParse(j.steps);
     if (!steps.success) continue; // رحلة بخطوات فاسدة — تُتجاهل (لا تسجيل)
     const firstDelay = steps.data[0]!.delayHours;
+    const nextRunAt = new Date(now.getTime() + firstDelay * HOUR_MS);
 
     const inserted = await tx
       .insert(journeyRuns)
-      .values({ tenantId, journeyId: j.id, userId, currentStep: 0, status: "active", nextRunAt: new Date(now.getTime() + firstDelay * HOUR_MS) })
+      .values({ tenantId, journeyId: j.id, userId, currentStep: 0, status: "active", nextRunAt })
       .onConflictDoNothing({ target: [journeyRuns.tenantId, journeyRuns.journeyId, journeyRuns.userId] })
       .returning({ id: journeyRuns.id });
     if (inserted[0]) {
       await tx.update(journeys).set({ enrolledCount: sql`${journeys.enrolledCount} + 1`, updatedAt: now }).where(eq(journeys.id, j.id));
-      enrolled += 1;
+      enrolled.push({ runId: inserted[0].id, currentStep: 0, nextRunAt });
     }
   }
   return enrolled;
@@ -100,7 +107,10 @@ function renderTemplate(template: string, vars: { name: string; businessName: st
   return template.replace(/\{name\}/g, vars.name).replace(/\{business_name\}/g, vars.businessName);
 }
 
-export type StepOutcome = "advanced" | "completed" | "gone";
+export type StepResult =
+  | { outcome: "advanced"; nextStep: number; nextRunAt: Date }
+  | { outcome: "completed" }
+  | { outcome: "gone" };
 
 /**
  * §3.4 — تنفيذ الخطوة الحالية لتسجيل ثم تقديمه: send_message (رسالة صادرة + outbox
@@ -108,27 +118,27 @@ export type StepOutcome = "advanced" | "completed" | "gone";
  * كله idempotent-ish: الخطوة الحالية تُنفّذ مرة (currentStep يتقدّم بنفس الترانزاكشن).
  * يقفل صف الـ run FOR UPDATE؛ run غير active/موجود → gone.
  */
-export async function executeJourneyStep(tx: Tx, tenantId: string, runId: string, businessName: string, now = new Date()): Promise<StepOutcome> {
+export async function executeJourneyStep(tx: Tx, tenantId: string, runId: string, businessName: string, now = new Date()): Promise<StepResult> {
   const runRows = await tx
     .select({ id: journeyRuns.id, journeyId: journeyRuns.journeyId, userId: journeyRuns.userId, currentStep: journeyRuns.currentStep, status: journeyRuns.status })
     .from(journeyRuns)
     .where(and(eq(journeyRuns.tenantId, tenantId), eq(journeyRuns.id, runId)))
     .for("update");
   const run = runRows[0];
-  if (!run || run.status !== "active") return "gone";
+  if (!run || run.status !== "active") return { outcome: "gone" };
 
   const jRows = await tx.select({ steps: journeys.steps }).from(journeys).where(and(eq(journeys.tenantId, tenantId), eq(journeys.id, run.journeyId))).limit(1);
   const parsedSteps = journeyStepsSchema.safeParse(jRows[0]?.steps);
   if (!parsedSteps.success) {
     // رحلة اختفت/فسدت — أنهِ التسجيل بهدوء
     await tx.update(journeyRuns).set({ status: "cancelled", nextRunAt: null, updatedAt: now }).where(eq(journeyRuns.id, runId));
-    return "gone";
+    return { outcome: "gone" };
   }
   const steps = parsedSteps.data;
   const step = steps[run.currentStep];
   if (!step) {
     await completeRun(tx, tenantId, runId, run.journeyId, now);
-    return "completed";
+    return { outcome: "completed" };
   }
 
   if (step.type === "send_message") {
@@ -155,11 +165,11 @@ export async function executeJourneyStep(tx: Tx, tenantId: string, runId: string
   const nextStep = run.currentStep + 1;
   if (nextStep >= steps.length) {
     await completeRun(tx, tenantId, runId, run.journeyId, now);
-    return "completed";
+    return { outcome: "completed" };
   }
-  const nextDelay = steps[nextStep]!.delayHours;
-  await tx.update(journeyRuns).set({ currentStep: nextStep, nextRunAt: new Date(now.getTime() + nextDelay * HOUR_MS), updatedAt: now }).where(eq(journeyRuns.id, runId));
-  return "advanced";
+  const nextRunAt = new Date(now.getTime() + steps[nextStep]!.delayHours * HOUR_MS);
+  await tx.update(journeyRuns).set({ currentStep: nextStep, nextRunAt, updatedAt: now }).where(eq(journeyRuns.id, runId));
+  return { outcome: "advanced", nextStep, nextRunAt };
 }
 
 async function completeRun(tx: Tx, tenantId: string, runId: string, journeyId: string, now: Date): Promise<void> {
@@ -177,10 +187,11 @@ export async function cancelActiveJourneyRuns(tx: Tx, tenantId: string, userId: 
   return cancelled.length;
 }
 
-/** rescan الإقلاع (§12) — تسجيلات active مستحقة (next_run_at <= now)، عبر scanDb. */
-export async function dueJourneyRuns(scanDb: Db, now = new Date(), limit = 500): Promise<{ id: string; tenantId: string }[]> {
+/** rescan الإقلاع (§12) — تسجيلات active مستحقة (next_run_at <= now)، عبر scanDb.
+ *  يعيد current_step كي يستخدم الـ rescan نفس jobId الحتمي (dedup مع مهمة مجدولة حية). */
+export async function dueJourneyRuns(scanDb: Db, now = new Date(), limit = 500): Promise<{ id: string; tenantId: string; currentStep: number }[]> {
   return scanDb
-    .select({ id: journeyRuns.id, tenantId: journeyRuns.tenantId })
+    .select({ id: journeyRuns.id, tenantId: journeyRuns.tenantId, currentStep: journeyRuns.currentStep })
     .from(journeyRuns)
     .where(and(eq(journeyRuns.status, "active"), sql`${journeyRuns.nextRunAt} <= ${now.toISOString()}`))
     .limit(limit);
