@@ -8,3 +8,8 @@ coverage/
 !.env.example
 !.env.*.example
 .DS_Store
+
+# WaFlow legacy source (read-only reference during the merge — MERGE_PLAN.md §0).
+# Contains LIVE secrets: _db_backup_*.sql (plaintext Meta tokens/TOTP), .env files,
+# dump.rdb, _server.log. NEVER commit this tree; port code by rewriting, not copying.
+WhatsApp_SASS/
