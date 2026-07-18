@@ -6,7 +6,8 @@ import pg from "pg";
 // الاستثناءات المسمّاة فقط — أي إضافة هنا قرار معماري يُكتب بالوثيقة أولاً.
 // spatial_ref_sys جدول تُنشئه إضافة PostGIS في public (بيانات مرجعية للأنظمة
 // الإحداثية، مشتركة للقراءة) — ليس جدول أعمال، فيُستثنى من فرض RLS (§2.3).
-const RLS_EXCEPTIONS = ["tenants", "admin_users", "tenant_payments", "tracking_tokens", "spatial_ref_sys"];
+// tenant_payments خرج من الاستثناءات بترحيل 0012 — تحت FORCE RLS كغيره (MERGE_PLAN R-02).
+const RLS_EXCEPTIONS = ["tenants", "admin_users", "tracking_tokens", "spatial_ref_sys"];
 
 async function main(): Promise<void> {
   const url = process.env["DATABASE_URL_MIGRATOR"];

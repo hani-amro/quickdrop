@@ -333,9 +333,10 @@ export interface RecordTenantPaymentInput {
 }
 
 /**
- * §14 — تسجيل تحصيل يدوي من المستأجر. tenant_payments جدول منصة (استثناء RLS مسمّى
- * §2.3): إدراج مباشر بلا withTenant. نتحقق أولاً من وجود المستأجر (المعرّف مدخل
- * مستخدم) فنعيد 404 لا خطأ FK 500. append-only عملياً — لا تعديل بعد الإدراج.
+ * §14 — تسجيل تحصيل يدوي من المستأجر. منذ ترحيل 0012 الجدول تحت FORCE RLS كغيره
+ * (MERGE_PLAN R-02 — الاستثناء القديم كان ثغرة تسريب بين المستأجرين): التحقق من
+ * وجود المستأجر خارج السياق (tenants بلا RLS قصداً)، والإدراج داخل
+ * withTenant(tenantId). append-only عملياً — لا تعديل بعد الإدراج.
  */
 export async function recordTenantPayment(
   db: Db,
@@ -350,19 +351,22 @@ export async function recordTenantPayment(
   if (!tenantRows[0]) {
     throw new TenantNotFoundError(tenantId);
   }
-  const inserted = await db
-    .insert(tenantPayments)
-    .values({
-      tenantId,
-      amount: input.amount,
-      ...(input.periodNote !== undefined ? { periodNote: input.periodNote } : {}),
-      ...(input.receivedBy !== undefined ? { receivedBy: input.receivedBy } : {}),
-    })
-    .returning();
-  const row = inserted[0];
-  if (!row) {
-    throw new Error("recordTenantPayment: INSERT tenant_payments ... RETURNING returned no row"); // §16.12
-  }
+  const row = await withTenant(db, tenantId, async (tx) => {
+    const inserted = await tx
+      .insert(tenantPayments)
+      .values({
+        tenantId,
+        amount: input.amount,
+        ...(input.periodNote !== undefined ? { periodNote: input.periodNote } : {}),
+        ...(input.receivedBy !== undefined ? { receivedBy: input.receivedBy } : {}),
+      })
+      .returning();
+    const first = inserted[0];
+    if (!first) {
+      throw new Error("recordTenantPayment: INSERT tenant_payments ... RETURNING returned no row"); // §16.12
+    }
+    return first;
+  });
   console.log(JSON.stringify({ action: "tenant_payment_recorded", tenant_id: tenantId }));
   return row;
 }

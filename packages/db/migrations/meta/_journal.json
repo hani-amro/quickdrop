@@ -85,6 +85,13 @@
       "when": 1784322607897,
       "tag": "0011_famous_bulldozer",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1784391099739,
+      "tag": "0012_tenant_payments_rls",
+      "breakpoints": true
     }
   ]
 }

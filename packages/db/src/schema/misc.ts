@@ -101,8 +101,10 @@ export const outbox = pgTable(
   ],
 );
 
-// §14 — tenant_payments: سجل التحصيل اليدوي من المستأجرين؛ يُدار من كونسول المشرف
-// (استثناء RLS مسمّى — سياسات platform_admin). append-only عملياً — لا updated_at.
+// §14 — tenant_payments: سجل التحصيل اليدوي من المستأجرين؛ يُدار من كونسول المشرف.
+// تحت FORCE RLS منذ ترحيل 0012 (MERGE_PLAN R-02 — الاستثناء القديم كان ثغرة، وتعليقه
+// أحال على سياسة platform_admin لم توجد قط). الكتابة عبر withTenant(tenantId) حصراً.
+// append-only عملياً — لا updated_at.
 export const tenantPayments = pgTable("tenant_payments", {
   id: idPk(),
   tenantId: tenantId(),
