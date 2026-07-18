@@ -1,5 +1,5 @@
-import { createDb, customerProfiles, outbox, tenants, users, waWebhookUpdates, withTenant, type DbHandle } from "@quickdrop/db";
-import { and, eq } from "drizzle-orm";
+import { conversations, createDb, customerProfiles, messages, outbox, tenants, users, waWebhookUpdates, withTenant, type DbHandle } from "@quickdrop/db";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { processWaUpdate } from "./wa-update-processor.js";
 
@@ -45,6 +45,8 @@ describe.skipIf(!hasDb)("wa-update-processor (تكامل، قاعدة حية)", 
 
   afterAll(async () => {
     await withTenant(app.db, tenantId, async (tx) => {
+      await tx.execute(sql`DELETE FROM messages WHERE tenant_id = ${tenantId}::uuid`);
+      await tx.execute(sql`DELETE FROM conversations WHERE tenant_id = ${tenantId}::uuid`);
       await tx.delete(outbox).where(eq(outbox.tenantId, tenantId));
       await tx.delete(waWebhookUpdates).where(eq(waWebhookUpdates.tenantId, tenantId));
       await tx.delete(customerProfiles).where(eq(customerProfiles.tenantId, tenantId));
@@ -74,6 +76,19 @@ describe.skipIf(!hasDb)("wa-update-processor (تكامل، قاعدة حية)", 
     expect(result.profile).toBeDefined(); // ملف CRM أُنشئ 1:1 (D-M2)
     expect(result.topics).toEqual(["contact.created", "wa.message.received"]);
     expect(result.inboxStatus).toBe("processed");
+
+    // §4.4 — الحفظ بالمخزن الموحّد: خيط واحد + رسالة واردة، وunread=1
+    const conv = await withTenant(app.db, tenantId, async (tx) => {
+      const c = await tx.select().from(conversations).where(and(eq(conversations.tenantId, tenantId), eq(conversations.userId, result.user!.id)));
+      const m = c[0] ? await tx.select().from(messages).where(eq(messages.conversationId, c[0].id)) : [];
+      return { conv: c[0], msgs: m };
+    });
+    expect(conv.conv).toBeDefined();
+    expect(conv.conv!.unreadCount).toBe(1);
+    expect(conv.msgs).toHaveLength(1);
+    expect(conv.msgs[0]!.channel).toBe("whatsapp");
+    expect(conv.msgs[0]!.direction).toBe("in");
+    expect(conv.msgs[0]!.externalId).toBe("wamid.new1");
   });
 
   it("إعادة تسليم نفس الصف = duplicate بلا أحداث ولا مستخدمين إضافيين (idempotent)", async () => {

@@ -12,3 +12,4 @@ export * from "./misc.js";
 export * from "./counters.js";
 export * from "./wa.js";
 export * from "./crm.js";
+export * from "./conversations.js";

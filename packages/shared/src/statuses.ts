@@ -104,3 +104,19 @@ export type LifecycleStage = (typeof LIFECYCLE_STAGES)[number];
 
 export const CUSTOMER_FACT_SOURCES = ["ai", "manual", "system"] as const;
 export type CustomerFactSource = (typeof CUSTOMER_FACT_SOURCES)[number];
+
+// ——— دمج WaFlow (MERGE_PLAN §4.4) — صندوق المحادثات الموحّد (مخزن واحد، قرار المالك
+// 2026-07-19): نفس الزبون = خيط واحد مهما تعدّدت القنوات؛ القناة سمة الرسالة لا مخزن. ———
+export const CONVERSATION_STATUSES = ["open", "pending", "resolved", "snoozed"] as const;
+export type ConversationStatus = (typeof CONVERSATION_STATUSES)[number];
+
+export const MESSAGE_CHANNELS = ["whatsapp", "telegram"] as const; // instagram/facebook مؤجّلة
+export type MessageChannel = (typeof MESSAGE_CHANNELS)[number];
+
+export const MESSAGE_TYPES = [
+  "text", "image", "video", "audio", "document", "sticker", "location", "interactive", "template", "reaction",
+] as const;
+export type MessageType = (typeof MESSAGE_TYPES)[number];
+
+export const MESSAGE_STATUSES = ["sent", "delivered", "read", "failed"] as const;
+export type MessageStatus = (typeof MESSAGE_STATUSES)[number];

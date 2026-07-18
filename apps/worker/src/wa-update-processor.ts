@@ -1,5 +1,7 @@
 import {
   customerProfiles,
+  getOrCreateConversation,
+  recordInboundMessage,
   users,
   waWebhookUpdates,
   withTenant,
@@ -7,7 +9,7 @@ import {
 } from "@quickdrop/db";
 import { publishSpineEvent } from "@quickdrop/spine";
 import { waChangeValueSchema, type WaChangeValue } from "@quickdrop/whatsapp";
-import type { WaUpdateJob } from "@quickdrop/shared";
+import type { MessageType, WaUpdateJob } from "@quickdrop/shared";
 import { and, eq, isNull, sql } from "drizzle-orm";
 
 // MERGE_PLAN §3.1 (هيكل Phase 1) — مستهلك تحديثات واتساب: يقرأ صف الـ inbox (مصدر
@@ -99,6 +101,50 @@ async function upsertWaCustomer(
   return { userId: winner[0].id, created: false };
 }
 
+const WA_MEDIA_TYPES = new Set(["image", "video", "audio", "document", "sticker"]);
+const KNOWN_MESSAGE_TYPES = new Set<MessageType>([
+  "text", "image", "video", "audio", "document", "sticker", "location", "interactive", "template", "reaction",
+]);
+
+/**
+ * يستخرج {نوع، محتوى، وسائط} من رسالة واتساب (الشكل passthrough). الوسائط تُخزَّن
+ * كمؤشّر `waid:<media_id>` (روابط Meta تنتهي صلاحيتها؛ التنزيل الفعلي مؤجّل). زر/قائمة
+ * تفاعلية → نصّها. نوع غير معروف → text (لا نُسقط رسالة بسبب نوع جديد من Meta).
+ */
+function extractWaMessage(m: Record<string, unknown>): { type: MessageType; content?: string; mediaUrl?: string; mediaMime?: string } {
+  const rawType = typeof m["type"] === "string" ? (m["type"] as string) : "text";
+  const type: MessageType = KNOWN_MESSAGE_TYPES.has(rawType as MessageType) ? (rawType as MessageType) : "text";
+
+  if (rawType === "text") {
+    const text = m["text"] as { body?: string } | undefined;
+    return { type: "text", ...(text?.body !== undefined ? { content: text.body } : {}) };
+  }
+  if (WA_MEDIA_TYPES.has(rawType)) {
+    const media = m[rawType] as { id?: string; caption?: string; mime_type?: string } | undefined;
+    return {
+      type,
+      ...(media?.caption !== undefined ? { content: media.caption } : {}),
+      ...(media?.id !== undefined ? { mediaUrl: `waid:${media.id}` } : {}),
+      ...(media?.mime_type !== undefined ? { mediaMime: media.mime_type } : {}),
+    };
+  }
+  if (rawType === "location") {
+    const loc = m["location"] as { latitude?: number; longitude?: number; name?: string } | undefined;
+    const content = loc?.name ?? (loc ? `${loc.latitude},${loc.longitude}` : undefined);
+    return { type: "location", ...(content !== undefined ? { content } : {}) };
+  }
+  if (rawType === "interactive") {
+    const it = m["interactive"] as { button_reply?: { title?: string }; list_reply?: { title?: string } } | undefined;
+    const content = it?.button_reply?.title ?? it?.list_reply?.title;
+    return { type: "interactive", ...(content !== undefined ? { content } : {}) };
+  }
+  if (rawType === "reaction") {
+    const r = m["reaction"] as { emoji?: string } | undefined;
+    return { type: "reaction", ...(r?.emoji !== undefined ? { content: r.emoji } : {}) };
+  }
+  return { type: "text" }; // نوع غير متوقّع — نحفظه كنص فارغ (لا إسقاط)
+}
+
 export async function processWaUpdate(deps: WaUpdateProcessorDeps, job: WaUpdateJob): Promise<WaUpdateOutcome> {
   return withTenant(deps.appDb, job.tenantId, async (tx) => {
     const rows = await tx
@@ -135,12 +181,26 @@ export async function processWaUpdate(deps: WaUpdateProcessorDeps, job: WaUpdate
       if (customer.created) {
         await publishSpineEvent(tx, job.tenantId, "contact.created", { userId: customer.userId, channel: "whatsapp" });
       }
+      // §4.4 — الحفظ بالمخزن الموحّد: خيط الزبون + الرسالة (idempotent بـ wa_message_id)
+      const conversationId = await getOrCreateConversation(tx, job.tenantId, customer.userId);
+      const extracted = extractWaMessage(message as Record<string, unknown>);
+      await recordInboundMessage(tx, {
+        tenantId: job.tenantId,
+        conversationId,
+        channel: "whatsapp",
+        externalId: message.id,
+        type: extracted.type,
+        ...(extracted.content !== undefined ? { content: extracted.content } : {}),
+        ...(extracted.mediaUrl !== undefined ? { mediaUrl: extracted.mediaUrl } : {}),
+        ...(extracted.mediaMime !== undefined ? { mediaMime: extracted.mediaMime } : {}),
+      });
       await publishSpineEvent(tx, job.tenantId, "wa.message.received", {
         waMessageId: message.id,
+        conversationId,
         userId: customer.userId,
       });
     }
-    // مفاتيح status:{wamid}:{status} — تحديث حالة رسالة صادرة: يُستهلك بـ Phase 2 (messages)
+    // مفاتيح status:{wamid}:{status} — تحديث حالة رسالة صادرة: يُوصَل مع الإرسال الصادر
 
     await markProcessed(tx, job.tenantId, job.updateId);
     return "processed";

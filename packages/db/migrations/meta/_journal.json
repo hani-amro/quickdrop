@@ -120,6 +120,13 @@
       "when": 1784412485556,
       "tag": "0016_loyalty_rate_config",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1784412717139,
+      "tag": "0017_conversations_messages",
+      "breakpoints": true
     }
   ]
 }
