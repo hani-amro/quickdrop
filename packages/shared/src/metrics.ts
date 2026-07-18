@@ -8,6 +8,8 @@ export const METRIC_TELEGRAM_ERRORS = "quickdrop_telegram_errors_total";
 export const METRIC_DISPATCH_DURATION = "quickdrop_dispatch_duration_seconds";
 export const METRIC_QUEUE_DEPTH = "quickdrop_queue_depth";
 export const METRIC_OSRM_REQUESTS = "quickdrop_osrm_requests_total";
+// §12/R-16 — صفوف outbox بحالة failed (سُمّمت بعد استنفاد المحاولات): التنبيه عند > 0 (§13)
+export const METRIC_OUTBOX_FAILED = "quickdrop_outbox_failed";
 
 // §13 — حالات عمق الطابور المرصودة: waiting للتنبيه على التراكم (> 500)، failed للـ
 // DLQ (> 0)، وactive/delayed للتشخيص. أسماء حالات BullMQ حرفياً (getJobCounts).

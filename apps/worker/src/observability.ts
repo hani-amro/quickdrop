@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { METRIC_QUEUE_DEPTH, QUEUE_DEPTH_STATES } from "@quickdrop/shared";
+import { METRIC_OUTBOX_FAILED, METRIC_QUEUE_DEPTH, QUEUE_DEPTH_STATES } from "@quickdrop/shared";
 import * as Sentry from "@sentry/node";
 import type { Queue } from "bullmq";
 import { collectDefaultMetrics, Gauge, Registry } from "prom-client";
@@ -33,7 +33,12 @@ export interface MetricsServerHandle {
  * §13 — خادم /metrics + جامع عمق الطوابير كل 15 ثانية (bullmq getJobCounts).
  * ذو منفذ خاص (METRICS_PORT، افتراضي 9100) على الشبكة الداخلية — لا يُكشَف للعالم.
  */
-export function startMetricsServer(deps: { port: number; queues: Record<string, Queue> }): MetricsServerHandle {
+export function startMetricsServer(deps: {
+  port: number;
+  queues: Record<string, Queue>;
+  /** §12/R-16 — عدّ صفوف outbox الفاشلة (DLQ منطقي): يُمرَّر من main عبر scanDb. تنبيه > 0. */
+  countOutboxFailed?: () => Promise<number>;
+}): MetricsServerHandle {
   const registry = new Registry();
   collectDefaultMetrics({ register: registry });
 
@@ -41,6 +46,11 @@ export function startMetricsServer(deps: { port: number; queues: Record<string, 
     name: METRIC_QUEUE_DEPTH,
     help: "Number of jobs per queue by state",
     labelNames: ["queue", "state"],
+    registers: [registry],
+  });
+  const outboxFailed = new Gauge({
+    name: METRIC_OUTBOX_FAILED,
+    help: "Outbox rows in failed status (poisoned after max attempts) — alert on > 0",
     registers: [registry],
   });
 
@@ -53,6 +63,9 @@ export function startMetricsServer(deps: { port: number; queues: Record<string, 
         for (const state of QUEUE_DEPTH_STATES) {
           queueDepth.set({ queue: name, state }, counts[state] ?? 0);
         }
+      }
+      if (deps.countOutboxFailed) {
+        outboxFailed.set(await deps.countOutboxFailed());
       }
     } catch (error) {
       // §16.12 — لا ابتلاع صامت: عيّنة فاشلة تُسجَّل والحلقة تستمر

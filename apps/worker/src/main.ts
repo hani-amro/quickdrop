@@ -1,4 +1,4 @@
-import { createDb, fireScheduledOrder, offers, orders, scheduledDelayMs, webhookUpdates } from "@quickdrop/db";
+import { createDb, fireScheduledOrder, offers, orders, outbox, scheduledDelayMs, webhookUpdates } from "@quickdrop/db";
 import {
   BROADCAST_QUEUE,
   DISPATCH_QUEUE,
@@ -15,7 +15,7 @@ import {
   type TgUpdateJob,
 } from "@quickdrop/shared";
 import { Queue, Worker } from "bullmq";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { Redis } from "ioredis";
 import { z } from "zod";
 import { createBroadcastProcessor } from "./broadcast-consumer.js";
@@ -23,7 +23,7 @@ import { createDispatchProcessor, DISPATCH_JOB_OPTS, offerTimeoutJobId } from ".
 import { createNotificationsProcessor, offerTimeoutDelayMs } from "./notifications-consumer.js";
 import { createStorageClient, tryLoadStorageConfig } from "@quickdrop/storage";
 import { startHousekeeping } from "./housekeeping.js";
-import { initSentry, startMetricsServer } from "./observability.js";
+import { captureException, initSentry, startMetricsServer } from "./observability.js";
 import { startOutboxPoller } from "./outbox-poller.js";
 import { processUpdate, type UpdateProcessorDeps } from "./update-processor.js";
 
@@ -141,16 +141,30 @@ async function main(): Promise<void> {
   await rescanPendingOffers();
   await rescanScheduledOrders();
 
-  // D9/§12 — بعد إعادة بناء الفائت: شغّل عامل التقاط الـ outbox (كل ثانية → طابور الإشعارات)
-  const outboxPoller = startOutboxPoller({ scanDb: scanDb.db, appDb: appDb.db, queue: notificationsQueue });
+  // D9/§12 — بعد إعادة بناء الفائت: شغّل عامل التقاط الـ outbox (كل ثانية → طابور الإشعارات).
+  // R-16: صف يفشل التقاطه يُحاسَب (backoff أسّي ثم failed بعد السقف) — التسميم يُبلَّغ Sentry.
+  const outboxPoller = startOutboxPoller({
+    scanDb: scanDb.db,
+    appDb: appDb.db,
+    queue: notificationsQueue,
+    onPoisoned: ({ outboxId, tenantId }) => {
+      captureException(new Error(`outbox row poisoned after max attempts: ${outboxId}`), { tenantId });
+    },
+  });
 
-  // §3/§16.25 — تنظيف الجداول الساخنة كل ساعة (webhook_updates >48س، driver_locations >90ي)
+  // §3/§16.25 — تنظيف الجداول الساخنة كل ساعة (webhook_updates >48س، driver_locations >90ي،
+  // outbox: sent >7ي وfailed >30ي — R-16)
   const housekeeping = startHousekeeping({ scanDb: scanDb.db, appDb: appDb.db });
 
-  // §13 — خادم /metrics + عمق الطوابير (تنبيه طابور > 500)
+  // §13 — خادم /metrics + عمق الطوابير (تنبيه طابور > 500) + outbox الفاشلة (تنبيه > 0، R-16)
   const metricsServer = startMetricsServer({
     port: env.METRICS_PORT,
     queues: { [TG_UPDATES_QUEUE]: queue, [NOTIFICATIONS_QUEUE]: notificationsQueue, [DISPATCH_QUEUE]: dispatchQueue },
+    countOutboxFailed: async () => {
+      // scanDb (app_worker، سياسة worker_scan للقراءة) — عدّ عابر للمستأجرين بلا سياق
+      const rows = await scanDb.db.select({ n: sql<number>`count(*)::int` }).from(outbox).where(eq(outbox.status, "failed"));
+      return rows[0]?.n ?? 0;
+    },
   });
 
   const worker = new Worker<TgUpdateJob>(

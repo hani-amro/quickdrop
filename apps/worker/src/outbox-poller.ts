@@ -10,6 +10,18 @@ import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
 const BATCH_LIMIT = 100;
 const DEFAULT_INTERVAL_MS = 1_000;
 
+// §12 / MERGE_PLAN R-16 — محاسبة فشل الالتقاط: قبل هذا كانت أعمدة attempts/next_attempt_at
+// ميتة — صف يفشل التقاطه دوماً (صف سام) كان يُعاد كل ثانية للأبد ويجوّع بقية الدفعة.
+export const OUTBOX_MAX_ATTEMPTS = 10;
+export const OUTBOX_BACKOFF_BASE_MS = 1_000;
+export const OUTBOX_BACKOFF_MAX_MS = 5 * 60_000;
+
+/** backoff أسّي حتمي: 1s، 2s، 4s… بسقف 5 دقائق — دالة نقية (قابلة للاختبار بلا قاعدة). */
+export function outboxBackoffMs(attempts: number): number {
+  const exponent = Math.max(0, Math.min(attempts - 1, 30)); // سقف الأس يمنع overflow
+  return Math.min(OUTBOX_BACKOFF_BASE_MS * 2 ** exponent, OUTBOX_BACKOFF_MAX_MS);
+}
+
 export interface OutboxPollerDeps {
   /** دور app_worker — مسح عابر للمستأجرين بسياسة قراءة/التقاط مسمّاة (§2.3)، بلا قفل. */
   scanDb: Db;
@@ -17,6 +29,10 @@ export interface OutboxPollerDeps {
   appDb: Db;
   queue: Queue<NotificationJob>;
   intervalMs?: number;
+  /** يُستدعى مرة عند تحول صف إلى failed (تسميم) — للتنبيه/Sentry (§13). */
+  onPoisoned?: (info: { outboxId: string; tenantId: string }) => void;
+  /** حقن الساعة للاختبارات؛ الافتراضي الساعة الحقيقية (UTC). */
+  now?: () => Date;
 }
 
 function errorMessage(error: unknown): string {
@@ -58,8 +74,49 @@ async function dispatchOne(deps: OutboxPollerDeps, outboxId: string, tenantId: s
   });
 }
 
+/**
+ * §12/R-16 — تسجيل فشل التقاط صف: ترانزاكشن منفصلة (ترانزاكشن الالتقاط انفجرت أصلاً)
+ * تقفل الصف وتزيد attempts وتؤجل next_attempt_at بالـ backoff؛ عند بلوغ السقف يتحول
+ * الصف failed (لا يُلتقط ثانية — DLQ منطقي) ويُبلَّغ onPoisoned مرة واحدة.
+ * فشل هذا التسجيل نفسه (قاعدة ساقطة) = الصف يبقى pending ويُلتقط لاحقاً — آمن.
+ */
+async function recordDispatchFailure(
+  deps: OutboxPollerDeps,
+  outboxId: string,
+  tenantId: string,
+): Promise<"backoff" | "poisoned" | "skipped" | "accounting_failed"> {
+  const nowFn = deps.now ?? ((): Date => new Date());
+  try {
+    const outcome = await withTenant(deps.appDb, tenantId, async (tx) => {
+      const rows = await tx
+        .select({ attempts: outbox.attempts })
+        .from(outbox)
+        .where(and(eq(outbox.id, outboxId), eq(outbox.status, "pending")))
+        .limit(1)
+        .for("update", { skipLocked: true });
+      const row = rows[0];
+      if (!row) return "skipped" as const; // التقطه/علّمه عامل آخر
+      const attempts = row.attempts + 1;
+      const poisoned = attempts >= OUTBOX_MAX_ATTEMPTS;
+      await tx
+        .update(outbox)
+        .set({
+          attempts,
+          nextAttemptAt: new Date(nowFn().getTime() + outboxBackoffMs(attempts)),
+          ...(poisoned ? { status: "failed" as const } : {}),
+        })
+        .where(eq(outbox.id, outboxId));
+      return poisoned ? ("poisoned" as const) : ("backoff" as const);
+    });
+    if (outcome === "poisoned") deps.onPoisoned?.({ outboxId, tenantId });
+    return outcome;
+  } catch {
+    return "accounting_failed";
+  }
+}
+
 /** دورة واحدة: مسح بلا قفل عبر scanDb ثم معالجة كل صف داخل سياق مستأجره. */
-async function pollOnce(deps: OutboxPollerDeps, isStopped: () => boolean): Promise<void> {
+export async function pollOnce(deps: OutboxPollerDeps, isStopped: () => boolean): Promise<void> {
   const due = await deps.scanDb
     .select({ id: outbox.id, tenantId: outbox.tenantId })
     .from(outbox)
@@ -76,13 +133,15 @@ async function pollOnce(deps: OutboxPollerDeps, isStopped: () => boolean): Promi
     try {
       await dispatchOne(deps, row.id, row.tenantId);
     } catch (error: unknown) {
-      // §16.12 — لا ابتلاع صامت: سجّل الرسالة وتابع بقية الدفعة؛ الصف يبقى pending
-      // وسيُلتقط بالدورة التالية (at-least-once).
+      // §16.12/R-16 — لا ابتلاع صامت ولا حلقة ساخنة: سجّل، ثم حاسِب الصف (attempts+backoff؛
+      // بعد السقف failed) كي لا يجوّع صف سام بقية الدفعة كل ثانية. at-least-once محفوظة.
+      const outcome = await recordDispatchFailure(deps, row.id, row.tenantId);
       console.error(
         JSON.stringify({
           action: "outbox_dispatch_error",
           outboxId: row.id,
           tenantId: row.tenantId,
+          outcome,
           message: errorMessage(error),
         }),
       );

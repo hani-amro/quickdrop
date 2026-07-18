@@ -2,21 +2,23 @@ import type { Db } from "@quickdrop/db";
 import type { NotificationJob } from "@quickdrop/shared";
 import type { Queue } from "bullmq";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { startOutboxPoller, type OutboxPollerDeps } from "./outbox-poller.js";
+import { OUTBOX_BACKOFF_MAX_MS, outboxBackoffMs, startOutboxPoller, type OutboxPollerDeps } from "./outbox-poller.js";
 
 // اختبار منطق الحلقة بلا اتصال حقيقي (لا Postgres ولا Redis):
 // - نستبدل @quickdrop/db بجدول drizzle حقيقي (لبناء الاستعلامات فقط) وwithTenant تمريري
 //   يستدعي transaction مباشرة — كي لا يعتمد الاختبار على dist حزمة db ولا على قاعدة حية.
 // - scanDb/appDb/queue كلها vi.fn تحاكي سلاسل drizzle الـ thenable.
 vi.mock("@quickdrop/db", async () => {
-  const { jsonb, pgTable, text, timestamp, uuid } = await import("drizzle-orm/pg-core");
+  const { integer, jsonb, pgTable, text, timestamp, uuid } = await import("drizzle-orm/pg-core");
   const outbox = pgTable("outbox", {
     id: uuid("id").primaryKey(),
     tenantId: uuid("tenant_id").notNull(),
     topic: text("topic").notNull(),
     payload: jsonb("payload").notNull(),
     status: text("status").notNull(),
+    attempts: integer("attempts").notNull(), // R-16 — يقرؤه recordDispatchFailure
     nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true, mode: "date" }),
+    createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }),
   });
   type TxLike = unknown;
   const withTenant = async <T>(
@@ -170,7 +172,7 @@ describe("startOutboxPoller", () => {
     await poller.stop();
   });
 
-  it("خطأ بصف واحد: يُسجَّل ويُكمل بقية الدفعة", async () => {
+  it("خطأ بصف واحد: يُحاسَب (attempts+1 وbackoff، بلا تسميم قبل السقف) ويُكمل بقية الدفعة", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => undefined);
     const scan = makeScanDb([
       [
@@ -180,29 +182,71 @@ describe("startOutboxPoller", () => {
       [],
     ]);
     const q = makeQueue();
-    // transaction يفشل للصف الأول وينجح للثاني
+    const onPoisoned = vi.fn();
+
+    // ثلاث ترانزاكشنات بالترتيب: التقاط ob-bad (يفشل) → محاسبته (R-16) → التقاط ob-ok
+    const accountingSet = vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) }));
+    const makeTx = (kind: "acct" | "ok"): unknown => {
+      const rows = kind === "acct" ? [{ attempts: 0 }] : [{ id: "ob-ok", topic: "t", payload: {} }];
+      const builder = {
+        from: (): unknown => builder,
+        where: (): unknown => builder,
+        limit: (): unknown => builder,
+        for: (): Promise<unknown[]> => Promise.resolve(rows),
+      };
+      const okSet = vi.fn(() => ({ where: vi.fn(() => Promise.resolve()) }));
+      return { select: (): unknown => builder, update: vi.fn(() => ({ set: kind === "acct" ? accountingSet : okSet })) };
+    };
     let txCall = 0;
-    const good = makeAppDb([{ id: "ob-ok", topic: "t", payload: {} }]);
     const appDb = {
-      transaction: vi.fn(async (fn: (t: unknown) => Promise<void>) => {
+      transaction: vi.fn(async (fn: (t: unknown) => Promise<unknown>) => {
         txCall += 1;
         if (txCall === 1) throw new Error("deadlock");
-        return (good.db as unknown as { transaction: (f: (t: unknown) => Promise<void>) => Promise<void> }).transaction(fn);
+        if (txCall === 2) return fn(makeTx("acct"));
+        return fn(makeTx("ok"));
       }),
     } as unknown as Db;
 
-    const poller = startOutboxPoller(deps({ scanDb: scan.db, appDb, queue: q.queue, intervalMs: 60_000 }));
+    const poller = startOutboxPoller({ scanDb: scan.db, appDb, queue: q.queue, intervalMs: 60_000, onPoisoned });
     await flush();
     await poller.stop();
+
+    // R-16 — المحاسبة: attempts=1، موعد مؤجل بالمستقبل، status لم يتغير (لم يبلغ السقف)
+    expect(accountingSet).toHaveBeenCalledTimes(1);
+    const setArg = accountingSet.mock.calls[0]![0] as { attempts: number; nextAttemptAt: Date; status?: string };
+    expect(setArg.attempts).toBe(1);
+    expect(setArg.nextAttemptAt.getTime()).toBeGreaterThan(Date.now() - 1);
+    expect(setArg.status).toBeUndefined();
+    expect(onPoisoned).not.toHaveBeenCalled();
 
     expect(errorSpy).toHaveBeenCalledWith(
       JSON.stringify({
         action: "outbox_dispatch_error",
         outboxId: "ob-bad",
         tenantId: "33333333-3333-4333-8333-333333333333",
+        outcome: "backoff",
         message: "deadlock",
       }),
     );
     expect(q.add).toHaveBeenCalledTimes(1); // الصف السليم وصل الطابور رغم فشل جاره
+  });
+});
+
+describe("outboxBackoffMs (R-16 — دالة نقية)", () => {
+  it("أسّي: 1s ثم 2s ثم 4s…", () => {
+    expect(outboxBackoffMs(1)).toBe(1_000);
+    expect(outboxBackoffMs(2)).toBe(2_000);
+    expect(outboxBackoffMs(3)).toBe(4_000);
+    expect(outboxBackoffMs(5)).toBe(16_000);
+  });
+
+  it("بسقف 5 دقائق مهما كبر العداد (بلا overflow)", () => {
+    expect(outboxBackoffMs(10)).toBe(OUTBOX_BACKOFF_MAX_MS);
+    expect(outboxBackoffMs(1000)).toBe(OUTBOX_BACKOFF_MAX_MS);
+  });
+
+  it("قيم شاذة (0/سالب) تعامَل كأول محاولة", () => {
+    expect(outboxBackoffMs(0)).toBe(1_000);
+    expect(outboxBackoffMs(-5)).toBe(1_000);
   });
 });
