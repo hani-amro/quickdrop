@@ -1,0 +1,18 @@
+# §0 MERGE_PLAN — إعداد gitleaks: القواعد الافتراضية + استثناءات fixtures التطوير المعروفة فقط.
+# أي استثناء جديد هنا قرار يُراجَع — لا تضف مسارات عريضة.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "dev fixtures and example files (no real secrets)"
+paths = [
+  '''\.env\.example$''',
+  '''\.env\..+\.example$''',
+  '''infra/compose/docker-compose\..*\.yml$''',
+  '''docs/merge-audit/.*\.md$''',
+]
+regexes = [
+  # كلمات مرور dev الثابتة بالوثائق وسكربتات الـ CI (postgres://user:*_dev_password@…)
+  '''_dev_password''',
+  '''POSTGRES_PASSWORD: postgres''',
+]

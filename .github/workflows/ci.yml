@@ -6,6 +6,22 @@ on:
   pull_request:
 
 jobs:
+  # §0 MERGE_PLAN — حارس الأسرار: يعمل كوظيفة مستقلة (يفشل الـ build كله عند أي سر)
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # gitleaks يفحص تاريخ الكوميتات لا الشجرة فقط
+
+      - name: Secrets hygiene (WhatsApp_SASS ignored, no tracked .env/dumps/keys)
+        run: node scripts/check-secrets-hygiene.mjs
+
+      - name: Gitleaks (no committed secrets)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
   ci:
     runs-on: ubuntu-latest
     services:
