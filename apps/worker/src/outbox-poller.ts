@@ -1,5 +1,5 @@
 import { outbox, withTenant, type Db } from "@quickdrop/db";
-import type { NotificationJob } from "@quickdrop/shared";
+import { BRAIN_TOPICS, brainJobId, type NotificationJob } from "@quickdrop/shared";
 import type { Queue } from "bullmq";
 import { and, eq, isNull, lte, or, sql } from "drizzle-orm";
 
@@ -28,6 +28,8 @@ export interface OutboxPollerDeps {
   /** دور app_user — كل كتابة/قفل داخل withTenant(مستأجر الصف) حصراً (§2.3 v1.1). */
   appDb: Db;
   queue: Queue<NotificationJob>;
+  /** fan-out أحداث الدماغ/الأتمتة (BRAIN_TOPICS) — استقلال retry عن الإشعارات (§3.3). */
+  brainQueue?: Queue<NotificationJob>;
   intervalMs?: number;
   /** يُستدعى مرة عند تحول صف إلى failed (تسميم) — للتنبيه/Sentry (§13). */
   onPoisoned?: (info: { outboxId: string; tenantId: string }) => void;
@@ -70,6 +72,16 @@ async function dispatchOne(deps: OutboxPollerDeps, outboxId: string, tenantId: s
       backoff: { type: "exponential", delay: 1000 },
       removeOnComplete: { count: 1000 },
     });
+    // fan-out (§3.3): المواضيع المهمّة للدماغ تُدفع لطابوره أيضاً (jobId مستقل، بلا ':').
+    // كلا الدفعتين قبل تعليم sent → الفشل يُبقي الصف pending فيُعاد دفعهما (deduped).
+    if (deps.brainQueue && BRAIN_TOPICS.has(claimed.topic)) {
+      await deps.brainQueue.add("brain", job, {
+        jobId: brainJobId(claimed.id),
+        attempts: 5,
+        backoff: { type: "exponential", delay: 1000 },
+        removeOnComplete: { count: 1000 },
+      });
+    }
     await tx.update(outbox).set({ status: "sent" }).where(eq(outbox.id, claimed.id));
   });
 }

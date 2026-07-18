@@ -13,7 +13,6 @@
     "check-money": "tsx scripts/check-money.ts",
     "encrypt-secrets": "tsx scripts/encrypt-secrets-at-rest.ts",
     "check-invariants": "tsx scripts/check-invariants.ts",
-    "recalc-tiers": "tsx scripts/recalc-tiers.ts",
     "seed-dev": "tsx scripts/seed-dev.ts",
     "test": "vitest run"
   },

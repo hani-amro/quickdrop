@@ -186,6 +186,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@quickdrop/brain':
+        specifier: workspace:*
+        version: link:../../packages/brain
       '@quickdrop/db':
         specifier: workspace:*
         version: link:../../packages/db

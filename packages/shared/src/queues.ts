@@ -100,3 +100,17 @@ export interface WaUpdateJob {
 export function waUpdateJobId(updateId: string): string {
   return `wa-${updateId}`;
 }
+
+// ——— دمج WaFlow (MERGE_PLAN §3.3/§3.4) — طابور أحداث الدماغ/الأتمتة ———
+// نمط fan-out: عامل التقاط الـ outbox يدفع الصفوف ذات المواضيع المهمّة هنا (إضافةً
+// لطابور الإشعارات)، فيستهلكها دماغ الزبون (وjourneys لاحقاً) باستقلال retry عن
+// الإشعارات. jobId = outbox.id (نفس مفتاح إزالة التكرار §12). المستهلك idempotent.
+export const BRAIN_QUEUE = "brain";
+
+/** المواضيع التي تُدفَع لطابور الدماغ (المستهلك يرشّح داخلها — مثلاً to='delivered'). */
+export const BRAIN_TOPICS: ReadonlySet<string> = new Set(["order.status_changed", "payment.paid"]);
+
+/** jobId حتمي لمهمة الدماغ (بلا ':' — قيد BullMQ) — نفس معرّف صف الـ outbox. */
+export function brainJobId(outboxId: string): string {
+  return `brain-${outboxId}`;
+}

@@ -11,6 +11,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@quickdrop/brain": "workspace:*",
     "@quickdrop/db": "workspace:*",
     "@quickdrop/shared": "workspace:*",
     "@quickdrop/spine": "workspace:*",

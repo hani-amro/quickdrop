@@ -1,5 +1,6 @@
 import { createDb, fireScheduledOrder, offers, orders, outbox, scheduledDelayMs, webhookUpdates } from "@quickdrop/db";
 import {
+  BRAIN_QUEUE,
   BROADCAST_QUEUE,
   DISPATCH_QUEUE,
   installConsoleRedactor,
@@ -31,6 +32,8 @@ import { captureException, initSentry, startMetricsServer } from "./observabilit
 import { startOutboxPoller } from "./outbox-poller.js";
 import { processUpdate, type UpdateProcessorDeps } from "./update-processor.js";
 import { pendingWaUpdates, processWaUpdate, WA_RESCAN_BATCH } from "./wa-update-processor.js";
+import { createBrainProcessor } from "./brain-consumer.js";
+import { startBrainSweep } from "./brain-sweep.js";
 
 installConsoleRedactor(); // §11 — كل console.* يمرّ بالمنقّح (أسرار/هواتف) قبل الطباعة
 
@@ -59,6 +62,7 @@ const notificationsQueue = new Queue<NotificationJob>(NOTIFICATIONS_QUEUE, { con
 const dispatchQueue = new Queue<DispatchJob>(DISPATCH_QUEUE, { connection: redis });
 const scheduledQueue = new Queue<ScheduledOrderJob>(SCHEDULED_QUEUE, { connection: redis });
 const waQueue = new Queue<WaUpdateJob>(WA_UPDATES_QUEUE, { connection: redis }); // دمج WaFlow §3.1
+const brainQueue = new Queue<NotificationJob>(BRAIN_QUEUE, { connection: redis }); // دمج WaFlow §3.3
 
 
 // §11 — عميل تخزين إثبات التسليم (S3/MinIO). غياب إعداد S3 → null → POD معطّل بلطف.
@@ -187,10 +191,28 @@ async function main(): Promise<void> {
     scanDb: scanDb.db,
     appDb: appDb.db,
     queue: notificationsQueue,
+    brainQueue, // §3.3 — fan-out أحداث الدماغ (BRAIN_TOPICS) لطابور مستقل
     onPoisoned: ({ outboxId, tenantId }) => {
       captureException(new Error(`outbox row poisoned after max attempts: ${outboxId}`), { tenantId });
     },
   });
+
+  // §3.3 — دماغ الزبون: مستهلك أحداث (order.delivered/payment.paid) + كنس ليلي يعالج
+  // تدهور المرحلة (يحلّ محل recalc-tiers — الدماغ مالك المستوى الآن).
+  const processBrain = createBrainProcessor({ appDb: appDb.db });
+  const brainWorker = new Worker<NotificationJob>(
+    BRAIN_QUEUE,
+    async (job) => {
+      await processBrain(job.data); // idempotent — الرمي يعيد الجدولة عبر backoff
+    },
+    { connection: redis, concurrency: 5 },
+  );
+  brainWorker.on("failed", (job, error) => {
+    console.error(
+      JSON.stringify({ action: "job_failed", queue: BRAIN_QUEUE, jobId: job?.id, attempts: job?.attemptsMade, message: error.message }),
+    );
+  });
+  const brainSweep = startBrainSweep({ scanDb: scanDb.db, appDb: appDb.db });
 
   // §3/§16.25 — تنظيف الجداول الساخنة كل ساعة (webhook_updates >48س، driver_locations >90ي،
   // outbox: sent >7ي وfailed >30ي — R-16)
@@ -204,6 +226,7 @@ async function main(): Promise<void> {
       [NOTIFICATIONS_QUEUE]: notificationsQueue,
       [DISPATCH_QUEUE]: dispatchQueue,
       [WA_UPDATES_QUEUE]: waQueue,
+      [BRAIN_QUEUE]: brainQueue,
     },
     countOutboxFailed: async () => {
       // scanDb (app_worker، سياسة worker_scan للقراءة) — عدّ عابر للمستأجرين بلا سياق
@@ -341,15 +364,18 @@ async function main(): Promise<void> {
   const shutdown = async (): Promise<void> => {
     await outboxPoller.stop(); // أولاً: أوقف إنتاج مهام جديدة وانتظر الدورة الجارية
     await housekeeping.stop();
+    await brainSweep.stop();
     await metricsServer.stop();
     await worker.close();
     await waWorker.close();
+    await brainWorker.close();
     await notificationsWorker.close();
     await dispatchWorker.close();
     await broadcastWorker.close();
     await scheduledWorker.close();
     await queue.close();
     await waQueue.close();
+    await brainQueue.close();
     await notificationsQueue.close();
     await dispatchQueue.close();
     await scheduledQueue.close();
@@ -364,7 +390,7 @@ async function main(): Promise<void> {
   console.log(
     JSON.stringify({
       action: "worker_started",
-      queues: [TG_UPDATES_QUEUE, WA_UPDATES_QUEUE, NOTIFICATIONS_QUEUE, DISPATCH_QUEUE, BROADCAST_QUEUE, SCHEDULED_QUEUE],
+      queues: [TG_UPDATES_QUEUE, WA_UPDATES_QUEUE, BRAIN_QUEUE, NOTIFICATIONS_QUEUE, DISPATCH_QUEUE, BROADCAST_QUEUE, SCHEDULED_QUEUE],
     }),
   );
 }
