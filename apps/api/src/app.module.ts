@@ -42,9 +42,10 @@ import { TelegramGatewayService } from "./telegram-gateway/gateway.service.js";
 import { TrackingController } from "./tracking/tracking.controller.js";
 import { CoreModule } from "./core.module.js";
 import { WaModule } from "./wa-gateway/wa.module.js";
+import { CrmModule } from "./crm/crm.module.js";
 
 @Module({
-  imports: [CoreModule, WaModule],
+  imports: [CoreModule, WaModule, CrmModule],
   controllers: [
     HealthController,
     OrdersController,

@@ -20,3 +20,4 @@ export * from "./analytics.js";
 export * from "./tenant-admin.js";
 export * from "./admin-auth.js";
 export * from "./conversations-service.js";
+export * from "./crm-read.js";
