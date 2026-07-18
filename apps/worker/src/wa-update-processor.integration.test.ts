@@ -116,4 +116,31 @@ describe.skipIf(!hasDb)("wa-update-processor (تكامل، قاعدة حية)", 
     expect(check.user!.waId).toBe("60119998877");
     expect(check.contactCreatedCount).toBe(1); // فقط حدث الزبون الأول من الاختبار السابق
   });
+
+  it("زبونا تلفون بنفس الرقم وكلاهما wa_id NULL: يُربط واحد فقط بلا خرق فريد ولا تسميم (adversary)", async () => {
+    const phone = "+60177776666";
+    // زبونا تلفون بنفس الهاتف (users بلا فريد على الهاتف — سيناريو حقيقي)
+    await withTenant(app.db, tenantId, async (tx) => {
+      await tx.insert(users).values([
+        { tenantId, role: "customer", phoneE164: phone, firstName: "أ" },
+        { tenantId, role: "customer", phoneE164: phone, firstName: "ب" },
+      ]);
+    });
+
+    const rowId = await seedInboxRow("wamid.dup1", inboxValue("60177776666", "wamid.dup1"));
+    // قبل الإصلاح: UPDATE غير محدود يضع wa_id على الصفين → خرق الفريد → تسميم.
+    const outcome = await processWaUpdate({ appDb: app.db }, { tenantId, updateId: rowId });
+    expect(outcome).toBe("processed");
+
+    const attached = await withTenant(app.db, tenantId, async (tx) => {
+      const rows = await tx
+        .select({ id: users.id, waId: users.waId })
+        .from(users)
+        .where(and(eq(users.tenantId, tenantId), eq(users.phoneE164, phone)));
+      return rows;
+    });
+    // صف واحد فقط أخذ wa_id، والآخر بقي NULL — لا خرق للفريد الجزئي
+    expect(attached.filter((r) => r.waId === "60177776666")).toHaveLength(1);
+    expect(attached.filter((r) => r.waId === null)).toHaveLength(1);
+  });
 });

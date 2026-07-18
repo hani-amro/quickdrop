@@ -1,18 +1,19 @@
-# §0 MERGE_PLAN — إعداد gitleaks: القواعد الافتراضية + استثناءات fixtures التطوير المعروفة فقط.
-# أي استثناء جديد هنا قرار يُراجَع — لا تضف مسارات عريضة.
+# §0 MERGE_PLAN — إعداد gitleaks: القواعد الافتراضية + استثناءات ضيّقة جداً.
+# مراجعة Phase 1: أُزيلت استثناءات المسارات العريضة (كامل docs/merge-audit، وملفات
+# compose) — كانت تُعمي gitleaks عن **نفس الأماكن** التي قد تتسرب إليها أسرار WaFlow.
+# الاستثناء الآن: ملفات .env.example فقط (أمثلة بلا أسرار)، وأنماط كلمات مرور dev
+# الثابتة المعروفة. أي false-positive جديد يُستثنى **ببصمته** (fingerprint) لا بمساره.
 [extend]
 useDefault = true
 
 [allowlist]
-description = "dev fixtures and example files (no real secrets)"
+description = "example env files + known dev-fixture literals only"
 paths = [
   '''\.env\.example$''',
   '''\.env\..+\.example$''',
-  '''infra/compose/docker-compose\..*\.yml$''',
-  '''docs/merge-audit/.*\.md$''',
 ]
 regexes = [
-  # كلمات مرور dev الثابتة بالوثائق وسكربتات الـ CI (postgres://user:*_dev_password@…)
+  # كلمات مرور dev الثابتة بسكربتات الـ CI وأمثلة compose (postgres://user:*_dev_password@…)
   '''_dev_password''',
   '''POSTGRES_PASSWORD: postgres''',
 ]

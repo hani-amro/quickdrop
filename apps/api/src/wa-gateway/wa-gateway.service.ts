@@ -1,7 +1,7 @@
 import { Inject, Injectable } from "@nestjs/common";
 import { tenants, waWebhookUpdates, withTenant, type DbHandle } from "@quickdrop/db";
-import { waUpdateJobId, type WaUpdateJob } from "@quickdrop/shared";
-import { eventKeysForValue, verifyMetaSignature, waChangeValueSchema, waWebhookSchema } from "@quickdrop/whatsapp";
+import { secretsEqual, waUpdateJobId, type WaUpdateJob } from "@quickdrop/shared";
+import { eventKeysFromRouting, verifyMetaSignature, waRoutingSchema, waWebhookSchema } from "@quickdrop/whatsapp";
 import type { Queue } from "bullmq";
 import { and, eq, inArray } from "drizzle-orm";
 import { DB, ENV, WA_QUEUE } from "../tokens.js";
@@ -31,7 +31,8 @@ export class WaGatewayService {
   verifySubscription(mode: string | undefined, token: string | undefined, challenge: string | undefined): string | null {
     if (!this.env.META_VERIFY_TOKEN) return null; // القناة غير مهيأة — معطَّلة بصوت عالٍ
     if (mode !== "subscribe" || !challenge) return null;
-    if (token !== this.env.META_VERIFY_TOKEN) return null;
+    // مقارنة ثابتة الزمن (مراجعة Phase 1) — لا '!==' يقصّر عند أول اختلاف
+    if (!token || !secretsEqual(token, this.env.META_VERIFY_TOKEN)) return null;
     return challenge;
   }
 
@@ -56,19 +57,22 @@ export class WaGatewayService {
     for (const entry of parsed.data.entry) {
       for (const change of entry.changes) {
         if (change.field !== "messages") continue; // template/account updates — مرحلة لاحقة
-        const value = waChangeValueSchema.safeParse(change.value);
-        if (!value.success) {
-          console.error(JSON.stringify({ action: "wa_gateway", outcome: "value_schema_mismatch" }));
+        // سكيما توجيه رخوة فقط (persist-then-200): ما نعجز حتى عن توجيهه (بلا
+        // phone_number_id) نسجّله؛ التحقق الصارم عند الاستهلاك (worker). لا إسقاط صامت
+        // لحمولة موقّعة (R-12 — كان value_schema_mismatch يضيّع رسائل Meta الأصيلة).
+        const routing = waRoutingSchema.safeParse(change.value);
+        if (!routing.success) {
+          console.error(JSON.stringify({ action: "wa_gateway", outcome: "unroutable_signed_payload" }));
           continue;
         }
-        enqueued += await this.ingestChangeValue(value.data);
+        enqueued += await this.ingestChangeValue(routing.data, change.value);
       }
     }
     return { outcome: "accepted", enqueued };
   }
 
-  private async ingestChangeValue(value: ReturnType<typeof waChangeValueSchema.parse>): Promise<number> {
-    const phoneNumberId = value.metadata.phone_number_id;
+  private async ingestChangeValue(routing: ReturnType<typeof waRoutingSchema.parse>, rawValue: unknown): Promise<number> {
+    const phoneNumberId = routing.metadata.phone_number_id;
     // التوجيه قبل معرفة المستأجر — جدول tenants (استثناء RLS المخصص للتوجيه، سابقة slug).
     // فريد جزئياً (0014) — لا غموض findFirst (R-13: كان يسلّم رسائل مستأجر لآخر).
     const tenantRows = await this.handle.db
@@ -84,14 +88,17 @@ export class WaGatewayService {
     }
     if (tenant.status === "suspended" || tenant.status === "churned") return 0;
 
-    const keys = eventKeysForValue(value);
+    const keys = eventKeysFromRouting(routing);
     if (keys.length === 0) return 0;
 
+    // نحفظ الحمولة الخام (rawValue) لا الشكل الرخو — كي يعيد الـ worker التحقق الصارم
+    // على المحتوى الأصلي كاملاً (§1)، لا على نسخة مُقلّمة.
+    const payload = rawValue as Record<string, unknown>;
     // الحفظ durable أولاً (inbox) — صف لكل حدث؛ الإعادة من Meta تصطدم بالمفتاح الفريد
     const toEnqueue = await withTenant(this.handle.db, tenant.id, async (tx) => {
       const inserted = await tx
         .insert(waWebhookUpdates)
-        .values(keys.map((eventKey) => ({ tenantId: tenant.id, eventKey, payload: value })))
+        .values(keys.map((eventKey) => ({ tenantId: tenant.id, eventKey, payload })))
         .onConflictDoNothing()
         .returning({ id: waWebhookUpdates.id });
       const ids = inserted.map((r) => r.id);

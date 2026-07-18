@@ -7,7 +7,9 @@ import { z } from "zod";
 export const waMessageSchema = z
   .object({
     id: z.string().min(1),
-    from: z.string().regex(/^\d{7,15}$/), // wa id — أرقام فقط (نفس تحقق WaFlow المجرّب)
+    // wa id — أرقام؛ وُسّع المدى (5..20) بعد مراجعة Phase 1: هجرة Meta LID تستخدم
+    // معرّفات أطول من 15 رقماً، والتضييق كان يرفض رسائل موقّعة أصيلة.
+    from: z.string().regex(/^\d{5,20}$/),
     timestamp: z.string().optional(),
     type: z.string(),
   })
@@ -67,5 +69,28 @@ export function eventKeysForValue(value: WaChangeValue): string[] {
   const keys: string[] = [];
   for (const m of value.messages ?? []) keys.push(m.id);
   for (const s of value.statuses ?? []) keys.push(`status:${s.id}:${s.status}`);
+  return keys;
+}
+
+// ——— سكيما توجيه رخوة للبوابة (persist-then-200) ———
+// مراجعة Phase 1: البوابة كانت تُسقط أي حمولة موقّعة تفشل السكيما الصارمة (تحديث شكل
+// من Meta) بلا نسخة durable — خرق R-12. البوابة توجّه وتحفظ بأدنى شكل يكفي (metadata +
+// معرّفات)، **والتحقق الصارم يجري عند الاستهلاك** (worker) — نفس مبدأ §1. لا يُسقَط
+// شيء موقّع: ما يفشل الصارم لاحقاً يبقى صفاً durable للفحص، لا رسالة ضائعة.
+export const waRoutingSchema = z
+  .object({
+    metadata: z.object({ phone_number_id: z.string().min(1) }).passthrough(),
+    messages: z.array(z.object({ id: z.string().min(1) }).passthrough()).optional(),
+    statuses: z.array(z.object({ id: z.string().min(1), status: z.string().min(1) }).passthrough()).optional(),
+  })
+  .passthrough();
+
+export type WaRouting = z.infer<typeof waRoutingSchema>;
+
+/** مفاتيح الأحداث من الشكل الرخو — نفس صيغة eventKeysForValue بلا تحقق صارم. */
+export function eventKeysFromRouting(r: WaRouting): string[] {
+  const keys: string[] = [];
+  for (const m of r.messages ?? []) keys.push(m.id);
+  for (const s of r.statuses ?? []) keys.push(`status:${s.id}:${s.status}`);
   return keys;
 }

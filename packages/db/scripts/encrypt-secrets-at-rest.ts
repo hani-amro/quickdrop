@@ -2,7 +2,7 @@ import { encryptSecret } from "@quickdrop/shared";
 import { createDb } from "../src/client.js";
 import { adminUsers, staff, tenants } from "../src/schema/index.js";
 import { withTenant } from "../src/with-tenant.js";
-import { eq, isNotNull, isNull, and } from "drizzle-orm";
+import { and, eq, isNotNull, isNull, sql } from "drizzle-orm";
 
 // ترحيل 0013 — backfill لمرة واحدة: يشفّر الأسرار النصية القائمة إلى أعمدة bytea
 // (AES-256-GCM بـ MASTER_KEY) ويصفّر الأعمدة النصية. idempotent: يلتقط فقط الصفوف
@@ -76,16 +76,28 @@ async function main(): Promise<void> {
       }),
     );
 
-    // تحقق ختامي: لا نص صريح متبقٍ بأي من الأعمدة الثلاثة
+    // تحقق ختامي شامل — يشمل staff صراحةً (مراجعة Phase 1: كان يعتمد على عدّاد الحلقة).
+    // tenants/admin_users مستثناة من RLS فتُعدّ مباشرةً؛ staff تحت FORCE RLS فيُعدّ
+    // المتبقي لكل مستأجر داخل withTenant (نفس قائمة المستأجرين).
     const leftovers = await handle.pool.query(
       `SELECT (SELECT count(*) FROM tenants WHERE bot_webhook_secret IS NOT NULL)::int AS t,
               (SELECT count(*) FROM admin_users WHERE totp_secret IS NOT NULL)::int AS a`,
     );
     const { t, a } = leftovers.rows[0] as { t: number; a: number };
-    if (t > 0 || a > 0) {
-      throw new Error(`plaintext secrets remain after backfill: tenants=${t} admin_users=${a}`);
+    let staffLeft = 0;
+    for (const tenant of allTenants) {
+      staffLeft += await withTenant(handle.db, tenant.id, async (tx) => {
+        const rows = await tx
+          .select({ n: sql<number>`count(*)::int` })
+          .from(staff)
+          .where(and(eq(staff.tenantId, tenant.id), isNotNull(staff.totpSecret)));
+        return rows[0]?.n ?? 0;
+      });
     }
-    console.log("encrypt-secrets-at-rest: OK — no plaintext secrets remain (staff verified per-tenant above)");
+    if (t > 0 || a > 0 || staffLeft > 0) {
+      throw new Error(`plaintext secrets remain after backfill: tenants=${t} admin_users=${a} staff=${staffLeft}`);
+    }
+    console.log("encrypt-secrets-at-rest: OK — no plaintext secrets remain (tenants + admin_users + staff verified)");
   } finally {
     await handle.close();
   }

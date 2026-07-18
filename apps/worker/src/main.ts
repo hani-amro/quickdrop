@@ -30,7 +30,7 @@ import { startHousekeeping } from "./housekeeping.js";
 import { captureException, initSentry, startMetricsServer } from "./observability.js";
 import { startOutboxPoller } from "./outbox-poller.js";
 import { processUpdate, type UpdateProcessorDeps } from "./update-processor.js";
-import { pendingWaUpdates, processWaUpdate } from "./wa-update-processor.js";
+import { pendingWaUpdates, processWaUpdate, WA_RESCAN_BATCH } from "./wa-update-processor.js";
 
 installConsoleRedactor(); // §11 — كل console.* يمرّ بالمنقّح (أسرار/هواتف) قبل الطباعة
 
@@ -143,20 +143,35 @@ async function rescanScheduledOrders(): Promise<void> {
 }
 
 // دمج WaFlow §3.1/§12 — نفس مبدأ inbox تيليغرام: صفوف received المتروكة (crash بين
-// الالتزام والمعالجة) تعاد للطابور عند الإقلاع — jobId حتمي فلا ازدواج مع مهام البوابة.
+// الالتزام والمعالجة) تعاد للطابور عند الإقلاع. مراجعة Phase 1 (adversary):
+// (1) **remove-then-add**: BullMQ يزيل التكرار بالـ jobId، فمهمة سابقة استنفدت
+//     محاولاتها (DB سقط 31s) تبقى بمجموعة failed وتحجب أي re-add بنفس المعرّف →
+//     الصف عالق للأبد (Meta أخذ 200 ولن يعيد). نحذف المهمة القديمة ثم نضيف نظيفة.
+// (2) **تصريف كامل**: نتصفّح بدفعات حتى الفراغ لا 1000 فقط.
 async function rescanWaUpdates(): Promise<void> {
-  const pending = await pendingWaUpdates(scanDb.db);
-  for (const row of pending) {
-    const job: WaUpdateJob = { tenantId: row.tenantId, updateId: row.id };
-    await waQueue.add("process-wa-update", job, {
-      jobId: waUpdateJobId(row.id),
-      attempts: 5,
-      backoff: { type: "exponential", delay: 1000 },
-      removeOnComplete: { count: 1000 },
-    });
+  let after: { receivedAt: Date; id: string } | undefined;
+  let total = 0;
+  for (;;) {
+    const pending = await pendingWaUpdates(scanDb.db, after);
+    if (pending.length === 0) break;
+    for (const row of pending) {
+      const jobId = waUpdateJobId(row.id);
+      await waQueue.remove(jobId).catch(() => undefined); // مهمة عالقة/منتهية بنفس المعرّف — أزلها بأمان
+      const job: WaUpdateJob = { tenantId: row.tenantId, updateId: row.id };
+      await waQueue.add("process-wa-update", job, {
+        jobId,
+        attempts: 5,
+        backoff: { type: "exponential", delay: 1000 },
+        removeOnComplete: { count: 1000 },
+      });
+    }
+    total += pending.length;
+    const last = pending[pending.length - 1]!;
+    after = { receivedAt: last.receivedAt, id: last.id };
+    if (pending.length < WA_RESCAN_BATCH) break;
   }
-  if (pending.length > 0) {
-    console.log(JSON.stringify({ action: "rescan_wa_enqueued", count: pending.length }));
+  if (total > 0) {
+    console.log(JSON.stringify({ action: "rescan_wa_enqueued", count: total }));
   }
 }
 

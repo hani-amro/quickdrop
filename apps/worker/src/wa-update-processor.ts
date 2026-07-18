@@ -46,12 +46,30 @@ async function upsertWaCustomer(
 
   // wa_id أرقام (E.164 بلا +) — نطابق عمود الهاتف بصيغته المخزنة "+..."
   const phone = `+${waId}`;
-  const attached = await tx
-    .update(users)
-    .set({ waId, updatedAt: new Date() })
+  // مراجعة Phase 1 (adversary): الربط لصفٍ **واحد** بمعرّفه — لا UPDATE غير محدود.
+  // بلا LIMIT، وجود زبونَي تلفون بنفس الرقم (users بلا فريد على الهاتف) يجعل UPDATE
+  // يضع نفس wa_id على صفين → خرق users_tenant_wa_uq → 23505 → حلقة تسميم دائمة لذاك
+  // الرقم. نختار مرشّحاً واحداً ثم نحدّثه بمعرّفه مع حارس isNull(waId) (سباق ربط متزامن).
+  const phoneCandidate = await tx
+    .select({ id: users.id })
+    .from(users)
     .where(and(eq(users.tenantId, tenantId), eq(users.phoneE164, phone), isNull(users.waId), eq(users.role, "customer")))
-    .returning({ id: users.id });
-  if (attached[0]) return { userId: attached[0].id, created: false };
+    .limit(1);
+  if (phoneCandidate[0]) {
+    const attached = await tx
+      .update(users)
+      .set({ waId, updatedAt: new Date() })
+      .where(and(eq(users.tenantId, tenantId), eq(users.id, phoneCandidate[0].id), isNull(users.waId)))
+      .returning({ id: users.id });
+    if (attached[0]) return { userId: attached[0].id, created: false };
+    // خسرنا سباق الربط على هذا الصف (tx آخر أخذه) — أعد الحل بالـ wa_id ثم أنشئ
+    const reWa = await tx
+      .select({ id: users.id })
+      .from(users)
+      .where(and(eq(users.tenantId, tenantId), eq(users.waId, waId)))
+      .limit(1);
+    if (reWa[0]) return { userId: reWa[0].id, created: false };
+  }
 
   const inserted = await tx
     .insert(users)
@@ -147,12 +165,25 @@ async function markProcessed(
     );
 }
 
-/** rescan الإقلاع (§12 — الطوابير تلميحات): صفوف received المتروكة تعاد للطابور. */
-export async function pendingWaUpdates(scanDb: Db): Promise<{ id: string; tenantId: string }[]> {
+export const WA_RESCAN_BATCH = 1000;
+
+/**
+ * rescan الإقلاع (§12 — الطوابير تلميحات): دفعة من صفوف received المتروكة، أقدمها
+ * أولاً وبعد مُعطى `afterReceivedAt` (تصفّح للتصريف الكامل عند تجاوز الدفعة —
+ * مراجعة Phase 1: 3000 صف عالق كان يُسترجَع منها 1000 فقط). المفتاح المركّب
+ * (received_at, id) يمنع فقدان صفوف بنفس الطابع الزمني.
+ */
+export async function pendingWaUpdates(
+  scanDb: Db,
+  after?: { receivedAt: Date; id: string },
+): Promise<{ id: string; tenantId: string; receivedAt: Date }[]> {
+  const cursor = after
+    ? sql`(${waWebhookUpdates.receivedAt}, ${waWebhookUpdates.id}) > (${after.receivedAt.toISOString()}, ${after.id})`
+    : sql`true`;
   return scanDb
-    .select({ id: waWebhookUpdates.id, tenantId: waWebhookUpdates.tenantId })
+    .select({ id: waWebhookUpdates.id, tenantId: waWebhookUpdates.tenantId, receivedAt: waWebhookUpdates.receivedAt })
     .from(waWebhookUpdates)
-    .where(eq(waWebhookUpdates.status, "received"))
-    .orderBy(sql`${waWebhookUpdates.receivedAt} ASC`)
-    .limit(1000);
+    .where(and(eq(waWebhookUpdates.status, "received"), cursor))
+    .orderBy(sql`${waWebhookUpdates.receivedAt} ASC, ${waWebhookUpdates.id} ASC`)
+    .limit(WA_RESCAN_BATCH);
 }

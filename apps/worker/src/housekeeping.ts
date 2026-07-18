@@ -1,4 +1,4 @@
-import { driverLocations, outbox, tenants, webhookUpdates, withTenant, type Db } from "@quickdrop/db";
+import { driverLocations, outbox, tenants, waWebhookUpdates, webhookUpdates, withTenant, type Db } from "@quickdrop/db";
 import { and, eq, lt, sql } from "drizzle-orm";
 
 // §3/§16.25 — تنظيف الجداول الساخنة: webhook_updates المعالَجة أقدم من 48 ساعة،
@@ -46,7 +46,7 @@ async function sweepTenant(
   appDb: Db,
   tenantId: string,
   now: Date,
-): Promise<{ webhooks: number; locations: number; outboxRows: number }> {
+): Promise<{ webhooks: number; locations: number; outboxRows: number; waWebhooks: number }> {
   const cutoff = retentionCutoffs(now);
 
   const webhooks = await deleteInBatches(appDb, tenantId, async (tx) => {
@@ -84,7 +84,20 @@ async function sweepTenant(
     return rows.rowCount ?? 0;
   });
 
-  return { webhooks, locations, outboxRows };
+  // مراجعة Phase 1: wa_webhook_updates كان بلا تنظيف — نفس نمط webhook_updates
+  // (المعالَجة >48س)، وهو أهمّ لأنه يخزّن PII (نص الرسالة، هاتف/wa_id، اسم البروفايل).
+  const waWebhooks = await deleteInBatches(appDb, tenantId, async (tx) => {
+    const rows = await tx.execute(sql`
+      DELETE FROM ${waWebhookUpdates}
+      WHERE ctid IN (
+        SELECT ctid FROM ${waWebhookUpdates}
+        WHERE ${and(eq(waWebhookUpdates.status, "processed"), lt(waWebhookUpdates.receivedAt, cutoff.webhooks))}
+        LIMIT ${BATCH}
+      )`);
+    return rows.rowCount ?? 0;
+  });
+
+  return { webhooks, locations, outboxRows, waWebhooks };
 }
 
 export interface HousekeepingHandle {
@@ -111,20 +124,23 @@ export function startHousekeeping(deps: {
       let webhooks = 0;
       let locations = 0;
       let outboxRows = 0;
+      let waWebhooks = 0;
       for (const t of allTenants) {
         if (stopped) break;
         const r = await sweepTenant(deps.appDb, t.id, now());
         webhooks += r.webhooks;
         locations += r.locations;
         outboxRows += r.outboxRows;
+        waWebhooks += r.waWebhooks;
       }
-      if (webhooks > 0 || locations > 0 || outboxRows > 0) {
+      if (webhooks > 0 || locations > 0 || outboxRows > 0 || waWebhooks > 0) {
         console.log(
           JSON.stringify({
             action: "housekeeping",
             deleted_webhooks: webhooks,
             deleted_locations: locations,
             deleted_outbox: outboxRows,
+            deleted_wa_webhooks: waWebhooks,
           }),
         );
       }
