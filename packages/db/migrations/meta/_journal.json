@@ -99,6 +99,13 @@
       "when": 1784393225831,
       "tag": "0013_secrets_at_rest",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1784394222603,
+      "tag": "0014_wa_crm_tables",
+      "breakpoints": true
     }
   ]
 }

@@ -10,3 +10,5 @@ export * from "./loyalty.js";
 export * from "./staff.js";
 export * from "./misc.js";
 export * from "./counters.js";
+export * from "./wa.js";
+export * from "./crm.js";

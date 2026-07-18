@@ -97,3 +97,10 @@ export type StaffRole = (typeof STAFF_ROLES)[number];
 
 export const OUTBOX_STATUSES = ["pending", "sent", "failed"] as const;
 export type OutboxStatus = (typeof OUTBOX_STATUSES)[number];
+
+// ——— دمج WaFlow (MERGE_PLAN §4.3) — دماغ الزبون (CRM) ———
+export const LIFECYCLE_STAGES = ["new", "active", "loyal", "at_risk", "churned", "recovered"] as const;
+export type LifecycleStage = (typeof LIFECYCLE_STAGES)[number];
+
+export const CUSTOMER_FACT_SOURCES = ["ai", "manual", "system"] as const;
+export type CustomerFactSource = (typeof CUSTOMER_FACT_SOURCES)[number];

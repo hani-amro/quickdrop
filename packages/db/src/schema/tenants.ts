@@ -43,6 +43,11 @@ export const tenants = pgTable("tenants", {
   botUsername: text("bot_username"),
   botWebhookSecret: text("bot_webhook_secret"), // انتقالي — يحل محله المشفّر (ترحيل 0013)
   botWebhookSecretEnc: bytea("bot_webhook_secret_enc"),
+  // دمج WaFlow (ترحيل 0014) — مفتاح توجيه webhook واتساب: phone_number_id → مستأجر،
+  // على جدول الاستثناء المخصص للتوجيه (نفس سابقة slug). ليس سراً؛ التوكن بـ wa_accounts
+  // تحت FORCE RLS. فريد جزئياً عالمياً (R-13 — findFirst الغامض بـ WaFlow كان يوصل
+  // رسائل مستأجر لصندوق مستأجر آخر). القيد بالترحيل (drizzle بلا partial-unique هنا).
+  waPhoneNumberId: text("wa_phone_number_id"),
   settings: jsonb("settings").notNull().default(sql`'{}'::jsonb`),
   limits: jsonb("limits").notNull().default(sql`'{}'::jsonb`),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
