@@ -64,7 +64,10 @@ async function main(): Promise<void> {
   }
 
   const webhookSecret = generateWebhookSecret();
-  const encryptedToken = encryptSecret(token, Buffer.from(env.MASTER_KEY, "hex"));
+  const masterKey = Buffer.from(env.MASTER_KEY, "hex");
+  const encryptedToken = encryptSecret(token, masterKey);
+  // ترحيل 0013 — سرّ الـ webhook مشفّراً حصراً؛ العمود النصي القديم يُصفَّر
+  const encryptedWebhookSecret = encryptSecret(webhookSecret, masterKey);
 
   const handle = createDb(env.DATABASE_URL);
   try {
@@ -77,7 +80,8 @@ async function main(): Promise<void> {
         timezone: values.timezone,
         botTokenEncrypted: encryptedToken,
         botUsername: bot.username,
-        botWebhookSecret: webhookSecret,
+        botWebhookSecretEnc: encryptedWebhookSecret,
+        botWebhookSecret: null,
       })
       .onConflictDoUpdate({
         // إعادة الربط (§4.2): نفس الـ slug = تدوير توكن/سر، لا مستأجر جديد
@@ -85,7 +89,8 @@ async function main(): Promise<void> {
         set: {
           botTokenEncrypted: encryptedToken,
           botUsername: bot.username,
-          botWebhookSecret: webhookSecret,
+          botWebhookSecretEnc: encryptedWebhookSecret,
+          botWebhookSecret: null,
           updatedAt: new Date(),
         },
       });

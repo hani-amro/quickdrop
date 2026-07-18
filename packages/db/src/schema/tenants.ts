@@ -41,7 +41,8 @@ export const tenants = pgTable("tenants", {
   referralMonthlyCap: integer("referral_monthly_cap").notNull().default(5), // منع مزارع الإحالات
   botTokenEncrypted: bytea("bot_token_encrypted"),
   botUsername: text("bot_username"),
-  botWebhookSecret: text("bot_webhook_secret"),
+  botWebhookSecret: text("bot_webhook_secret"), // انتقالي — يحل محله المشفّر (ترحيل 0013)
+  botWebhookSecretEnc: bytea("bot_webhook_secret_enc"),
   settings: jsonb("settings").notNull().default(sql`'{}'::jsonb`),
   limits: jsonb("limits").notNull().default(sql`'{}'::jsonb`),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),

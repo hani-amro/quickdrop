@@ -1,10 +1,11 @@
 import { Inject, Injectable } from "@nestjs/common";
 import { tenants, webhookUpdates, withTenant, type DbHandle } from "@quickdrop/db";
-import { secretsEqual, type TgUpdateJob } from "@quickdrop/shared";
+import { decryptSecret, secretsEqual, type TgUpdateJob } from "@quickdrop/shared";
 import type { Queue } from "bullmq";
 import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
-import { DB, TG_QUEUE } from "../app.module.js";
+import { DB, ENV, TG_QUEUE } from "../app.module.js";
+import type { ApiEnv } from "../env.js";
 
 // §4.1 — بوابة inbox: التحديث durable قبل الرد 200، والمعالجة عند الـ worker.
 const updateSchema = z.object({ update_id: z.number().int() }).passthrough();
@@ -19,6 +20,7 @@ export class TelegramGatewayService {
   constructor(
     @Inject(DB) private readonly handle: DbHandle,
     @Inject(TG_QUEUE) private readonly queue: Queue,
+    @Inject(ENV) private readonly env: ApiEnv,
   ) {}
 
   async ingest(tenantSlug: string, secretHeader: string | undefined, body: unknown): Promise<GatewayResult> {
@@ -30,14 +32,21 @@ export class TelegramGatewayService {
         id: tenants.id,
         status: tenants.status,
         webhookSecret: tenants.botWebhookSecret,
+        webhookSecretEnc: tenants.botWebhookSecretEnc,
       })
       .from(tenants)
       .where(eq(tenants.slug, tenantSlug))
       .limit(1);
 
     const found = tenant[0];
-    if (!found || !found.webhookSecret) return { outcome: "dropped" };
-    if (!secretHeader || !secretsEqual(secretHeader, found.webhookSecret)) return { outcome: "dropped" };
+    if (!found) return { outcome: "dropped" };
+    // ترحيل 0013 — dual-read انتقالي: المشفّر أولاً ثم النصي القديم حتى اكتمال الـ backfill
+    const webhookSecret =
+      found.webhookSecretEnc !== null
+        ? decryptSecret(found.webhookSecretEnc, Buffer.from(this.env.MASTER_KEY, "hex"))
+        : found.webhookSecret;
+    if (!webhookSecret) return { outcome: "dropped" };
+    if (!secretHeader || !secretsEqual(secretHeader, webhookSecret)) return { outcome: "dropped" };
     if (found.status === "suspended" || found.status === "churned") {
       // §4.1/§14: رسالة الاعتذار المهذبة بمعدل محدود تُضاف مع طبقة البوتات بالمرحلة 1
       return { outcome: "dropped" };

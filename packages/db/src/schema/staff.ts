@@ -9,7 +9,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import { createdAt, idPk, tenantId, updatedAt } from "./_common.js";
+import { bytea, createdAt, idPk, tenantId, updatedAt } from "./_common.js";
 import { users } from "./users.js";
 
 // §3 v1.1 — staff: موظفو المكتب (داشبورد)؛ الدخول email+password+TOTP (§10.2).
@@ -22,7 +22,10 @@ export const staff = pgTable(
     email: text("email").notNull(),
     passwordHash: text("password_hash").notNull(),
     role: text("role", { enum: STAFF_ROLES }).notNull(),
+    // §11/ترحيل 0013 — السرّ مشفّر AES-256-GCM بـ MASTER_KEY (iv|tag|ct). العمود النصي
+    // القديم انتقالي (dual-read حتى اكتمال backfill) ثم يُسقَط بترحيل لاحق.
     totpSecret: text("totp_secret"),
+    totpSecretEnc: bytea("totp_secret_enc"),
     isActive: boolean("is_active").notNull().default(true),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -40,7 +43,8 @@ export const adminUsers = pgTable("admin_users", {
   id: idPk(),
   email: text("email").notNull().unique(),
   passwordHash: text("password_hash").notNull(),
-  totpSecret: text("totp_secret"),
+  totpSecret: text("totp_secret"), // انتقالي — انظر staff.totpSecretEnc (ترحيل 0013)
+  totpSecretEnc: bytea("totp_secret_enc"),
   isActive: boolean("is_active").notNull().default(true),
   createdAt: createdAt(),
 });

@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { setTimeout as sleep } from "node:timers/promises";
 import { BadRequestException, Inject, Injectable, UnauthorizedException } from "@nestjs/common";
 import { staff, tenants, withTenant, type DbHandle } from "@quickdrop/db";
-import { STAFF_ROLES, type StaffRole } from "@quickdrop/shared";
+import { decryptSecret, encryptSecret, STAFF_ROLES, type StaffRole } from "@quickdrop/shared";
 import { and, eq } from "drizzle-orm";
 import type { Redis } from "ioredis";
 import { z } from "zod";
@@ -104,6 +104,19 @@ export class AuthService {
     @Inject(REDIS) private readonly redis: Redis,
   ) {}
 
+  private get masterKey(): Buffer {
+    return Buffer.from(this.env.MASTER_KEY, "hex");
+  }
+
+  /**
+   * ترحيل 0013 — dual-read انتقالي: السرّ المشفّر (bytea) أولاً، وإلا النصي القديم
+   * حتى اكتمال backfill (scripts/encrypt-secrets-at-rest.ts). الكتابة مشفّرة حصراً.
+   */
+  private resolveTotpSecret(row: { totpSecret: string | null; totpSecretEnc: Buffer | null }): string | null {
+    if (row.totpSecretEnc !== null) return decryptSecret(row.totpSecretEnc, this.masterKey);
+    return row.totpSecret;
+  }
+
   /**
    * §10.2 — الدخول: تحقق argon2id ثم جلسة 128-bit بـ Redis (TTL 8 ساعات).
    * كل مسارات الفشل (مستأجر مجهول/موقوف، بريد مجهول، موظف موقوف، كلمة سر خاطئة)
@@ -131,6 +144,7 @@ export class AuthService {
           role: staff.role,
           isActive: staff.isActive,
           totpSecret: staff.totpSecret,
+          totpSecretEnc: staff.totpSecretEnc,
         })
         .from(staff)
         .where(and(eq(staff.tenantId, tenant.id), eq(staff.email, input.email)))
@@ -154,7 +168,8 @@ export class AuthService {
 
     // §10.2 — دور مُلزَم بـ TOTP وله سرّ مُفعّل: لا جلسة الآن؛ أصدر تحدّياً وسيطاً
     // (Redis) ثم POST /api/auth/totp/verify يُكمل الدخول. لا يُخزَّن السرّ بالتحدّي.
-    if (totpMandatory(member.role) && member.totpSecret !== null) {
+    const hasTotpSecret = member.totpSecretEnc !== null || member.totpSecret !== null;
+    if (totpMandatory(member.role) && hasTotpSecret) {
       const challenge = randomBytes(16).toString("hex"); // 128-bit
       const payload: z.infer<typeof mfaChallengeSchema> = {
         staffId: member.id,
@@ -170,7 +185,7 @@ export class AuthService {
     }
 
     // جلسة مباشرة. owner/accountant بلا سرّ TOTP بعد → mustEnrollTotp (الواجهة تُلزمه بالتسجيل).
-    const mustEnrollTotp = totpMandatory(member.role) && member.totpSecret === null;
+    const mustEnrollTotp = totpMandatory(member.role) && !hasTotpSecret;
     const sessionId = await this.issueSession(
       { staffId: member.id, tenantId: tenant.id, tenantSlug: input.tenantSlug, role: member.role },
       SESSION_TTL_S,
@@ -214,16 +229,17 @@ export class AuthService {
 
     const rows = await withTenant(this.handle.db, payload.tenantId, (tx) =>
       tx
-        .select({ totpSecret: staff.totpSecret, isActive: staff.isActive })
+        .select({ totpSecret: staff.totpSecret, totpSecretEnc: staff.totpSecretEnc, isActive: staff.isActive })
         .from(staff)
         .where(and(eq(staff.tenantId, payload.tenantId), eq(staff.id, payload.staffId)))
         .limit(1),
     );
     const member = rows[0];
-    if (!member || !member.isActive || member.totpSecret === null) {
+    const secret = member ? this.resolveTotpSecret(member) : null;
+    if (!member || !member.isActive || secret === null) {
       return this.failTotp("staff_or_secret_missing");
     }
-    if (!verifyTotp(member.totpSecret, input.token)) {
+    if (!verifyTotp(secret, input.token)) {
       // §11 — عدّاد محاولات لكل تحدٍّ: بعد MAX نُبطل التحدّي (لا يبقى حياً للتخمين)
       const attempts = await this.redis.incr(MFA_ATTEMPTS_PREFIX + input.challenge);
       if (attempts === 1) await this.redis.expire(MFA_ATTEMPTS_PREFIX + input.challenge, MFA_CHALLENGE_TTL_S);
@@ -278,8 +294,9 @@ export class AuthService {
   }
 
   /**
-   * §10.2 — تثبيت TOTP: يتحقق من رمز مقابل السرّ المعلّق ثم يكتبه بـ staff.totp_secret
-   * (عبر withTenant). السرّ يُخزَّن كما هو (dev)؛ تشفيره بـ MASTER_KEY (§4.2) تحسين لاحق.
+   * §10.2 — تثبيت TOTP: يتحقق من رمز مقابل السرّ المعلّق ثم يكتبه مشفّراً بـ
+   * staff.totp_secret_enc (AES-256-GCM بـ MASTER_KEY — ترحيل 0013)، ويصفّر العمود
+   * النصي القديم إن وُجد (إعادة تسجيل = ترحيل ضمني).
    */
   async confirmTotpEnroll(session: StaffSession, body: unknown): Promise<{ ok: true }> {
     const input = parseOr400(totpTokenSchema, body, "auth_totp_enroll_confirm");
@@ -294,7 +311,7 @@ export class AuthService {
     await withTenant(this.handle.db, session.tenantId, (tx) =>
       tx
         .update(staff)
-        .set({ totpSecret: secret, updatedAt: new Date() })
+        .set({ totpSecretEnc: encryptSecret(secret, this.masterKey), totpSecret: null, updatedAt: new Date() })
         .where(and(eq(staff.tenantId, session.tenantId), eq(staff.id, session.staffId))),
     );
     await this.redis.del(TOTP_ENROLL_PREFIX + session.staffId);
