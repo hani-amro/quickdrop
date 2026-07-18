@@ -26,6 +26,12 @@ export const users = pgTable(
     id: idPk(),
     tenantId: tenantId(),
     telegramUserId: bigint("telegram_user_id", { mode: "number" }), // NULL = زبون تلفون بلا تيليغرام (D15)
+    // دمج WaFlow (ترحيل 0015، MERGE_PLAN §4.3) — معرّفات قنوات لكل مستأجر (نمط
+    // telegram_user_id نفسه: فريد جزئياً بالمستأجر، **لا قيود عالمية** — D10 شبكي-جاهز).
+    waId: text("wa_id"),
+    instagramId: text("instagram_id"),
+    facebookId: text("facebook_id"),
+    email: text("email"), // غير موثَّق (unverified) — لا فريد
     role: text("role", { enum: USER_ROLES }).notNull(),
     phoneE164: text("phone_e164"),
     firstName: text("first_name"),
@@ -41,6 +47,15 @@ export const users = pgTable(
     uniqueIndex("users_tenant_tg_uq")
       .on(t.tenantId, t.telegramUserId)
       .where(sql`telegram_user_id IS NOT NULL`),
+    uniqueIndex("users_tenant_wa_uq")
+      .on(t.tenantId, t.waId)
+      .where(sql`wa_id IS NOT NULL`),
+    uniqueIndex("users_tenant_ig_uq")
+      .on(t.tenantId, t.instagramId)
+      .where(sql`instagram_id IS NOT NULL`),
+    uniqueIndex("users_tenant_fb_uq")
+      .on(t.tenantId, t.facebookId)
+      .where(sql`facebook_id IS NOT NULL`),
     index("users_tenant_phone_idx").on(t.tenantId, t.phoneE164), // البحث الأساسي لشاشة الطلب اليدوي
   ],
 );

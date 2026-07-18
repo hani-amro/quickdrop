@@ -13,8 +13,10 @@
   "dependencies": {
     "@quickdrop/db": "workspace:*",
     "@quickdrop/shared": "workspace:*",
+    "@quickdrop/spine": "workspace:*",
     "@quickdrop/storage": "workspace:*",
     "@quickdrop/telegram": "workspace:*",
+    "@quickdrop/whatsapp": "workspace:*",
     "@sentry/node": "^10.65.0",
     "bullmq": "^5.34.0",
     "drizzle-orm": "^0.45.2",

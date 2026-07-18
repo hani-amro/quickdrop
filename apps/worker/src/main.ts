@@ -9,6 +9,9 @@ import {
   scheduledJobId,
   TG_UPDATES_QUEUE,
   tgUpdateJobId,
+  WA_UPDATES_QUEUE,
+  waUpdateJobId,
+  type WaUpdateJob,
   type BroadcastJob,
   type DispatchJob,
   type NotificationJob,
@@ -27,6 +30,7 @@ import { startHousekeeping } from "./housekeeping.js";
 import { captureException, initSentry, startMetricsServer } from "./observability.js";
 import { startOutboxPoller } from "./outbox-poller.js";
 import { processUpdate, type UpdateProcessorDeps } from "./update-processor.js";
+import { pendingWaUpdates, processWaUpdate } from "./wa-update-processor.js";
 
 installConsoleRedactor(); // §11 — كل console.* يمرّ بالمنقّح (أسرار/هواتف) قبل الطباعة
 
@@ -54,6 +58,7 @@ const queue = new Queue(TG_UPDATES_QUEUE, { connection: redis });
 const notificationsQueue = new Queue<NotificationJob>(NOTIFICATIONS_QUEUE, { connection: redis });
 const dispatchQueue = new Queue<DispatchJob>(DISPATCH_QUEUE, { connection: redis });
 const scheduledQueue = new Queue<ScheduledOrderJob>(SCHEDULED_QUEUE, { connection: redis });
+const waQueue = new Queue<WaUpdateJob>(WA_UPDATES_QUEUE, { connection: redis }); // دمج WaFlow §3.1
 
 
 // §11 — عميل تخزين إثبات التسليم (S3/MinIO). غياب إعداد S3 → null → POD معطّل بلطف.
@@ -137,10 +142,29 @@ async function rescanScheduledOrders(): Promise<void> {
   }
 }
 
+// دمج WaFlow §3.1/§12 — نفس مبدأ inbox تيليغرام: صفوف received المتروكة (crash بين
+// الالتزام والمعالجة) تعاد للطابور عند الإقلاع — jobId حتمي فلا ازدواج مع مهام البوابة.
+async function rescanWaUpdates(): Promise<void> {
+  const pending = await pendingWaUpdates(scanDb.db);
+  for (const row of pending) {
+    const job: WaUpdateJob = { tenantId: row.tenantId, updateId: row.id };
+    await waQueue.add("process-wa-update", job, {
+      jobId: waUpdateJobId(row.id),
+      attempts: 5,
+      backoff: { type: "exponential", delay: 1000 },
+      removeOnComplete: { count: 1000 },
+    });
+  }
+  if (pending.length > 0) {
+    console.log(JSON.stringify({ action: "rescan_wa_enqueued", count: pending.length }));
+  }
+}
+
 async function main(): Promise<void> {
   await rescanPending();
   await rescanPendingOffers();
   await rescanScheduledOrders();
+  await rescanWaUpdates();
 
   // D9/§12 — بعد إعادة بناء الفائت: شغّل عامل التقاط الـ outbox (كل ثانية → طابور الإشعارات).
   // R-16: صف يفشل التقاطه يُحاسَب (backoff أسّي ثم failed بعد السقف) — التسميم يُبلَّغ Sentry.
@@ -160,7 +184,12 @@ async function main(): Promise<void> {
   // §13 — خادم /metrics + عمق الطوابير (تنبيه طابور > 500) + outbox الفاشلة (تنبيه > 0، R-16)
   const metricsServer = startMetricsServer({
     port: env.METRICS_PORT,
-    queues: { [TG_UPDATES_QUEUE]: queue, [NOTIFICATIONS_QUEUE]: notificationsQueue, [DISPATCH_QUEUE]: dispatchQueue },
+    queues: {
+      [TG_UPDATES_QUEUE]: queue,
+      [NOTIFICATIONS_QUEUE]: notificationsQueue,
+      [DISPATCH_QUEUE]: dispatchQueue,
+      [WA_UPDATES_QUEUE]: waQueue,
+    },
     countOutboxFailed: async () => {
       // scanDb (app_worker، سياسة worker_scan للقراءة) — عدّ عابر للمستأجرين بلا سياق
       const rows = await scanDb.db.select({ n: sql<number>`count(*)::int` }).from(outbox).where(eq(outbox.status, "failed"));
@@ -176,6 +205,21 @@ async function main(): Promise<void> {
     },
     { connection: redis, concurrency: 10 },
   );
+
+  // دمج WaFlow §3.1 — مستهلك تحديثات واتساب (هيكل Phase 1: هوية الزبون + أحداث spine)
+  const waWorker = new Worker<WaUpdateJob>(
+    WA_UPDATES_QUEUE,
+    async (job) => {
+      // §16.12: لا ابتلاع — الرمي يعيد الجدولة عبر backoff
+      await processWaUpdate({ appDb: appDb.db }, job.data);
+    },
+    { connection: redis, concurrency: 10 },
+  );
+  waWorker.on("failed", (job, error) => {
+    console.error(
+      JSON.stringify({ action: "job_failed", queue: WA_UPDATES_QUEUE, jobId: job?.id, attempts: job?.attemptsMade, message: error.message }),
+    );
+  });
 
   worker.on("failed", (job, error) => {
     console.error(
@@ -284,11 +328,13 @@ async function main(): Promise<void> {
     await housekeeping.stop();
     await metricsServer.stop();
     await worker.close();
+    await waWorker.close();
     await notificationsWorker.close();
     await dispatchWorker.close();
     await broadcastWorker.close();
     await scheduledWorker.close();
     await queue.close();
+    await waQueue.close();
     await notificationsQueue.close();
     await dispatchQueue.close();
     await scheduledQueue.close();
@@ -303,7 +349,7 @@ async function main(): Promise<void> {
   console.log(
     JSON.stringify({
       action: "worker_started",
-      queues: [TG_UPDATES_QUEUE, NOTIFICATIONS_QUEUE, DISPATCH_QUEUE, BROADCAST_QUEUE, SCHEDULED_QUEUE],
+      queues: [TG_UPDATES_QUEUE, WA_UPDATES_QUEUE, NOTIFICATIONS_QUEUE, DISPATCH_QUEUE, BROADCAST_QUEUE, SCHEDULED_QUEUE],
     }),
   );
 }

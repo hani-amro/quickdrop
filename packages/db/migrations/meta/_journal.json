@@ -106,6 +106,13 @@
       "when": 1784394222603,
       "tag": "0014_wa_crm_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1784399675494,
+      "tag": "0015_users_channel_ids",
+      "breakpoints": true
     }
   ]
 }
