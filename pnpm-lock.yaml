@@ -39,12 +39,18 @@ importers:
       '@quickdrop/shared':
         specifier: workspace:*
         version: link:../../packages/shared
+      '@quickdrop/spine':
+        specifier: workspace:*
+        version: link:../../packages/spine
       '@quickdrop/storage':
         specifier: workspace:*
         version: link:../../packages/storage
       '@quickdrop/telegram':
         specifier: workspace:*
         version: link:../../packages/telegram
+      '@quickdrop/whatsapp':
+        specifier: workspace:*
+        version: link:../../packages/whatsapp
       '@sentry/node':
         specifier: ^10.65.0
         version: 10.65.0(@opentelemetry/core@2.9.0(@opentelemetry/api@1.9.1))

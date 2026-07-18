@@ -7,3 +7,4 @@ export const REDIS = "REDIS";
 export const TG_QUEUE = "TG_QUEUE";
 export const BROADCAST_Q = "BROADCAST_Q";
 export const SCHEDULED_Q = "SCHEDULED_Q";
+export const WA_QUEUE = "WA_QUEUE"; // دمج WaFlow §3.1 — منتج طابور wa-updates

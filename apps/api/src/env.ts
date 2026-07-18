@@ -24,6 +24,11 @@ const envSchema = z.object({
   ADMIN_ID: z.string().uuid().optional(),
   // §13 — Sentry: غيابه = مراقبة أخطاء معطَّلة (no-op)، لا فشل.
   SENTRY_DSN: z.string().url().optional(),
+  // دمج WaFlow (MERGE_PLAN §3.1) — قناة واتساب Cloud API. سرّا التطبيق على مستوى
+  // المنصة (تطبيق Meta واحد لكل المستأجرين؛ التوجيه بالمستأجر عبر phone_number_id).
+  // غيابهما = بوابة /wa معطَّلة بصوت عالٍ (403 verify / تجاهل موقَّع) — لا فتح مفتوح.
+  META_APP_SECRET: z.string().min(16).optional(),
+  META_VERIFY_TOKEN: z.string().min(16).optional(),
 });
 
 export type ApiEnv = z.infer<typeof envSchema>;

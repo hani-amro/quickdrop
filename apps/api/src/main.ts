@@ -11,7 +11,9 @@ async function bootstrap(): Promise<void> {
   installConsoleRedactor(); // §11 — كل console.* يمرّ بالمنقّح (أسرار/هواتف) قبل الطباعة
   const env = loadEnv(); // يفشل بصوت عالٍ قبل فتح أي منفذ
   initSentry(env.SENTRY_DSN, env.NODE_ENV); // §13 — قبل أي شيء، ليلتقط أخطاء الإقلاع
-  const app = await NestFactory.create(AppModule);
+  // rawBody: تحقق توقيع Meta (X-Hub-Signature-256) يتم على الجسم الخام حرفياً —
+  // إعادة serialize للـ JSON المفكوك تكسر التوقيع (المفاتيح/المسافات تتغير). §3.1
+  const app = await NestFactory.create(AppModule, { rawBody: true });
   await app.listen(env.PORT);
 
   // §1/§10.1 — الوقت الحقيقي: Socket.IO فوق نفس خادم HTTP (namespace /board مع

@@ -1,11 +1,11 @@
 // رموز الحقن أولاً — قبل أي كنترولر — كي تُهيَّأ قيمها قبل تقييم مُزخرِفات @Inject
 // في الخدمات (التي تعيد استيرادها من هنا)؛ وإلا حلقة الاستيراد تجعلها undefined.
-import { BROADCAST_Q, DB, ENV, REDIS, SCHEDULED_Q, TG_QUEUE } from "./tokens.js";
-export { BROADCAST_Q, DB, ENV, REDIS, SCHEDULED_Q, TG_QUEUE };
+import { BROADCAST_Q, DB, ENV, REDIS, SCHEDULED_Q, TG_QUEUE, WA_QUEUE } from "./tokens.js";
+export { BROADCAST_Q, DB, ENV, REDIS, SCHEDULED_Q, TG_QUEUE, WA_QUEUE };
 import { Inject, Module, type OnApplicationShutdown } from "@nestjs/common";
 import { APP_GUARD, APP_INTERCEPTOR } from "@nestjs/core";
 import { createDb, type DbHandle } from "@quickdrop/db";
-import { BROADCAST_QUEUE, SCHEDULED_QUEUE, TG_UPDATES_QUEUE, type BroadcastJob, type ScheduledOrderJob } from "@quickdrop/shared";
+import { BROADCAST_QUEUE, SCHEDULED_QUEUE, TG_UPDATES_QUEUE, WA_UPDATES_QUEUE, type BroadcastJob, type ScheduledOrderJob, type WaUpdateJob } from "@quickdrop/shared";
 import { Queue } from "bullmq";
 import { Redis } from "ioredis";
 import { AdminController } from "./admin/admin.controller.js";
@@ -45,6 +45,8 @@ import { SupportService } from "./support/support.service.js";
 import { TelegramGatewayController } from "./telegram-gateway/gateway.controller.js";
 import { TelegramGatewayService } from "./telegram-gateway/gateway.service.js";
 import { TrackingController } from "./tracking/tracking.controller.js";
+import { WaGatewayController } from "./wa-gateway/wa-gateway.controller.js";
+import { WaGatewayService } from "./wa-gateway/wa-gateway.service.js";
 
 @Module({
   controllers: [
@@ -67,6 +69,7 @@ import { TrackingController } from "./tracking/tracking.controller.js";
     AuthController, // §10.2 — دخول/خروج/هوية الطاقم (jلسات cookie)
     MetricsController, // §13 — GET /metrics لـ Prometheus (معفى من الحارسَين)
     TelegramGatewayController,
+    WaGatewayController, // دمج WaFlow §3.1 — /wa/webhook (توقيع Meta هو المصادقة)
   ],
   providers: [
     // §13 — interceptor عام يقيس زمن كل طلب (histogram Prometheus)
@@ -113,6 +116,13 @@ import { TrackingController } from "./tracking/tracking.controller.js";
         new Queue<ScheduledOrderJob>(SCHEDULED_QUEUE, { connection: redis }),
       inject: [REDIS],
     },
+    {
+      // دمج WaFlow §3.1 — منتج طابور تحديثات واتساب (البوابة تدفع بعد الحفظ durable)
+      provide: WA_QUEUE,
+      useFactory: (redis: Redis): Queue<WaUpdateJob> => new Queue<WaUpdateJob>(WA_UPDATES_QUEUE, { connection: redis }),
+      inject: [REDIS],
+    },
+    WaGatewayService,
     TelegramGatewayService,
     OrdersService,
     DriversService,
