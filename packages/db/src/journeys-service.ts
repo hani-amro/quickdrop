@@ -1,10 +1,10 @@
-import type { LifecycleStage } from "@quickdrop/shared";
-import { and, eq, sql } from "drizzle-orm";
+import { JOURNEY_TRIGGERS, type LifecycleStage } from "@quickdrop/shared";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "./client.js";
 import { getOrCreateConversation, recordOutboundMessage } from "./conversations-service.js";
 import { writeOutbox } from "./outbox.js";
-import { conversations, customerProfiles, journeyRuns, journeys, users } from "./schema/index.js";
+import { conversations, customerProfiles, journeyRuns, journeys, users, type Journey } from "./schema/index.js";
 import { withTenant, type Tx } from "./with-tenant.js";
 
 // دمج WaFlow (MERGE_PLAN §3.4) — Journeys: منطق المحرك الوحيد. الخطوات/الجمهور بـ Zod
@@ -28,6 +28,32 @@ export const journeyStepSchema = z.discriminatedUnion("type", [
 ]);
 export const journeyStepsSchema = z.array(journeyStepSchema).min(1).max(20);
 export type JourneyStep = z.infer<typeof journeyStepSchema>;
+
+// —— Zod: CRUD تعريف الرحلة (حدود API §11) ——
+export const createJourneySchema = z
+  .object({
+    name: z.string().min(1).max(120),
+    description: z.string().max(2000).nullable().optional(),
+    trigger: z.enum(JOURNEY_TRIGGERS), // مُطلِّق خارج المخرَّط = رحلة ميتة → يُرفض
+    audienceFilter: audienceFilterSchema.nullable().optional(),
+    steps: journeyStepsSchema,
+    isActive: z.boolean().optional(),
+  })
+  .strict();
+export type CreateJourneyInput = z.infer<typeof createJourneySchema>;
+
+// تحديث جزئي — كل الحقول اختيارية؛ المُطلِّق **غير قابل للتغيير** (تسجيلات قائمة عليه).
+export const updateJourneySchema = z
+  .object({
+    name: z.string().min(1).max(120).optional(),
+    description: z.string().max(2000).nullable().optional(),
+    audienceFilter: audienceFilterSchema.nullable().optional(),
+    steps: journeyStepsSchema.optional(),
+    isActive: z.boolean().optional(),
+  })
+  .strict()
+  .refine((v) => Object.keys(v).length > 0, { message: "empty update" });
+export type UpdateJourneyInput = z.infer<typeof updateJourneySchema>;
 
 // —— مطابقة الجمهور (نقية، قابلة للاختبار) ——
 export interface AudienceProfile {
@@ -195,4 +221,66 @@ export async function dueJourneyRuns(scanDb: Db, now = new Date(), limit = 500):
     .from(journeyRuns)
     .where(and(eq(journeyRuns.status, "active"), sql`${journeyRuns.nextRunAt} <= ${now.toISOString()}`))
     .limit(limit);
+}
+
+// ————————————————————————— CRUD تعريف الرحلة (§3.6 — الداشبورد) —————————————————————————
+// كله داخل ترانزاكشن مستأجر (RLS يفرض العزل). الجمهور/الخطوات محقّقان بـ Zod عند الحدّ.
+
+/** إنشاء رحلة. المُطلِّق محقّق (z.enum) والخطوة الأولى بلا تأخير مبدئي مقبول (delayHours ≥ 0). */
+export async function createJourney(tx: Tx, tenantId: string, input: CreateJourneyInput): Promise<Journey> {
+  const rows = await tx
+    .insert(journeys)
+    .values({
+      tenantId,
+      name: input.name,
+      description: input.description ?? null,
+      trigger: input.trigger,
+      audienceFilter: input.audienceFilter ?? null,
+      steps: input.steps,
+      isActive: input.isActive ?? false,
+    })
+    .returning();
+  const row = rows[0];
+  if (!row) throw new Error("createJourney: INSERT ... RETURNING returned no row");
+  return row;
+}
+
+/** قائمة رحلات المستأجر (الأحدث أولاً) — العدّادات (enrolled/completed) للعرض. */
+export async function listJourneys(tx: Tx, tenantId: string): Promise<Journey[]> {
+  return tx.select().from(journeys).where(eq(journeys.tenantId, tenantId)).orderBy(desc(journeys.createdAt));
+}
+
+export async function getJourney(tx: Tx, tenantId: string, id: string): Promise<Journey | null> {
+  const rows = await tx.select().from(journeys).where(and(eq(journeys.tenantId, tenantId), eq(journeys.id, id))).limit(1);
+  return rows[0] ?? null;
+}
+
+/**
+ * تحديث جزئي (name/description/audienceFilter/steps/isActive). المُطلِّق غير قابل للتغيير
+ * (تسجيلات active قائمة عليه). يعيد الصف المحدَّث أو null إن لم يوجد. لا يمسّ التسجيلات
+ * الجارية — تعديل الخطوات يسري على من يُسجَّل لاحقاً؛ الجارون يكملون بنسختهم المخزّنة بالرحلة
+ * (executeJourneyStep يقرأ الخطوات الحيّة، فالتعديل يؤثّر على الخطوة القادمة — مقبول ومقصود).
+ */
+export async function updateJourney(tx: Tx, tenantId: string, id: string, patch: UpdateJourneyInput, now = new Date()): Promise<Journey | null> {
+  const set: Record<string, unknown> = { updatedAt: now };
+  if (patch.name !== undefined) set["name"] = patch.name;
+  if (patch.description !== undefined) set["description"] = patch.description;
+  if (patch.audienceFilter !== undefined) set["audienceFilter"] = patch.audienceFilter;
+  if (patch.steps !== undefined) set["steps"] = patch.steps;
+  if (patch.isActive !== undefined) set["isActive"] = patch.isActive;
+  const rows = await tx.update(journeys).set(set).where(and(eq(journeys.tenantId, tenantId), eq(journeys.id, id))).returning();
+  return rows[0] ?? null;
+}
+
+/**
+ * حذف رحلة: يلغي التسجيلات الجارية ثم يحذف صفوف journey_runs ثم الرحلة (FK بلا CASCADE).
+ * مهام الخطوات المؤجّلة العالقة تصبح no-op (executeJourneyStep → gone عند غياب الـ run).
+ * يعيد true إن وُجدت وحُذفت. عملية المالك الصريحة — تاريخ الإرسال محفوظ بالـ outbox/messages.
+ */
+export async function deleteJourney(tx: Tx, tenantId: string, id: string): Promise<boolean> {
+  const exists = await tx.select({ id: journeys.id }).from(journeys).where(and(eq(journeys.tenantId, tenantId), eq(journeys.id, id))).limit(1);
+  if (!exists[0]) return false;
+  await tx.delete(journeyRuns).where(and(eq(journeyRuns.tenantId, tenantId), eq(journeyRuns.journeyId, id)));
+  await tx.delete(journeys).where(and(eq(journeys.tenantId, tenantId), eq(journeys.id, id)));
+  return true;
 }

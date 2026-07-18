@@ -43,9 +43,10 @@ import { TrackingController } from "./tracking/tracking.controller.js";
 import { CoreModule } from "./core.module.js";
 import { WaModule } from "./wa-gateway/wa.module.js";
 import { CrmModule } from "./crm/crm.module.js";
+import { JourneysModule } from "./journeys/journeys.module.js";
 
 @Module({
-  imports: [CoreModule, WaModule, CrmModule],
+  imports: [CoreModule, WaModule, CrmModule, JourneysModule],
   controllers: [
     HealthController,
     OrdersController,

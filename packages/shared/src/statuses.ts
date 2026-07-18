@@ -129,3 +129,8 @@ export type JourneyRunStatus = (typeof JOURNEY_RUN_STATUSES)[number];
 // أنواع خطوات الرحلة (WaFlow: send_message|ai_handoff|add_tag|wait).
 export const JOURNEY_STEP_TYPES = ["send_message", "ai_handoff", "add_tag", "wait"] as const;
 export type JourneyStepType = (typeof JOURNEY_STEP_TYPES)[number];
+
+// مُطلِّقات الرحلة المسموحة = المواضيع التي يخرّطها منفّذ التسجيل (journeyTriggerFor).
+// أي مُطلِّق خارجها لا يُسجّل أبداً، فيُرفض عند الإنشاء (§11) لا أن يُخزَّن ميتاً.
+export const JOURNEY_TRIGGERS = ["contact.created", "order.delivered", "payment.paid", "crm.lifecycle_changed"] as const;
+export type JourneyTrigger = (typeof JOURNEY_TRIGGERS)[number];
