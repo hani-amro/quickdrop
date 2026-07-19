@@ -2,22 +2,27 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { LocaleSwitcher } from "@/components/LocaleSwitcher";
+import { useT } from "@/lib/i18n";
 
-// §10.1 — الشاشة الافتراضية "الإرسال"؛ التنقل بسيط وثابت أعلى الشاشة.
+// §10.1 — الشاشة الافتراضية "الإرسال"؛ التنقل بسيط وثابت أعلى الشاشة. النصوص عبر i18n
+// (§26 ثنائي الاتجاه) — المفاتيح ثابتة والعرض حسب اللغة. ms-auto (منطقية) لدفع المبدّل
+// للطرف الخلفي باتجاهين.
 const LINKS = [
-  { href: "/", label: "الإرسال" },
-  { href: "/orders/new", label: "طلب جديد" },
-  { href: "/drivers", label: "السائقون" },
-  { href: "/merchants", label: "المطاعم" }, // §3 — إدارة التجار وكتالوجهم
-  { href: "/settlements", label: "التسوية" },
-  { href: "/analytics", label: "التحليلات" },
-  { href: "/broadcasts", label: "البث" },
-  { href: "/support", label: "الدعم" }, // §9 — خيوط الدعم (customer↔support)
-  { href: "/settings/security", label: "الأمان" }, // §10.2 — تسجيل المصادقة الثنائية
+  { href: "/", key: "nav.dispatch" },
+  { href: "/orders/new", key: "nav.orders" },
+  { href: "/drivers", key: "nav.drivers" },
+  { href: "/merchants", key: "nav.merchants" }, // §3 — إدارة التجار وكتالوجهم
+  { href: "/settlements", key: "nav.settlements" },
+  { href: "/analytics", key: "nav.analytics" },
+  { href: "/broadcasts", key: "nav.campaigns" },
+  { href: "/support", key: "nav.inbox" }, // §9/§4.4 — الوارد الموحّد (دعم + محادثات)
+  { href: "/settings/security", key: "nav.settings" }, // §10.2 — الأمان/المصادقة الثنائية
 ] as const;
 
 export function NavBar() {
   const pathname = usePathname();
+  const t = useT();
   // §7 — /t/{token} صفحة تتبع عامة لزائر مجهول: بلا تنقّل الداشبورد إطلاقاً
   if (pathname === "/t" || pathname.startsWith("/t/")) return null;
   // §10.2 — كونسول المشرف نطاق منفصل تماماً بشريطه البرتقالي الخاص: لا تنقّل المكتب هنا
@@ -25,9 +30,7 @@ export function NavBar() {
   return (
     <header className="border-b border-slate-200 bg-white">
       <nav className="mx-auto flex max-w-screen-2xl items-center gap-6 px-4 py-3">
-        <span className="text-lg font-bold text-sky-700">
-          QuickDrop <span className="text-sm font-normal text-slate-500">داشبورد المكتب</span>
-        </span>
+        <span className="text-lg font-bold text-sky-700">QuickDrop</span>
         <ul className="flex items-center gap-1">
           {LINKS.map((link) => (
             <li key={link.href}>
@@ -39,11 +42,14 @@ export function NavBar() {
                     : "text-slate-600 hover:bg-slate-100"
                 }`}
               >
-                {link.label}
+                {t(link.key)}
               </Link>
             </li>
           ))}
         </ul>
+        <div className="ms-auto">
+          <LocaleSwitcher />
+        </div>
       </nav>
     </header>
   );
