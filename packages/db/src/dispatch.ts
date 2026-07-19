@@ -1,4 +1,4 @@
-import { MAX_DISPATCH_ROUNDS, OFFER_TTL_MS, type OrderStatus } from "@quickdrop/shared";
+import { DISPATCHABLE_STATUSES, MAX_DISPATCH_ROUNDS, OFFER_TTL_MS, type OrderStatus } from "@quickdrop/shared";
 import { and, asc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import type { Db } from "./client.js";
 import { writeOutbox } from "./outbox.js";
@@ -155,8 +155,12 @@ export async function startRound(
       // §16.12: طلب غير موجود (أو محجوب بـ RLS) = باغ مستدعٍ، لا حالة عمل — فشل صاخب.
       throw new Error(`startRound: order ${orderId} not found`);
     }
-    if (order.status !== "confirmed") {
-      // سباق محسوم: الطلب أُسند/أُلغي قبل وصولنا — لا جولة. القرار من صف القاعدة (D16).
+    if (!DISPATCHABLE_STATUSES.has(order.status)) {
+      // §4.2.3 — سباق محسوم: الطلب أُسند/أُلغي قبل وصولنا — لا جولة. القرار من صف القاعدة (D16).
+      return { exhausted: true } as const;
+    }
+    if (order.fulfillment !== "delivery" || order.driverId !== null) {
+      // §4.2 (adversary #2): pickup لا يُرسَل له سائق فيزيائي أبداً؛ وسائق مُسنَد سلفاً = لا جولة.
       return { exhausted: true } as const;
     }
 
@@ -276,8 +280,8 @@ export async function acceptOffer(
       // حصراً — هو من يوسّع الجولة، وقتله هنا يترك الطلب معلقاً بلا توسيع.
       return { outcome: "expired" } as const;
     }
-    if (order.status !== "confirmed") {
-      // أُلغي بينما العرض معلّق (الزبون/المكتب) — "الطلب لم يعد متاحاً".
+    if (!DISPATCHABLE_STATUSES.has(order.status) || order.driverId !== null) {
+      // §4.2.3 — أُلغي/أُسند بينما العرض معلّق — "الطلب لم يعد متاحاً".
       return { outcome: "expired" } as const;
     }
 
@@ -393,8 +397,9 @@ export async function assignManually(
         ? ({ outcome: "already_yours" } as const)
         : ({ outcome: "taken" } as const);
     }
-    if (order.status !== "confirmed") {
-      // §5: الإسناد (اليدوي أو الآلي) من confirmed حصراً — أي حالة أخرى = "لم يعد قابلاً للإسناد".
+    if (!DISPATCHABLE_STATUSES.has(order.status) || order.fulfillment !== "delivery") {
+      // §4.2.3: الإسناد (اليدوي أو الآلي) من confirmed|preparing|ready حصراً، ولطلبات
+      // التوصيل حصراً (pickup لا سائق له أبداً — adversary #2) — غير ذلك "لم يعد قابلاً للإسناد".
       return { outcome: "expired" } as const;
     }
 
@@ -515,8 +520,8 @@ export async function handleOfferTimeout(
       throw new Error(`handleOfferTimeout: order ${offer.orderId} for offer ${offerId} not found`); // §16.12
     }
 
-    if (offer.status !== "pending" || order.status !== "confirmed") {
-      // قُبل/رُفض/أُلغي الطلب قبل استيقاظنا — خروج صامت بلا توسيع جولة (§6.2).
+    if (offer.status !== "pending" || !DISPATCHABLE_STATUSES.has(order.status) || order.driverId !== null) {
+      // §4.2.3 — قُبل/رُفض/أُلغي/أُسند الطلب قبل استيقاظنا — خروج صامت بلا توسيع جولة (§6.2).
       return { done: true } as const;
     }
 

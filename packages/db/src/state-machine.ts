@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { computeDeliveryLedger, type OrderActorType, type OrderStatus } from "@quickdrop/shared";
 import { applyDeliveryLoyalty, settleCouponOnTerminal } from "./loyalty.js";
 import { writeOutbox } from "./outbox.js";
@@ -267,6 +267,40 @@ export async function transition(
     from,
     to: args.to,
   });
+
+  // ——— المفصل (§4.2.3 / D-M1) — المنتِج الشرعي الوحيد لـ order.ready_for_dispatch ———
+  // ختم write-once: UPDATE شرطي على dispatch_requested_at IS NULL؛ صف الحدث يُكتب فقط
+  // حين يصيب الختم صفاً واحداً — **بنفس ترانزاكشن تغيير الحالة** (outbox ترانزاكشني D6).
+  // نحمل قفل صف الطلب FOR UPDATE أصلاً، فخمس محاولات متزامنة تتسلسل والأولى فقط تختم.
+  // التوقيت: parcel/p2p عند confirmed؛ food حسب tenants.dispatch_trigger ('ready'
+  // الافتراضي — عند جهوز المطبخ؛ أو 'confirmed')؛ pickup لا يُختم أبداً (لا رحلة توصيل).
+  // الحمولة {orderId} = سكيما spine (packages/spine يعتمد على db فالكتابة مباشرة هنا؛
+  // المستهلك يتحقق بـ parseSpineEvent).
+  if ((args.to === "confirmed" || args.to === "ready") && order.fulfillment === "delivery") {
+    let shouldClaim = false;
+    if (args.to === "ready") {
+      shouldClaim = true; // food فقط تصل ready؛ لو كان المُطلِق 'confirmed' فالختم سبق والشرط يمنع الازدواج
+    } else if (order.service !== "food") {
+      shouldClaim = true; // parcel/p2p: عند التأكيد
+    } else {
+      const trigRows = await tx
+        .select({ dispatchTrigger: tenants.dispatchTrigger })
+        .from(tenants)
+        .where(eq(tenants.id, order.tenantId))
+        .limit(1);
+      shouldClaim = (trigRows[0]?.dispatchTrigger ?? "ready") === "confirmed";
+    }
+    if (shouldClaim) {
+      const claimed = await tx
+        .update(orders)
+        .set({ dispatchRequestedAt: now, updatedAt: now })
+        .where(and(eq(orders.id, order.id), isNull(orders.dispatchRequestedAt), eq(orders.fulfillment, "delivery")))
+        .returning({ id: orders.id });
+      if (claimed.length === 1) {
+        await writeOutbox(tx, order.tenantId, "order.ready_for_dispatch", { orderId: order.id });
+      }
+    }
+  }
 
   return next;
 }

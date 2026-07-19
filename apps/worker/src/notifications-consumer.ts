@@ -31,6 +31,7 @@ import {
   type Bot,
   type ConvRedis,
 } from "@quickdrop/telegram";
+import { parseSpineEvent } from "@quickdrop/spine";
 import type { Queue } from "bullmq";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { GrammyError, InlineKeyboard } from "grammy";
@@ -214,7 +215,26 @@ async function sendOrMarkBlocked(
   }
 }
 
-// —— order.status_changed: بطاقة الزبون الحية + إشعال الإسناد عند confirmed ——
+// —— المفصل (§4.2.3 D-M1): order.ready_for_dispatch هو **مُنتِج الإسناد الوحيد** ——
+// المحفّز القديم (to='confirmed' هنا) حُذف (adversary #2): كان يُرسل سائقاً فيزيائياً
+// لطلبات pickup ويُشعل الطعام مرتين. الحدث يصدر حصراً من ختم write-once بـ transition()،
+// وهذا المستهلك idempotent مرتين: jobId حتمي بالطابور (تسليم مزدوج → مهمة واحدة)،
+// وstartRound نفسه يعيد العرض المعلّق القائم بدل خلق ثانٍ.
+async function handleReadyForDispatch(deps: NotificationsConsumerDeps, job: NotificationJob): Promise<void> {
+  const parsed = parseSpineEvent("order.ready_for_dispatch", job.payload);
+  if (!parsed.ok || parsed.event.topic !== "order.ready_for_dispatch") {
+    // §16.12 — حمولة فاسدة لموضوع معروف: باغ منتِج يستحق DLQ لا تجاهلاً صامتاً
+    throw new Error(`order.ready_for_dispatch: invalid payload (${parsed.ok ? "topic mismatch" : parsed.reason})`);
+  }
+  const { orderId } = parsed.event.payload;
+  await deps.dispatchQueue.add(
+    "dispatch-order",
+    { kind: "dispatch-order", tenantId: job.tenantId, orderId, round: 1 },
+    { ...DISPATCH_JOB_OPTS, jobId: dispatchOrderJobId(orderId, 1) },
+  );
+}
+
+// —— order.status_changed: بطاقة الزبون الحية + تقليم توكن التتبع ——
 
 async function handleOrderStatusChanged(deps: NotificationsConsumerDeps, job: NotificationJob): Promise<void> {
   const payload = orderStatusChangedPayloadSchema.parse(job.payload);
@@ -231,18 +251,6 @@ async function handleOrderStatusChanged(deps: NotificationsConsumerDeps, job: No
 
   const tenant = await loadActiveTenant(deps, job.tenantId, job.topic);
   if (!tenant) return;
-
-  // §6 — to='confirmed' يشعل محرك الإسناد. قبل أي نداء تيليغرام قصداً: فشل تحديث
-  // البطاقة يجب ألا يؤخر الإسناد (طلب بلا سائق أغلى من بطاقة متأخرة)، وقبل فحص
-  // تيليغرام الزبون: زبون التلفون (D15) يُسند طلبه كأي زبون. jobId حتمي → تكرار
-  // at-least-once يُزال بالطابور.
-  if (payload.to === "confirmed") {
-    await deps.dispatchQueue.add(
-      "dispatch-order",
-      { kind: "dispatch-order", tenantId: job.tenantId, orderId: payload.orderId, round: 1 },
-      { ...DISPATCH_JOB_OPTS, jobId: dispatchOrderJobId(payload.orderId, 1) },
-    );
-  }
 
   // §7 — رابط التتبع العام يموت بعد التسليم بساعة: قلّص expires_at عند delivered.
   // tracking_tokens استثناء RLS مسمّى (§2.3) — تحديث مباشر بلا withTenant، مقيَّد
@@ -716,6 +724,10 @@ export function createNotificationsProcessor(deps: NotificationsConsumerDeps): (
     switch (job.topic) {
       case "order.status_changed":
         await handleOrderStatusChanged(deps, job);
+        return;
+      case "order.ready_for_dispatch":
+        // المفصل (§4.2.3) — مُنتِج الإسناد الوحيد
+        await handleReadyForDispatch(deps, job);
         return;
       case "offer.created":
         await handleOfferCreated(deps, job);

@@ -1,6 +1,6 @@
 import { and, eq, isNull } from "drizzle-orm";
 import type { Db } from "./client.js";
-import { transition } from "./state-machine.js";
+import { InvalidTransitionError, transition } from "./state-machine.js";
 import { catalogItems, merchantOperators, merchants, orders, tenants } from "./schema/index.js";
 import { withTenant } from "./with-tenant.js";
 
@@ -97,13 +97,16 @@ export type MerchantAcceptOutcome =
   | { outcome: "accepted"; publicCode: string }
   | { outcome: "not_operator" } // المرسِل غير مربوط بأي مطعم
   | { outcome: "wrong_merchant" } // الطلب ليس لمطعم هذا المشغّل
-  | { outcome: "already" } // مؤكَّد سلفاً (idempotent — ضغطتان)
+  | { outcome: "already" } // بالمطبخ سلفاً (idempotent — ضغطتان)
+  | { outcome: "too_late" } // تجاوز مرحلة القبول (أُلغي/أُسند…)
   | { outcome: "not_found" };
 
 /**
- * قبول التاجر لطلب طعام: يضبط merchant_confirmed_at (مرة واحدة، IS NULL) ومدة التحضير.
- * عمود عادي لا حالة (D8) — الطلب يبقى بمساره (pending→dispatch مستقل عن هذا العلم، §3 v1).
- * مقيَّد بمطعم المشغّل: مشغّل لا يستطيع تأكيد طلب مطعم آخر (عزل داخل المستأجر).
+ * دمج WaFlow (§4.2 D-M6 / adversary #20) — قبول التاجر = **transition(confirmed→preparing,
+ * فاعل merchant)** حصراً: ترميز واحد للحقيقة. transition يملأ merchant_confirmed_at (مرة
+ * واحدة)؛ مدة التحضير عمود عادي يُضبط بنفس الترانزاكشن. طلب معلّق (paid/بانتظار المكتب):
+ * قبول التاجر هو بوابة البشر (§3.2) — pending→confirmed ثم confirmed→preparing بنفس
+ * الترانزاكشن. مقيَّد بمطعم المشغّل (عزل داخل المستأجر).
  */
 export async function merchantAcceptOrder(
   db: Db,
@@ -121,32 +124,90 @@ export async function merchantAcceptOrder(
     const op = opRows[0];
     if (!op) return { outcome: "not_operator" as const };
 
-    const updated = await tx
-      .update(orders)
-      .set({ merchantConfirmedAt: new Date(), merchantPrepMinutes: prepMinutes, updatedAt: new Date() })
-      .where(
-        and(
-          eq(orders.id, orderId),
-          eq(orders.merchantId, op.merchantId), // عزل: طلب هذا المطعم حصراً
-          eq(orders.service, "food"),
-          isNull(orders.merchantConfirmedAt), // يُملأ مرة واحدة
-          isNull(orders.deletedAt),
-        ),
-      )
-      .returning({ publicCode: orders.publicCode });
-    if (updated[0]) return { outcome: "accepted" as const, publicCode: updated[0].publicCode };
-
-    // لم يُحدَّث صف: نميّز السبب لرسالة دقيقة للتاجر
+    // ملكية/حالة مبكرة لرسالة دقيقة (القفل الحاسم داخل transition)
     const row = await tx
-      .select({ merchantId: orders.merchantId, confirmedAt: orders.merchantConfirmedAt })
+      .select({ merchantId: orders.merchantId, service: orders.service, status: orders.status, publicCode: orders.publicCode })
       .from(orders)
       .where(and(eq(orders.id, orderId), isNull(orders.deletedAt)))
       .limit(1);
     const order = row[0];
     if (!order) return { outcome: "not_found" as const };
     if (order.merchantId !== op.merchantId) return { outcome: "wrong_merchant" as const };
-    if (order.confirmedAt !== null) return { outcome: "already" as const };
-    return { outcome: "not_found" as const };
+    if (order.service !== "food") return { outcome: "not_found" as const };
+    if (order.status === "preparing" || order.status === "ready") return { outcome: "already" as const };
+    if (order.status !== "pending" && order.status !== "confirmed") return { outcome: "too_late" as const };
+
+    const actor = { type: "merchant" as const };
+    const meta = { by: "merchant", telegramUserId, prepMinutes };
+    try {
+      if (order.status === "pending") {
+        // بوابة البشر (§3.2): قبول التاجر يؤكّد الطلب المعلّق ثم يبدأ التحضير — ترانزاكشن واحدة
+        await transition(tx, { orderId, to: "confirmed", actor, meta });
+      }
+      await transition(tx, { orderId, to: "preparing", actor, meta });
+    } catch (error) {
+      if (error instanceof InvalidTransitionError) {
+        // سباق: أُلغي/أُسند/سبقنا مشغّل آخر بين القراءة والقفل — من صف القاعدة (D16)
+        return { outcome: "too_late" as const };
+      }
+      throw error;
+    }
+    await tx
+      .update(orders)
+      .set({ merchantPrepMinutes: prepMinutes, updatedAt: new Date() })
+      .where(and(eq(orders.id, orderId), eq(orders.merchantId, op.merchantId)));
+    return { outcome: "accepted" as const, publicCode: order.publicCode };
+  });
+}
+
+export type MerchantReadyOutcome =
+  | { outcome: "ready"; publicCode: string }
+  | { outcome: "not_operator" }
+  | { outcome: "wrong_merchant" }
+  | { outcome: "already" } // جاهز سلفاً (idempotent)
+  | { outcome: "too_late" } // أُلغي/تجاوز
+  | { outcome: "not_found" };
+
+/**
+ * §4.2 — جهوز المطبخ: transition(preparing→ready، فاعل merchant) — يملأ ready_at
+ * (write-once) وعندها يُختم المفصل ويصدر order.ready_for_dispatch (المُطلِق الافتراضي).
+ * الطلب المُسنَد سلفاً (dispatch_trigger='confirmed' والسائق انطلق) → "already" هادئة.
+ */
+export async function merchantMarkReady(
+  db: Db,
+  tenantId: string,
+  telegramUserId: number,
+  orderId: string,
+): Promise<MerchantReadyOutcome> {
+  return withTenant(db, tenantId, async (tx) => {
+    const opRows = await tx
+      .select({ merchantId: merchantOperators.merchantId })
+      .from(merchantOperators)
+      .where(and(eq(merchantOperators.tenantId, tenantId), eq(merchantOperators.telegramUserId, telegramUserId)))
+      .limit(1);
+    const op = opRows[0];
+    if (!op) return { outcome: "not_operator" as const };
+
+    const row = await tx
+      .select({ merchantId: orders.merchantId, status: orders.status, readyAt: orders.readyAt, publicCode: orders.publicCode })
+      .from(orders)
+      .where(and(eq(orders.id, orderId), isNull(orders.deletedAt)))
+      .limit(1);
+    const order = row[0];
+    if (!order) return { outcome: "not_found" as const };
+    if (order.merchantId !== op.merchantId) return { outcome: "wrong_merchant" as const };
+    if (order.status === "ready" || order.readyAt !== null) return { outcome: "already" as const };
+    if (order.status !== "preparing") return { outcome: "too_late" as const };
+
+    try {
+      await transition(tx, { orderId, to: "ready", actor: { type: "merchant" }, meta: { by: "merchant", telegramUserId } });
+    } catch (error) {
+      if (error instanceof InvalidTransitionError) {
+        return { outcome: "too_late" as const }; // سباق بين القراءة والقفل
+      }
+      throw error;
+    }
+    return { outcome: "ready" as const, publicCode: order.publicCode };
   });
 }
 
@@ -157,12 +218,13 @@ export type MerchantRejectOutcome =
   | { outcome: "too_late" } // الطلب تجاوز مرحلة الإلغاء (مُسنَد/مُسلَّم/مُلغى)
   | { outcome: "not_found" };
 
-// الحالات التي يجوز فيها للتاجر الرفض (قبل الإسناد لسائق) — بعدها القرار للمكتب/السائق
-const REJECTABLE = new Set(["pending", "confirmed", "scheduled"]);
+// §4.2.4 — الحالات التي يجوز فيها للتاجر الرفض (قبل الإسناد لسائق): تشمل حالتي المطبخ
+// (adversary #9 — مطبخ عاجز عن التنفيذ يلغي preparing/ready) — بعدها القرار للمكتب/السائق
+const REJECTABLE = new Set(["pending", "confirmed", "scheduled", "preparing", "ready"]);
 
 /**
- * رفض التاجر لطلب طعام → إلغاء عبر transition() (D8) بفاعل staff (التاجر امتداد للمكتب
- * بهذا القرار) مع meta يوثّق أنه رفض تاجر. مقيَّد بمطعم المشغّل وبالحالات القابلة للإلغاء.
+ * رفض التاجر لطلب طعام → إلغاء عبر transition() (D8) بفاعل merchant (§4.2 — فاعل مستقل)
+ * مع meta يوثّق أنه رفض تاجر. مقيَّد بمطعم المشغّل وبالحالات القابلة للإلغاء.
  */
 export async function merchantRejectOrder(
   db: Db,
@@ -193,7 +255,7 @@ export async function merchantRejectOrder(
     await transition(tx, {
       orderId,
       to: "cancelled_by_office",
-      actor: { type: "staff" },
+      actor: { type: "merchant" },
       meta: { reason: "merchant_rejected", by: "merchant", telegramUserId },
     });
     await tx

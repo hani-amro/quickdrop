@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { makePoint, newId, toPostgisWkt, type OrderActorType, type Point, type Service } from "@quickdrop/shared";
+import { makePoint, newId, toPostgisWkt, type Fulfillment, type OrderActorType, type Point, type Service } from "@quickdrop/shared";
 import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "./client.js";
 import { applyCouponToOrder } from "./coupons.js";
@@ -17,7 +17,7 @@ export interface FoodOrderItemInput {
 
 /** §3 — أخطاء بناء طلب الطعام (تُترجَم إلى 4xx بحدود الـ API). */
 export class InvalidFoodOrderError extends Error {
-  constructor(readonly reason: "no_merchant" | "no_items" | "merchant_not_found" | "item_unavailable" | "bad_qty") {
+  constructor(readonly reason: "no_merchant" | "no_items" | "merchant_not_found" | "item_unavailable" | "bad_qty" | "pickup_requires_food") {
     super(`invalid food order: ${reason}`);
     this.name = "InvalidFoodOrderError";
   }
@@ -39,7 +39,8 @@ export interface CreateOrderInput {
   customerId: string;
   pickup: Point;
   pickupText?: string;
-  dropoff: Point;
+  /** إلزامية لطلبات التوصيل؛ لطلبات pickup (استلام ذاتي) تُشتق = موقع المطعم. */
+  dropoff?: Point;
   dropoffText?: string;
   recipientPhone?: string; // الطلب لشخص آخر (الفخ 16)
   weightG?: number;
@@ -49,6 +50,13 @@ export interface CreateOrderInput {
   couponCode?: string; // §8.3-4: إن مُرِّر، يُحجَز ويُخصَم ضمن ترانزاكشن الإنشاء
   merchantId?: string; // §3 — للطعام: المطعم (نقطة الاستلام تُشتق من موقعه، والأصناف منه)
   items?: FoodOrderItemInput[]; // §3 — للطعام: أصناف المنيو؛ goodsAmount يُحسب منها (لا يُمرَّر)
+  // —— دمج WaFlow (§4.1) ——
+  /** 'delivery' (افتراضي) أو 'pickup' (استلام ذاتي — food حصراً، لا رحلة ولا سعر توصيل). */
+  fulfillment?: Fulfillment;
+  /** خيط المحادثة الذي وُلد منه الطلب (Brain A — طلبات واتساب). */
+  conversationId?: string;
+  /** إسناد المنشأ: 'ai' | 'staff' | 'bot' | 'miniapp' … (بوابة البشر §3.2). */
+  source?: string;
   createdBy: { type: OrderActorType; id?: string };
 }
 
@@ -151,12 +159,27 @@ export async function createOrder(
     const food = input.service === "food" ? await resolveFoodOrder(tx, tenantId, input.merchantId, input.items) : null;
     const pickup = food?.pickup ?? input.pickup;
 
-    const quote = await quoteOrder(tx, {
-      service: input.service,
-      pickup,
-      dropoff: input.dropoff,
-      weightG: input.weightG ?? null,
-    });
+    // دمج WaFlow (§4.1/§4.2) — pickup = استلام ذاتي من المطعم (food حصراً): لا رحلة توصيل،
+    // لا تسعير توصيل (المكوّنات صفر)، dropoff = موقع المطعم، ولا يصل الإسناد أبداً (adversary #2).
+    const fulfillment = input.fulfillment ?? "delivery";
+    if (fulfillment === "pickup" && input.service !== "food") {
+      throw new InvalidFoodOrderError("pickup_requires_food");
+    }
+    const dropoff = fulfillment === "pickup" ? pickup : input.dropoff;
+    if (!dropoff) {
+      // §16.12 — طلب توصيل بلا وجهة = باغ مستدعٍ (المدخل كان إلزامياً قبل pickup)
+      throw new TypeError("createOrder: dropoff is required for delivery orders");
+    }
+
+    const quote: Quote =
+      fulfillment === "pickup"
+        ? { components: { base: 0n, distance: 0n, weight: 0n, surge: 0n, minAdjustment: 0n, discount: 0n, total: 0n }, distanceM: 0, durationS: 0, ruleId: null }
+        : await quoteOrder(tx, {
+            service: input.service,
+            pickup,
+            dropoff,
+            weightG: input.weightG ?? null,
+          });
     const publicCode = await nextPublicCode(tx, tenantId);
 
     // §3: cod_amount ≠ price_total — المُحصَّل من الزبون = قيمة البضاعة + التوصيل (D13)
@@ -196,8 +219,11 @@ export async function createOrder(
         status: "draft", // الانتقال الأول عبر transition() أدناه — لا اختصار (D8)
         customerId: input.customerId,
         ...(food !== null && input.merchantId !== undefined ? { merchantId: input.merchantId } : {}),
+        fulfillment, // §4.1 — 'pickup' لا يصل الإسناد أبداً (حارس المواقع الأربعة + المفصل)
+        ...(input.conversationId !== undefined ? { conversationId: input.conversationId } : {}),
+        ...(input.source !== undefined ? { source: input.source } : {}),
         pickupPoint: toPostgisWkt(pickup), // D7: WKT بترتيب lng lat (للطعام = موقع المطعم)
-        dropoffPoint: toPostgisWkt(input.dropoff),
+        dropoffPoint: toPostgisWkt(dropoff), // pickup: = موقع المطعم (استلام ذاتي)
         ...(input.pickupText !== undefined ? { pickupText: input.pickupText } : {}),
         ...(input.dropoffText !== undefined ? { dropoffText: input.dropoffText } : {}),
         ...(input.recipientPhone !== undefined ? { recipientPhone: input.recipientPhone } : {}),

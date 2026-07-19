@@ -2,6 +2,7 @@ import {
   bindMerchantOperator,
   listCatalog,
   merchantAcceptOrder,
+  merchantMarkReady,
   merchantRejectOrder,
   resolveMerchantOperator,
   toggleCatalogItemAvailability,
@@ -46,9 +47,21 @@ export function merchantAvailCb(itemId: string): string {
   return `${CB_MERCHANT_AVAIL_PREFIX}:${itemId}`;
 }
 
+// §4.2 — جهوز المطبخ: 'mo:rdy:{orderId}' → transition(preparing→ready) — يشعل المفصل
+export const CB_MERCHANT_READY_PREFIX = "mo:rdy";
+export function merchantReadyCb(orderId: string): string {
+  return `${CB_MERCHANT_READY_PREFIX}:${orderId}`;
+}
+
 export const MERCHANT_ACCEPT_RE = new RegExp(`^${CB_MERCHANT_ACCEPT_PREFIX}:${UUID_CAPTURE}:(\\d{1,3})$`);
 export const MERCHANT_REJECT_RE = new RegExp(`^${CB_MERCHANT_REJECT_PREFIX}:${UUID_CAPTURE}$`);
 export const MERCHANT_AVAIL_RE = new RegExp(`^${CB_MERCHANT_AVAIL_PREFIX}:${UUID_CAPTURE}$`);
+export const MERCHANT_READY_RE = new RegExp(`^${CB_MERCHANT_READY_PREFIX}:${UUID_CAPTURE}$`);
+
+/** §4.2 — لوحة «الطلب جاهز» على بطاقة القبول: المطبخ يعلن الجهوز فيصدر المفصل. */
+export function merchantReadyKeyboard(orderId: string): InlineKeyboard {
+  return new InlineKeyboard().text("🛎 الطلب جاهز", merchantReadyCb(orderId));
+}
 
 /** §3 — أقصى أصناف تُعرض بلوحة قلب التوفّر (حد أزرار تيليغرام العملي). */
 const MENU_TOGGLE_LIMIT = 40;
@@ -121,10 +134,10 @@ function guard<C extends Context>(
   };
 }
 
-/** §4.3 — تعديل البطاقة وإزالة الأزرار؛ «not modified» تُتجاهل، وأي فشل آخر → رسالة جديدة. */
-async function editCardText(ctx: Context, deps: MerchantFlowDeps, text: string): Promise<void> {
+/** §4.3 — تعديل البطاقة (إزالة الأزرار أو استبدالها بلوحة)؛ «not modified» تُتجاهل، وأي فشل آخر → رسالة جديدة. */
+async function editCardText(ctx: Context, deps: MerchantFlowDeps, text: string, keyboard?: InlineKeyboard): Promise<void> {
   try {
-    await ctx.editMessageText(text);
+    await ctx.editMessageText(text, keyboard ? { reply_markup: keyboard } : undefined);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (message.includes("message is not modified")) return;
@@ -132,7 +145,7 @@ async function editCardText(ctx: Context, deps: MerchantFlowDeps, text: string):
       JSON.stringify({ action: "merchant_card_edit_failed", tenantId: deps.tenantId, chatId: ctx.chat?.id ?? null, error: message }),
     );
     try {
-      await ctx.reply(text);
+      await ctx.reply(text, keyboard ? { reply_markup: keyboard } : undefined);
     } catch {
       // 403 أو شبكة — مسجَّل أعلاه
     }
@@ -185,10 +198,52 @@ export function registerMerchantFlow(bot: Bot, deps: MerchantFlowDeps): void {
       const result = await merchantAcceptOrder(deps.db, deps.tenantId, ctx.from.id, orderId, prepMinutes);
       switch (result.outcome) {
         case "accepted":
-          await editCardText(ctx, deps, `✅ قبلت الطلب #${escapeHtml(result.publicCode)} — مدة التحضير ⏱${prepMinutes} دقيقة.`);
+          // §4.2 D-M6: القبول = transition(→preparing)؛ البطاقة تعرض زر «الطلب جاهز»
+          // (preparing→ready يشعل المفصل order.ready_for_dispatch بالمُطلِق الافتراضي)
+          await editCardText(
+            ctx,
+            deps,
+            `✅ قبلت الطلب #${escapeHtml(result.publicCode)} — مدة التحضير ⏱${prepMinutes} دقيقة.\nلما يجهز اضغط «الطلب جاهز» ليتحرك التوصيل.`,
+            merchantReadyKeyboard(orderId),
+          );
           return;
         case "already":
-          await ctx.reply("هذا الطلب مؤكَّد سلفاً ✋");
+          await ctx.reply("هذا الطلب بالمطبخ سلفاً ✋");
+          return;
+        case "too_late":
+          await ctx.reply("الطلب لم يعد قابلاً للقبول (أُلغي أو تجاوز المرحلة) ⏳");
+          return;
+        case "wrong_merchant":
+          await ctx.reply("هذا الطلب ليس لمطعمك 🤷");
+          return;
+        case "not_operator":
+          await ctx.reply("لم يعد لديك صلاحية على مطعم 🚫 تواصل مع المكتب.");
+          return;
+        case "not_found":
+          await editCardText(ctx, deps, "الطلب لم يعد متاحاً 🤷");
+          return;
+      }
+    }),
+  );
+
+  // —— mo:rdy:{orderId} — المطبخ جهّز الطلب (preparing→ready → يشعل المفصل) ——
+  bot.callbackQuery(
+    MERCHANT_READY_RE,
+    guard(deps, "ready", async (ctx) => {
+      await ctx.answerCallbackQuery(); // §4.3
+      const orderId = ctx.match?.[1];
+      if (orderId === undefined || !ctx.from) return;
+
+      const result = await merchantMarkReady(deps.db, deps.tenantId, ctx.from.id, orderId);
+      switch (result.outcome) {
+        case "ready":
+          await editCardText(ctx, deps, `🛎 الطلب #${escapeHtml(result.publicCode)} جاهز — جاري إرسال سائق.`);
+          return;
+        case "already":
+          await ctx.reply("الطلب معلَّم جاهزاً سلفاً ✋");
+          return;
+        case "too_late":
+          await ctx.reply("الطلب لم يعد بالمطبخ (أُلغي أو تجاوز المرحلة) ⏳");
           return;
         case "wrong_merchant":
           await ctx.reply("هذا الطلب ليس لمطعمك 🤷");

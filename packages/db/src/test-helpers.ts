@@ -77,6 +77,8 @@ export interface SeedTenantOpts {
   /** §8.1: حصة السائق bp — 8000 تجعل القيود الثلاثة بمبالغ متمايزة بالاختبارات. */
   driverFeeShareBp?: number;
   loyaltyPointsPerOrder?: number;
+  /** §4.2.3 — توقيت seam الطعام: 'ready' (افتراضي) أو 'confirmed'. */
+  dispatchTrigger?: "ready" | "confirmed";
 }
 
 /** tenants استثناء RLS مسمّى (§2.4) — الإدراج المباشر هو نمط isolation.test.ts نفسه. */
@@ -92,6 +94,7 @@ export async function seedTenant(db: Db, opts: SeedTenantOpts = {}): Promise<str
       plan: "growth", // حد starter = 3 سائقين (§14) — لا نريد اصطدام حدود الباقة هنا
       ...(opts.driverFeeShareBp !== undefined ? { driverFeeShareBp: opts.driverFeeShareBp } : {}),
       ...(opts.loyaltyPointsPerOrder !== undefined ? { loyaltyPointsPerOrder: opts.loyaltyPointsPerOrder } : {}),
+      ...(opts.dispatchTrigger !== undefined ? { dispatchTrigger: opts.dispatchTrigger } : {}),
     })
     .returning({ id: tenants.id });
   const row = inserted[0];
