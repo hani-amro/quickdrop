@@ -171,7 +171,7 @@ export type MerchantReadyOutcome =
 /**
  * §4.2 — جهوز المطبخ: transition(preparing→ready، فاعل merchant) — يملأ ready_at
  * (write-once) وعندها يُختم المفصل ويصدر order.ready_for_dispatch (المُطلِق الافتراضي).
- * الطلب المُسنَد سلفاً (dispatch_trigger='confirmed' والسائق انطلق) → "already" هادئة.
+ * الطلب المُسنَد سلفاً (dispatch_trigger='confirmed' والسائق انطلق → assigned) → "too_late".
  */
 export async function merchantMarkReady(
   db: Db,
@@ -252,12 +252,20 @@ export async function merchantRejectOrder(
     if (order.merchantId !== op.merchantId) return { outcome: "wrong_merchant" as const };
     if (!REJECTABLE.has(order.status)) return { outcome: "too_late" as const };
 
-    await transition(tx, {
-      orderId,
-      to: "cancelled_by_office",
-      actor: { type: "merchant" },
-      meta: { reason: "merchant_rejected", by: "merchant", telegramUserId },
-    });
+    // مراجعة Phase 3 (corr-F1): الفحص أعلاه بلا قفل؛ قد تتغيّر الحالة (سائق قبل عرضاً →
+    // assigned) بين القراءة وقفل transition. نلتقط InvalidTransition كـ too_late — كما
+    // بأخوته merchantAcceptOrder/merchantMarkReady — بدل خطأ عام مضلِّل.
+    try {
+      await transition(tx, {
+        orderId,
+        to: "cancelled_by_office",
+        actor: { type: "merchant" },
+        meta: { reason: "merchant_rejected", by: "merchant", telegramUserId },
+      });
+    } catch (error) {
+      if (error instanceof InvalidTransitionError) return { outcome: "too_late" as const };
+      throw error;
+    }
     await tx
       .update(orders)
       .set({ cancelReason: "رفض المطعم الطلب", updatedAt: new Date() })

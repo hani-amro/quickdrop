@@ -8,10 +8,32 @@ import { withTenant } from "./with-tenant.js";
 // 'YYYY-MM' يتصفّر ذرّياً بنفس الجملة عند أول إنفاق بشهر جديد. كل المبالغ bigint سنتات (D5).
 
 export type SpendOutcome = "spent" | "exhausted" | "no_budget";
+export type BudgetStatus = "ok" | "exhausted" | "no_budget";
 
 /** 'YYYY-MM' بتوقيت UTC — تقريب شهري يكفي لسقف إنفاق. */
 export function budgetPeriod(now = new Date()): string {
   return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+/**
+ * مراجعة Phase 3 (security-M1) — فحص الميزانية **قبل** نداء LLM (لا خصم): لا صف =
+ * no_budget (الوكيل معطّل)؛ الشهر الحالي وspent >= budget = exhausted؛ وإلا ok. يمنع
+ * الدفع على المفتاح المشترك لمستأجر معطّل/مستنفَد. spendAiBudget يبقى السقف الصارم بعد النداء.
+ */
+export async function peekAiBudget(db: Db, tenantId: string, now = new Date()): Promise<BudgetStatus> {
+  const period = budgetPeriod(now);
+  return withTenant(db, tenantId, async (tx) => {
+    const rows = await tx
+      .select({ budget: aiBudgets.monthlyBudgetSen, spent: aiBudgets.spentSen, period: aiBudgets.period })
+      .from(aiBudgets)
+      .where(eq(aiBudgets.tenantId, tenantId))
+      .limit(1);
+    const b = rows[0];
+    if (!b) return "no_budget";
+    // شهر سابق يتصفّر عند أول إنفاق فعلي؛ للفحص نعتبر spent الحالي 0 إن اختلف الشهر
+    const spent = b.period === period ? b.spent : 0n;
+    return spent >= b.budget ? "exhausted" : "ok";
+  });
 }
 
 /**

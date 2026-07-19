@@ -314,11 +314,17 @@ async function sendTextToCustomer(
     const wa = await getTenantWaClient(deps, tenantId);
     if (!wa) return "skipped_no_channel"; // زبون WA بلا حساب WA مهيأ — لوغ عند المستدعي
     await wa.sendText(customer.waId, text);
-    // سجلّ المحادثة الموحّد (§4.4): الرسالة الصادرة تُسجَّل بعد نجاح الإرسال
-    await withTenant(deps.appDb, tenantId, async (tx) => {
-      const { id: conversationId } = await getOrCreateConversation(tx, tenantId, customer.userId);
-      await recordOutboundMessage(tx, { tenantId, conversationId, channel: "whatsapp", type: "text", content: text, metadata: { system: true } });
-    });
+    // سجلّ المحادثة الموحّد (§4.4): الرسالة الصادرة تُسجَّل بعد نجاح الإرسال. مراجعة Phase 3
+    // (idem-F3): فشل التسجيل **لا يُرمى** — الإرسال نجح سلفاً، ورمي الخطأ يعيد المهمة فيُرسَل
+    // النص ثانيةً (رسالة WA مكرّرة، لا dedup مثل تعديل تيليغرام). التسجيل سجلّ عرض لا مصدر حقيقة.
+    try {
+      await withTenant(deps.appDb, tenantId, async (tx) => {
+        const { id: conversationId } = await getOrCreateConversation(tx, tenantId, customer.userId);
+        await recordOutboundMessage(tx, { tenantId, conversationId, channel: "whatsapp", type: "text", content: text, metadata: { system: true } });
+      });
+    } catch (error) {
+      console.error(JSON.stringify({ action: "wa_outbound_record_failed", tenantId, userId: customer.userId, message: error instanceof Error ? error.message : String(error) }));
+    }
     return "sent_whatsapp";
   }
   return "skipped_no_channel";
@@ -811,7 +817,7 @@ async function handlePaymentPaid(deps: NotificationsConsumerDeps, job: Notificat
 
   const row = await withTenant(deps.appDb, job.tenantId, async (tx) => {
     const rows = await tx
-      .select({ id: orders.id, publicCode: orders.publicCode, status: orders.status, fulfillment: orders.fulfillment, customerId: orders.customerId })
+      .select({ id: orders.id, publicCode: orders.publicCode, status: orders.status, fulfillment: orders.fulfillment, customerId: orders.customerId, driverId: orders.driverId })
       .from(orders)
       .where(and(eq(orders.tenantId, job.tenantId), eq(orders.id, orderId)))
       .limit(1);
@@ -832,6 +838,12 @@ async function handlePaymentPaid(deps: NotificationsConsumerDeps, job: Notificat
     }
   }
 
+  // مراجعة Phase 3 (money-F2): طلب مُسنَد لسائق دُفع إلكترونياً — نبّه السائق كي لا يحصّل
+  // كاشاً ببطاقة قديمة (cod_amount صار 0؛ تحصيله سيسجَّل codReceived=0 والزبون شُحن مرتين).
+  if (row.driverId !== null) {
+    await notifyDriverPaidOnline(deps, tenant, job.tenantId, row.driverId, row.publicCode);
+  }
+
   // إشعار الزبون بقناته (R-11) — فشل الإرسال يعيد المهمة؛ التأكيد أعلاه idempotent
   const customer = await loadCustomerChannel(deps, job.tenantId, row.customerId);
   if (customer) {
@@ -840,6 +852,42 @@ async function handlePaymentPaid(deps: NotificationsConsumerDeps, job: Notificat
       console.log(JSON.stringify({ action: "payment_paid_notify_skipped", tenantId: job.tenantId, orderId, outcome }));
     }
   }
+}
+
+/** money-F2 — رسالة للسائق المُسنَد: دُفع الطلب إلكترونياً، لا تحصّل كاش. */
+async function notifyDriverPaidOnline(
+  deps: NotificationsConsumerDeps,
+  tenant: ActiveTenant,
+  tenantId: string,
+  driverId: string,
+  publicCode: string,
+): Promise<void> {
+  const rows = await withTenant(deps.appDb, tenantId, (tx) =>
+    tx
+      .select({ userId: users.id, telegramUserId: users.telegramUserId, blockedAt: users.blockedAt })
+      .from(drivers)
+      .innerJoin(users, and(eq(users.tenantId, drivers.tenantId), eq(users.id, drivers.userId)))
+      .where(and(eq(drivers.tenantId, tenantId), eq(drivers.id, driverId)))
+      .limit(1),
+  );
+  const driver = rows[0];
+  if (!driver || driver.telegramUserId === null || driver.blockedAt !== null) return; // بلا قناة/محظور — تخطٍّ
+  const bot = await getTenantBot(deps, tenantId, tenant);
+  await sendOrMarkBlocked(deps, {
+    tenantId,
+    bot,
+    chatId: driver.telegramUserId,
+    userId: driver.userId,
+    text: escapeHtml(`💳 طلب #${publicCode} دُفع إلكترونياً — لا تحصّل كاشاً من الزبون.`),
+  });
+}
+
+// —— payment.anomaly (money-F1): دفع متأخر/لمرجع مجهول — تنبيه للطاقم (استرداد يدوي) ——
+async function handlePaymentAnomaly(deps: NotificationsConsumerDeps, job: NotificationJob): Promise<void> {
+  // لا مسار تنبيه طاقم مباشر بعد (لا قناة staff-push) — نرفعه بلوغ error منظّم مرئي
+  // بالمراقبة (§13) + Sentry عبر رمي؟ لا: الرمي يعيد الجدولة بلا فائدة. نسجّل ونعيد.
+  void deps;
+  console.error(JSON.stringify({ action: "payment_anomaly", tenantId: job.tenantId, payload: job.payload }));
 }
 
 // —— payment.link (خطوة 20): إيصال رابط الدفع للزبون عبر قناته ——
@@ -925,6 +973,9 @@ export function createNotificationsProcessor(deps: NotificationsConsumerDeps): (
         return;
       case "payment.link":
         await handlePaymentLink(deps, job);
+        return;
+      case "payment.anomaly":
+        await handlePaymentAnomaly(deps, job);
         return;
       default:
         // topic مجهول (منتج أحدث/أقدم): لوغ تحذيري بلا رمي — retry بلا فائدة (§16.12

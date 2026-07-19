@@ -25,8 +25,15 @@ export interface WaUpdateProcessorDeps {
   appDb: Db;
   /**
    * §3.2 — مُطلِق وكيل الـ AI: يُستدعى **بعد التزام** ترانزاكشن المعالجة (نداء LLM شبكي
-   * لا يجوز داخلها D6) لرسالة نصية واردة بخيط ai_enabled. فشله لا يُفشل المهمة (الرسالة
-   * معالَجة سلفاً — retry يكرّرها؛ الفشل يُسجَّل عند المنفّذ).
+   * لا يجوز داخلها D6) لرسالة نصية واردة بخيط ai_enabled، ومرة واحدة فقط (recorded='inserted').
+   *
+   * مراجعة Phase 3 (idem-F1) — دلالة **at-most-once مقصودة**: الوكيل غير idempotent
+   * (قد يُنشئ طلباً)، فإعادة تشغيله على فشل تخاطر بطلب مزدوج — أسوأ من ردّ ضائع. لذا:
+   *  - الرسالة تُعلَّم processed بالالتزام، والمهمة تُقرّ (ack) بغضّ النظر عن نجاح الوكيل؛
+   *    فشل الوكيل **لا يُعاد تشغيله** (لا retry يُنتج الرد ثانيةً — النص المضلِّل القديم أُزيل).
+   *  - إعادة التسليم (crash قبل الإقرار) ترى processed→duplicate ولا تُعيد الإطلاق.
+   * الأثر: قد يضيع رد واحد على انقطاع LLM/انهيار (نادر، غير مُفسِد) — يُلتقط بلوغ error
+   * مرئي بالمراقبة. رد durable+idempotent (dedup آثار الأدوات لكل رسالة) عملٌ لاحق موثّق.
    */
   onAgentTrigger?: (trigger: AgentTrigger) => Promise<void>;
 }
@@ -262,7 +269,9 @@ export async function processWaUpdate(deps: WaUpdateProcessorDeps, job: WaUpdate
     return "processed" as const;
   });
 
-  // بعد الالتزام: إطلاق الوكيل. فشله لا يُفشل المهمة (الرسالة معالَجة — retry يكرّر الرد)
+  // بعد الالتزام: إطلاق الوكيل (at-most-once مقصود — idem-F1 برأس الملف). فشله لا يُعاد
+  // تشغيله (retry يخاطر بطلب مزدوج لوكيل غير idempotent)؛ يُلتقط بلوغ error مرئي بالمراقبة
+  // — قد يضيع رد واحد على انقطاع LLM (نادر، غير مُفسِد؛ الزبون يعيد الإرسال أو يتدخّل بشري).
   // (cast: تحليل تدفّق TS لا يتتبّع الإسناد داخل الـ closure فيضيّق إلى never)
   const trigger = agentTrigger as AgentTrigger | null;
   if (outcome === "processed" && trigger && deps.onAgentTrigger) {
@@ -271,7 +280,7 @@ export async function processWaUpdate(deps: WaUpdateProcessorDeps, job: WaUpdate
     } catch (error) {
       console.error(
         JSON.stringify({
-          action: "wa_agent_trigger_failed",
+          action: "ai_agent_reply_lost", // idem-F1: رد ضائع (at-most-once) — مرئي للطاقم
           tenant_id: trigger.tenantId,
           conversation_id: trigger.conversationId,
           message: error instanceof Error ? error.message : String(error),

@@ -108,6 +108,8 @@ export const orders = pgTable(
     index("orders_tenant_created_idx").on(t.tenantId, t.createdAt),
     index("orders_tenant_driver_status_idx").on(t.tenantId, t.driverId, t.status), // ترشيح D14
     index("orders_tenant_conversation_idx").on(t.tenantId, t.conversationId), // §4.1 [adversary #16]
+    // §4.1 — بحث webhook الدفع بالمرجع (فهرس جزئي؛ يطابق ترحيل 0020 — يمنع drift توليد drizzle)
+    index("orders_tenant_payment_ref_idx").on(t.tenantId, t.paymentRef).where(sql`${t.paymentRef} IS NOT NULL`),
     foreignKey({ columns: [t.tenantId, t.conversationId], foreignColumns: [conversations.tenantId, conversations.id], name: "orders_conversation_fk" }),
     foreignKey({ columns: [t.tenantId, t.customerId], foreignColumns: [users.tenantId, users.id], name: "orders_customer_fk" }),
     foreignKey({ columns: [t.tenantId, t.merchantId], foreignColumns: [merchants.tenantId, merchants.id], name: "orders_merchant_fk" }),

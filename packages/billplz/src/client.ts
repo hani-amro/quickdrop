@@ -82,3 +82,16 @@ export async function createBill(config: BillplzConfig, input: CreateBillInput):
   }
   return { id: parsed.data.id, url: parsed.data.url };
 }
+
+/**
+ * حذف فاتورة غير مدفوعة (Billplz DELETE /bills/:id). يُستخدم لتنظيف الفاتورة الخاسرة في
+ * سباق send-link (مراجعة Phase 3، money-F3): فاتورة يتيمة غير محذوفة تبقى قابلة للدفع.
+ * أخطاء الحذف تُبتلع (best-effort): الفاتورة اليتيمة إزعاج لا فساد، والاسترداد يدوي إن دُفعت.
+ */
+export async function deleteBill(config: BillplzConfig, billId: string): Promise<void> {
+  const f = config.fetchImpl ?? fetch;
+  await f(`${config.baseUrl}/bills/${billId}`, {
+    method: "DELETE",
+    headers: { Authorization: `Basic ${Buffer.from(`${config.apiKey}:`).toString("base64")}` },
+  }).catch(() => undefined);
+}

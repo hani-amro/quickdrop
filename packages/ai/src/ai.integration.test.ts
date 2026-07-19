@@ -247,4 +247,29 @@ describe.skipIf(!hasDb)("وكيل الـ AI (تكامل، قاعدة حية، ن
     expect(results.filter((x) => x === "spent")).toHaveLength(1);
     expect(results.filter((x) => x === "exhausted")).toHaveLength(1);
   });
+
+  it("security-M1: الفحص قبل النداء — لا صف/مستنفَد = **صفر نداء LLM** (لا دفع لمعطّل/مستنفَد)", async () => {
+    // لا صف ميزانية = معطّل: يجب ألا يُنادى النموذج ولا مرة
+    const t = await app.db.insert(tenants).values({ slug: `aip-${Date.now().toString(36)}`, name: "AI PreCall", nameAr: "قبل" }).returning({ id: tenants.id });
+    const noBudgetTenant = t[0]!.id;
+    let noBudgetUser = "";
+    await withTenant(app.db, noBudgetTenant, async (tx) => {
+      const u = await tx.insert(users).values({ tenantId: noBudgetTenant, role: "customer", waId: "60100000009" }).returning({ id: users.id });
+      noBudgetUser = u[0]!.id;
+    });
+    const llm1 = scriptedLlm([textResponse("hi")]);
+    const r1 = await runAgent(deps(llm1), { tenantId: noBudgetTenant, userId: noBudgetUser, conversationId, inboundText: "hi", systemPrompt: "x" });
+    expect(r1.outcome).toBe("budget_missing");
+    expect(llm1.calls).toHaveLength(0); // ⛔ صفر نداء — المفتاح المشترك لم يُدفع لمستأجر معطّل
+
+    // مستنفَد سلفاً: صفر نداء أيضاً
+    const t2 = await app.db.insert(tenants).values({ slug: `aiex-${Date.now().toString(36)}`, name: "AI Exhausted", nameAr: "مستنفَد" }).returning({ id: tenants.id });
+    const exhTenant = t2[0]!.id;
+    await setAiBudget(app.db, exhTenant, 10n);
+    await spendAiBudget(app.db, exhTenant, 10n); // استنفد
+    const llm2 = scriptedLlm([textResponse("hi")]);
+    const r2 = await runAgent(deps(llm2), { tenantId: exhTenant, userId: noBudgetUser, conversationId, inboundText: "hi", systemPrompt: "x" });
+    expect(r2.outcome).toBe("budget_exhausted");
+    expect(llm2.calls).toHaveLength(0); // ⛔ صفر نداء
+  });
 });

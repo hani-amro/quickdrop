@@ -1,4 +1,4 @@
-import { spendAiBudget, withTenant, writeOutbox, type Db } from "@quickdrop/db";
+import { peekAiBudget, spendAiBudget, withTenant, writeOutbox, type Db } from "@quickdrop/db";
 import { executeTool, TOOL_DEFS, type ToolContext } from "./tools.js";
 import type { LlmClient, LlmContentBlock, LlmMessage, LlmUsage } from "./llm.js";
 
@@ -11,7 +11,9 @@ import type { LlmClient, LlmContentBlock, LlmMessage, LlmUsage } from "./llm.js"
 // - نداء LLM **خارج** أي ترانزاكشن قاعدة دائماً.
 
 export const MAX_ROUNDS = 5;
-const MAX_TOKENS_PER_ROUND = 1024;
+// مراجعة Phase 3 (corr-F2): وُسّع سقف التوكنات — ردود واتساب قصيرة (البرومبت يفرض الإيجاز)،
+// فبلوغ max_tokens نادر؛ وعند بلوغه لا نسلّم نصاً مبتوراً كأنه نهائي بل نسجّله ونعلّم.
+const MAX_TOKENS_PER_ROUND = 2048;
 
 /** أسعار التوكنات بالسنتات لكل مليون توكن — أعداد صحيحة (D5). قابلة للتهيئة لكل نشر. */
 export interface TokenRates {
@@ -63,6 +65,15 @@ export async function runAgent(deps: AgentDeps, input: AgentRunInput): Promise<A
   const messages: LlmMessage[] = [{ role: "user", content: [{ type: "text", text: input.inboundText }] }];
 
   for (let round = 1; round <= MAX_ROUNDS; round += 1) {
+    // security-M1: افحص الميزانية **قبل** النداء — لا صف/مستنفَد = صفر نداء LLM (لا دفع
+    // على المفتاح المشترك لمستأجر معطّل/مستنفَد). spendAiBudget بعد النداء يبقى السقف الصارم.
+    const status = await peekAiBudget(deps.db, input.tenantId, now());
+    if (status === "no_budget") return { outcome: "budget_missing" };
+    if (status === "exhausted") {
+      console.warn(JSON.stringify({ action: "ai_agent", outcome: "budget_exhausted", tenantId: input.tenantId, round, phase: "pre_call" }));
+      return { outcome: "budget_exhausted", rounds: round };
+    }
+
     const res = await deps.llm.complete({
       system: input.systemPrompt,
       messages,
@@ -79,6 +90,13 @@ export async function runAgent(deps: AgentDeps, input: AgentRunInput): Promise<A
       return { outcome: "budget_exhausted", rounds: round };
     }
 
+    // corr-F2: بلوغ سقف التوكنات — لا نسلّم نصاً مبتوراً كأنه نهائي. سجّل، وإن كان يستدعي
+    // أداة عالِجها (المسار العادي)؛ وإلا سلّم ما توفّر مع علامة اقتطاع بالنهاية.
+    const truncated = res.stopReason === "max_tokens";
+    if (truncated) {
+      console.warn(JSON.stringify({ action: "ai_agent", outcome: "reply_truncated", tenantId: input.tenantId, round }));
+    }
+
     const toolUses = res.content.filter((b): b is Extract<LlmContentBlock, { type: "tool_use" }> => b.type === "tool_use");
     if (res.stopReason === "tool_use" && toolUses.length > 0) {
       messages.push({ role: "assistant", content: res.content });
@@ -92,12 +110,14 @@ export async function runAgent(deps: AgentDeps, input: AgentRunInput): Promise<A
     }
 
     // نص نهائي — رسالة الزبون: outbox بترانزاكشن مستقلة (المستهلك يرسل بقناته R-11)
-    const text = res.content
+    const rawText = res.content
       .filter((b): b is Extract<LlmContentBlock, { type: "text" }> => b.type === "text")
       .map((b) => b.text)
       .join("\n")
       .trim();
-    if (text.length === 0) return { outcome: "no_reply", rounds: round };
+    if (rawText.length === 0) return { outcome: "no_reply", rounds: round };
+    // corr-F2: نص مبتور — أضف علامة اقتطاع كي لا يظهر للزبون كأنه جملة كاملة انتهت فجأة
+    const text = truncated ? `${rawText} …` : rawText;
     await withTenant(deps.db, input.tenantId, (tx) =>
       writeOutbox(tx, input.tenantId, "agent.reply", { userId: input.userId, text }),
     );

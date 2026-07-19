@@ -1,10 +1,12 @@
 import {
   createDb,
+  createDriver,
   createMerchant,
   createOrder,
   orders,
   pricingRules,
   tenants,
+  transition,
   upsertCatalogItem,
   users,
   waAccounts,
@@ -145,6 +147,32 @@ describe.skipIf(!hasDb)("مستهلك الدفع (تكامل، قاعدة حية
     const process = createNotificationsProcessor(deps());
     await process({ outboxId: "ob-p2", tenantId, topic: "payment.paid", payload: { orderId, paymentRef: "bill_T2" } });
     expect(await orderStatus(orderId)).toBe("pending"); // التأكيد للبشر (موظف/تاجر) حصراً
+  });
+
+  it("money-F2: طلب توصيل مُسنَد دُفع إلكترونياً → مسار تنبيه السائق (سائق تلفون: تخطٍّ نظيف) والزبون يُشعَر", async () => {
+    const created = await createOrder(app.db, tenantId, {
+      service: "food",
+      customerId,
+      merchantId,
+      items: [{ catalogItemId: itemId, qty: 1 }],
+      pickup: POINT,
+      dropoff: DROP,
+      createdBy: { type: "staff" },
+    });
+    const orderId = created.order.id;
+    // سائق تلفون (بلا تيليغرام) — يثبت أن مسار notifyDriverPaidOnline يتخطّى بلا رمي
+    const drv = await createDriver(app.db, tenantId, { vehicle: "motorbike", phone: "+60199990000", name: "Phone Rider" });
+    if (drv.outcome !== "created") throw new Error("driver seed failed");
+    await withTenant(app.db, tenantId, async (tx) => {
+      await transition(tx, { orderId, to: "confirmed", actor: { type: "staff" } });
+      await transition(tx, { orderId, to: "assigned", actor: { type: "staff" }, driverId: drv.driver.id });
+    });
+    const before = waSends.length;
+    const process = createNotificationsProcessor(deps());
+    // لا رمي رغم استدعاء مسار السائق؛ والزبون (WA) يُشعَر
+    await process({ outboxId: "ob-f2", tenantId, topic: "payment.paid", payload: { orderId, paymentRef: "bill_F2" } });
+    expect(waSends.length).toBe(before + 1); // إشعار الزبون
+    expect(await orderStatus(orderId)).toBe("assigned"); // التوصيل لا يتأثر بالدفع (بوابة البشر)
   });
 
   it("payment.link → رسالة الرابط للزبون عبر واتساب", async () => {
