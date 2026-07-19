@@ -23,7 +23,10 @@ import { DB, ENV } from "../tokens.js";
 const listQuerySchema = z.object({
   tenantSlug: slugSchema,
   status: z.preprocess((v) => (v === "" ? undefined : v), z.enum(CONVERSATION_STATUSES).optional()),
+  // مؤشّر keyset مركّب: (before, beforeId) من آخر عنصر بالصفحة السابقة — كاسر التعادل على
+  // المعرّف يمنع تخطّي محادثات بنفس last_message_at عند حدّ الصفحة.
   before: z.preprocess((v) => (v === "" || v === undefined ? undefined : v), z.string().datetime().optional()),
+  beforeId: z.preprocess((v) => (v === "" || v === undefined ? undefined : v), z.string().uuid().optional()),
 });
 
 const detailQuerySchema = z.object({ tenantSlug: slugSchema });
@@ -61,6 +64,7 @@ export class CrmService {
     const items = await listConversations(this.handle.db, tenant.id, {
       ...(input.status ? { status: input.status } : {}),
       ...(input.before ? { before: new Date(input.before) } : {}),
+      ...(input.beforeId ? { beforeId: input.beforeId } : {}),
     });
     return { conversations: items.map(serializeConversation) };
   }

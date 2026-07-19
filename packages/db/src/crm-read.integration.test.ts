@@ -77,4 +77,43 @@ describe.skipIf(!hasDb)("crm-read (تكامل، قاعدة حية)", () => {
   it("getConversation لمعرّف غير موجود → null", async () => {
     expect(await getConversation(app.db, tenantId, "00000000-0000-4000-8000-000000000099")).toBeNull();
   });
+
+  it("keyset مركّب: محادثات بنفس last_message_at تُرقَّم كلها بلا تخطٍّ (كاسر تعادل المعرّف)", async () => {
+    // 5 محادثات بنفس اللحظة تماماً (تعادل عند حدود الصفحة) — أحدث من محادثة Layla
+    const TIE = new Date("2030-01-01T00:00:00.000Z");
+    const tieIds: string[] = [];
+    await withTenant(app.db, tenantId, async (tx) => {
+      for (let i = 0; i < 5; i += 1) {
+        const u = await tx.insert(users).values({ tenantId, role: "customer", firstName: `tie${i}`, phoneE164: `+601400000${i}0` }).returning({ id: users.id });
+        const c = await getOrCreateConversation(tx, tenantId, u[0]!.id);
+        tieIds.push(c.id);
+      }
+      // اضبط نفس last_message_at للخمسة (لتعادل مضمون عند الترقيم)
+      await tx.execute(sql`UPDATE conversations SET last_message_at = ${TIE.toISOString()} WHERE tenant_id = ${tenantId}::uuid AND id = ANY(${sql`ARRAY[${sql.join(tieIds.map((id) => sql`${id}::uuid`), sql`, `)}]`})`);
+    });
+
+    // رقّم كامل القائمة بصفحات من 2 عبر المؤشّر المركّب، واجمع المعرّفات
+    const seen: string[] = [];
+    let before: Date | undefined;
+    let beforeId: string | undefined;
+    for (let guard = 0; guard < 20; guard += 1) {
+      const page = await listConversations(app.db, tenantId, {
+        limit: 2,
+        ...(before ? { before } : {}),
+        ...(beforeId ? { beforeId } : {}),
+      });
+      if (page.length === 0) break;
+      for (const item of page) seen.push(item.id);
+      const last = page[page.length - 1]!;
+      before = last.lastMessageAt ?? undefined;
+      beforeId = last.id;
+      if (page.length < 2) break;
+    }
+
+    // لا تكرار، وكل الخمسة المتعادلة حاضرة + محادثة Layla (6 إجمالاً)
+    expect(new Set(seen).size).toBe(seen.length); // بلا ازدواج
+    for (const id of tieIds) expect(seen).toContain(id); // ولا واحدة مُتخطّاة
+    expect(seen).toContain(convId);
+    expect(seen.length).toBe(6);
+  });
 });

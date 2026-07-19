@@ -1,11 +1,10 @@
-import { createDb, dueJourneyRuns, fireScheduledOrder, offers, orders, outbox, scheduledDelayMs, webhookUpdates } from "@quickdrop/db";
+import { createDb, fireScheduledOrder, offers, orders, outbox, scheduledDelayMs, webhookUpdates } from "@quickdrop/db";
 import {
   BRAIN_QUEUE,
   BROADCAST_QUEUE,
   DISPATCH_QUEUE,
   installConsoleRedactor,
   JOURNEYS_QUEUE,
-  journeyStepJobId,
   NOTIFICATIONS_QUEUE,
   parseEnv,
   SCHEDULED_QUEUE,
@@ -38,6 +37,7 @@ import { pendingWaUpdates, processWaUpdate, WA_RESCAN_BATCH } from "./wa-update-
 import { createBrainProcessor } from "./brain-consumer.js";
 import { startBrainSweep } from "./brain-sweep.js";
 import { createJourneyEnrollProcessor, createJourneyStepProcessor } from "./journeys-consumer.js";
+import { startJourneysRescan } from "./journeys-sweep.js";
 
 installConsoleRedactor(); // §11 — كل console.* يمرّ بالمنقّح (أسرار/هواتف) قبل الطباعة
 
@@ -184,29 +184,11 @@ async function rescanWaUpdates(): Promise<void> {
   }
 }
 
-// §3.4/§12 — القاعدة مصدر الحقيقة للرحلات: عند الإقلاع أعد جدولة كل خطوة مستحقة
-// (next_run_at <= now لتسجيلات active). jobId حتمي (run, currentStep) → dedup مع أي مهمة
-// مجدولة حية؛ remove-then-add يعيد إحياء مهمة فُقدت (Redis flush) دون ازدواج التنفيذ.
-async function rescanJourneyRuns(): Promise<void> {
-  const due = await dueJourneyRuns(scanDb.db, new Date());
-  for (const run of due) {
-    const jobId = journeyStepJobId(run.id, run.currentStep);
-    await journeysQueue.remove(jobId).catch(() => undefined);
-    await journeysQueue.add(
-      "journey-step",
-      { tenantId: run.tenantId, runId: run.id },
-      { jobId, attempts: 5, backoff: { type: "exponential", delay: 1000 }, removeOnComplete: { count: 1000 } },
-    );
-  }
-  if (due.length > 0) console.log(JSON.stringify({ action: "rescan_journeys_enqueued", count: due.length }));
-}
-
 async function main(): Promise<void> {
   await rescanPending();
   await rescanPendingOffers();
   await rescanScheduledOrders();
   await rescanWaUpdates();
-  await rescanJourneyRuns();
 
   // D9/§12 — بعد إعادة بناء الفائت: شغّل عامل التقاط الـ outbox (كل ثانية → طابور الإشعارات).
   // R-16: صف يفشل التقاطه يُحاسَب (backoff أسّي ثم failed بعد السقف) — التسميم يُبلَّغ Sentry.
@@ -254,6 +236,12 @@ async function main(): Promise<void> {
       JSON.stringify({ action: "job_failed", queue: JOURNEYS_QUEUE, jobId: job?.id, attempts: job?.attemptsMade, message: error.message }),
     );
   });
+
+  // §3.4/§12 — شبكة أمان الرحلات (دورية + جولة إقلاع): تلتقط أي run نشط مستحقّ بلا مهمة
+  // (فشل جدولة post-commit أو موت العامل بينها) وتعيد جدولته — القاعدة مصدر الحقيقة، لا
+  // اعتماد على أثر جانبي وحيد. idempotent (jobId حتمي + حمولة step + قفل الصف بالمنفّذ).
+  const journeysRescan = startJourneysRescan({ scanDb: scanDb.db, journeysQueue });
+  await journeysRescan.runOnce(); // استرداد فوري عند الإقلاع (بعد توقّف/انهيار)
 
   // §3/§16.25 — تنظيف الجداول الساخنة كل ساعة (webhook_updates >48س، driver_locations >90ي،
   // outbox: sent >7ي وfailed >30ي — R-16)
@@ -407,6 +395,7 @@ async function main(): Promise<void> {
     await outboxPoller.stop(); // أولاً: أوقف إنتاج مهام جديدة وانتظر الدورة الجارية
     await housekeeping.stop();
     await brainSweep.stop();
+    await journeysRescan.stop(); // أوقف الكنس الدوري قبل إغلاق طابور الرحلات
     await metricsServer.stop();
     await worker.close();
     await waWorker.close();

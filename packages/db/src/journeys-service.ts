@@ -109,15 +109,21 @@ function renderTemplate(template: string, vars: { name: string; businessName: st
 export type StepResult =
   | { outcome: "advanced"; nextStep: number; nextRunAt: Date }
   | { outcome: "completed" }
-  | { outcome: "gone" };
+  | { outcome: "gone" }
+  | { outcome: "stale" };
 
 /**
  * §3.4 — تنفيذ الخطوة الحالية لتسجيل ثم تقديمه: send_message (رسالة صادرة + outbox
  * 'journey.message')، ai_handoff (ai_enabled=true)، add_tag (وسم على الملف)، wait (لا شيء).
- * كله idempotent-ish: الخطوة الحالية تُنفّذ مرة (currentStep يتقدّم بنفس الترانزاكشن).
  * يقفل صف الـ run FOR UPDATE؛ run غير active/موجود → gone.
+ *
+ * §12 idempotency — حارس انهيار التأخير: `expectedStep` (رقم الخطوة الذي جُدولت له المهمة).
+ * لو مرّر واختلف عن current_step، فالمهمة **قديمة** (أُعيد تسليمها بعد أن تقدّم الصف عبر
+ * تسليم سابق) → no-op بـ "stale" بلا تنفيذ الخطوة التالية مبكّراً (المهمة الصحيحة لتلك
+ * الخطوة مجدولة بتأخيرها الصحيح). بلا تمرير (نداءات مباشرة/اختبارات) لا حارس — ينفّذ
+ * الخطوة الحالية كما كان.
  */
-export async function executeJourneyStep(tx: Tx, tenantId: string, runId: string, businessName: string, now = new Date()): Promise<StepResult> {
+export async function executeJourneyStep(tx: Tx, tenantId: string, runId: string, businessName: string, now = new Date(), expectedStep?: number): Promise<StepResult> {
   const runRows = await tx
     .select({ id: journeyRuns.id, journeyId: journeyRuns.journeyId, userId: journeyRuns.userId, currentStep: journeyRuns.currentStep, status: journeyRuns.status })
     .from(journeyRuns)
@@ -125,6 +131,8 @@ export async function executeJourneyStep(tx: Tx, tenantId: string, runId: string
     .for("update");
   const run = runRows[0];
   if (!run || run.status !== "active") return { outcome: "gone" };
+  // §12 — مهمة قديمة (تقدّم الصف عبر تسليم سابق): لا تنفّذ الخطوة التالية مبكّراً
+  if (expectedStep !== undefined && run.currentStep !== expectedStep) return { outcome: "stale" };
 
   const jRows = await tx.select({ steps: journeys.steps }).from(journeys).where(and(eq(journeys.tenantId, tenantId), eq(journeys.id, run.journeyId))).limit(1);
   const parsedSteps = journeyStepsSchema.safeParse(jRows[0]?.steps);

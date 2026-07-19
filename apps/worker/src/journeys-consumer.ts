@@ -38,12 +38,13 @@ export function journeyTriggerFor(topic: string, payload: unknown): { trigger: s
 
 const STEP_JOB_OPTS = { attempts: 5, backoff: { type: "exponential" as const, delay: 1000 }, removeOnComplete: { count: 1000 } };
 
-/** يجدول مهمة خطوة مؤجّلة (delay = next_run_at − now، ≥ 0)، jobId حتمي = (run, step). */
+/** يجدول مهمة خطوة مؤجّلة (delay = next_run_at − now، ≥ 0)، jobId حتمي = (run, step).
+ *  step يُحمَل في الحمولة أيضاً (لا الـ jobId فقط) كي يحرس المنفّذ ضد انهيار التأخير. */
 async function scheduleStep(queue: Queue<JourneyStepJob>, tenantId: string, runId: string, step: number, nextRunAt: Date, now: Date): Promise<void> {
   const delay = Math.max(0, nextRunAt.getTime() - now.getTime());
   const jobId = journeyStepJobId(runId, step);
   await queue.remove(jobId).catch(() => undefined); // rescan/إعادة: أزل مهمة عالقة بنفس المعرّف ثم أضف نظيفة
-  await queue.add("journey-step", { tenantId, runId }, { ...STEP_JOB_OPTS, jobId, delay });
+  await queue.add("journey-step", { tenantId, runId, step }, { ...STEP_JOB_OPTS, jobId, delay });
 }
 
 export interface JourneyEnrollDeps {
@@ -85,12 +86,14 @@ export interface JourneyStepDeps {
   now?: () => Date;
 }
 
-/** (ب) مستهلك تنفيذ الخطوة — ينفّذ ثم يجدول التالية أو ينهي. idempotent. */
+/** (ب) مستهلك تنفيذ الخطوة — ينفّذ ثم يجدول التالية أو ينهي. idempotent.
+ *  يمرّر job.step كـ expectedStep: مهمة معاد تسليمها بعد تقدّم الصف → "stale" (لا تنفيذ
+ *  مبكّر للخطوة التالية، ولا إعادة جدولة — المهمة الصحيحة للخطوة الحالية قائمة بتأخيرها). */
 export function createJourneyStepProcessor(deps: JourneyStepDeps): (job: JourneyStepJob) => Promise<string> {
   const businessName = deps.businessName ?? "";
   return async (job) => {
     const now = (deps.now ?? (() => new Date()))();
-    const result = await withTenant(deps.appDb, job.tenantId, (tx) => executeJourneyStep(tx, job.tenantId, job.runId, businessName, now));
+    const result = await withTenant(deps.appDb, job.tenantId, (tx) => executeJourneyStep(tx, job.tenantId, job.runId, businessName, now, job.step));
     if (result.outcome === "advanced") {
       await scheduleStep(deps.journeysQueue, job.tenantId, job.runId, result.nextStep, result.nextRunAt, now);
     }

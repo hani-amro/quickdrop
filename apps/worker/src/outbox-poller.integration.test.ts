@@ -27,9 +27,13 @@ describe.skipIf(!hasDb)("R-16 — الصف السام بالـ outbox (تكام�
   const poisonedEvents: { outboxId: string; tenantId: string }[] = [];
   const delivered: NotificationJob[] = [];
 
-  // طابور مزيف: موضوع السم يرمي (يحاكي فشل نقلٍ دائم)، الباقي ينجح
+  // طابور مزيف: موضوع السم يرمي (يحاكي فشل نقلٍ دائم)، الباقي ينجح. pollOnce مسح **عام**
+  // عبر المستأجرين، فقد يلتقط صفوف outbox معلّقة من ملفات اختبار أخرى تشارك القاعدة —
+  // نحصر التأثيرات (العدّ + محاكاة الفشل) بمستأجر هذا الاختبار كي تبقى التوكيدات محكمة؛
+  // صفّ مستأجر آخر (بقايا) نبتلعه بنجاح (يُعلَّم sent) فلا يُعاد التقاطه ولا يلوّث العدّ.
   const queue = {
     add: async (_name: string, job: NotificationJob): Promise<void> => {
+      if (job.tenantId !== tenantId) return; // بقايا مستأجر آخر — تجاهل بلا عدّ
       if (job.topic === POISON_TOPIC) throw new Error("simulated permanent transport failure");
       delivered.push(job);
     },

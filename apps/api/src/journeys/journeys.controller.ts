@@ -1,9 +1,13 @@
 import { Body, Controller, Delete, Get, Headers, HttpCode, Param, Patch, Post, Query } from "@nestjs/common";
+import { Roles } from "../auth/roles.decorator.js";
 import { JourneysService } from "./journeys.service.js";
 
 // دمج WaFlow (MERGE_PLAN §3.6) — REST إدارة الرحلات للداشبورد. التحقق/التخويل بالخدمة
 // (نمط crm/support). محروس بـ SessionGuard العام (/api/*).
+// §10.2/§11 — الرحلة قناة رسائل جماهيرية (خطوة send_message تُخرِج للزبائن آلياً)، فتُقيَّد
+// كالبث بدور owner/dispatcher (RolesGuard) — لا يُنشئها/يفعّلها دور support/accountant.
 @Controller("api/journeys")
+@Roles("owner", "dispatcher")
 export class JourneysController {
   constructor(private readonly journeys: JourneysService) {}
 

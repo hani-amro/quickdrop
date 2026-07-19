@@ -30,7 +30,9 @@ export function matchesAudience(profile: AudienceProfile, filter: AudienceFilter
   if (filter.lifecycleStage && filter.lifecycleStage.length > 0) {
     if (profile.lifecycleStage === null || !filter.lifecycleStage.includes(profile.lifecycleStage)) return false;
   }
-  if (filter.minRfm !== undefined && (profile.rfmScore ?? 0) < filter.minRfm) return false;
+  // أي شرط minRfm يُقصي زبوناً بلا ملف (rfmScore=null) — يطابق دلالة selectAudience
+  // (INNER JOIN على customer_profiles يُقصي بلا-الملف). لا `?? 0` كي لا ينحرفا عند minRfm=0.
+  if (filter.minRfm !== undefined && (profile.rfmScore === null || profile.rfmScore < filter.minRfm)) return false;
   if (filter.tags && filter.tags.length > 0) {
     if (!filter.tags.every((t) => profile.tags.includes(t))) return false;
   }

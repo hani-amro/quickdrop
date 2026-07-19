@@ -102,6 +102,36 @@ describe.skipIf(!hasDb)("journeys-service (تكامل، قاعدة حية)", () 
     expect(check.completed).toBe(1);
   });
 
+  it("حارس التوقيت (§12): مهمة قديمة (expectedStep != current_step) → stale بلا تنفيذ مبكّر", async () => {
+    // سجّل من جديد ثم نفّذ الخطوة 0 (يتقدّم لـ 1). صفّر الوسوم أولاً (اختبار سابق أضاف winback_sent)
+    await withTenant(app.db, tenantId, (tx) => tx.delete(journeyRuns).where(eq(journeyRuns.tenantId, tenantId)));
+    await withTenant(app.db, tenantId, (tx) => tx.update(customerProfiles).set({ tags: [] }).where(and(eq(customerProfiles.tenantId, tenantId), eq(customerProfiles.userId, userId))));
+    await withTenant(app.db, tenantId, (tx) => enrollInJourneys(tx, tenantId, userId, "crm.lifecycle_changed"));
+    const runId = await withTenant(app.db, tenantId, async (tx) => {
+      const r = await tx.select({ id: journeyRuns.id }).from(journeyRuns).where(eq(journeyRuns.tenantId, tenantId));
+      return r[0]!.id;
+    });
+    await withTenant(app.db, tenantId, (tx) => executeJourneyStep(tx, tenantId, runId, "مطعمنا", new Date(), 0)); // ينفّذ الخطوة 0 → current=1
+    const before = await withTenant(app.db, tenantId, async (tx) => {
+      const t = await tx.select({ tags: customerProfiles.tags }).from(customerProfiles).where(and(eq(customerProfiles.tenantId, tenantId), eq(customerProfiles.userId, userId)));
+      const step = await tx.select({ s: journeyRuns.currentStep }).from(journeyRuns).where(eq(journeyRuns.id, runId));
+      return { tags: t[0]!.tags, step: step[0]!.s };
+    });
+    expect(before.step).toBe(1);
+    expect(before.tags).not.toContain("winback_sent"); // الخطوة 1 (add_tag) لم تُنفّذ بعد
+
+    // إعادة تسليم المهمة القديمة للخطوة 0 (current الآن 1) → stale، لا يُنفّذ الخطوة 1 مبكّراً
+    const stale = await withTenant(app.db, tenantId, (tx) => executeJourneyStep(tx, tenantId, runId, "مطعمنا", new Date(), 0));
+    expect(stale.outcome).toBe("stale");
+    const after = await withTenant(app.db, tenantId, async (tx) => {
+      const t = await tx.select({ tags: customerProfiles.tags }).from(customerProfiles).where(and(eq(customerProfiles.tenantId, tenantId), eq(customerProfiles.userId, userId)));
+      const step = await tx.select({ s: journeyRuns.currentStep }).from(journeyRuns).where(eq(journeyRuns.id, runId));
+      return { tags: t[0]!.tags, step: step[0]!.s };
+    });
+    expect(after.step).toBe(1); // لم يتقدّم
+    expect(after.tags).not.toContain("winback_sent"); // الخطوة 1 لم تُنفّذ (لا انهيار تأخير)
+  });
+
   it("stop-on-reply: cancelActiveJourneyRuns يلغي التسجيلات النشطة", async () => {
     // سجّل من جديد (الرحلة أُكملت؛ نلغي القيد لإعادة التسجيل ثم نختبر الإلغاء)
     await withTenant(app.db, tenantId, async (tx) => {

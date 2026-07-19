@@ -18,6 +18,10 @@ describe("matchesAudience (نقية)", () => {
     expect(matchesAudience(prof({ rfmScore: 60 }), { minRfm: 75 })).toBe(false);
     expect(matchesAudience(prof({ rfmScore: null }), { minRfm: 1 })).toBe(false);
   });
+  it("minRfm: زبون بلا ملف (rfm=null) يُقصى حتى عند minRfm=0 — مطابقة INNER JOIN بـ selectAudience", () => {
+    expect(matchesAudience(prof({ rfmScore: null }), { minRfm: 0 })).toBe(false); // لا يطابق (بلا ملف)
+    expect(matchesAudience(prof({ rfmScore: 0 }), { minRfm: 0 })).toBe(true); // ملف بـ rfm=0 يطابق ≥0
+  });
   it("tags: يطابق إن احتوى الملف كل الوسوم المطلوبة", () => {
     expect(matchesAudience(prof({ tags: ["vip", "ramadan"] }), { tags: ["vip"] })).toBe(true);
     expect(matchesAudience(prof({ tags: ["vip"] }), { tags: ["vip", "ramadan"] })).toBe(false);

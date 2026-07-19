@@ -23,17 +23,26 @@ export interface ConversationListItem {
   aiEnabled: boolean;
 }
 
-/** قائمة المحادثات لمستأجر — join واحد مع users، أحدث نشاطاً أولاً، ترقيم keyset. */
+/** قائمة المحادثات لمستأجر — join واحد مع users، أحدث نشاطاً أولاً، ترقيم keyset.
+ *  keyset مركّب (last_message_at, id) DESC: بلا كاسر التعادل على المعرّف، محادثات
+ *  بنفس last_message_at عند حدّ الصفحة قد تُتخطّى. المؤشّر التالي = (before, beforeId)
+ *  من آخر عنصر. beforeId بلا before يُتجاهل (يلزمان معاً). */
 export async function listConversations(
   db: Db,
   tenantId: string,
-  opts: { status?: ConversationStatus; before?: Date; limit?: number } = {},
+  opts: { status?: ConversationStatus; before?: Date; beforeId?: string; limit?: number } = {},
 ): Promise<ConversationListItem[]> {
   const limit = Math.min(opts.limit ?? 50, 200);
   return withTenant(db, tenantId, (tx) => {
     const filters = [eq(conversations.tenantId, tenantId)];
     if (opts.status) filters.push(eq(conversations.status, opts.status));
-    if (opts.before) filters.push(lt(conversations.lastMessageAt, opts.before));
+    if (opts.before) {
+      filters.push(
+        opts.beforeId
+          ? sql`(${conversations.lastMessageAt}, ${conversations.id}) < (${opts.before.toISOString()}, ${opts.beforeId})`
+          : lt(conversations.lastMessageAt, opts.before),
+      );
+    }
     return tx
       .select({
         id: conversations.id,
@@ -50,7 +59,7 @@ export async function listConversations(
       .from(conversations)
       .innerJoin(users, and(eq(users.tenantId, conversations.tenantId), eq(users.id, conversations.userId)))
       .where(and(...filters))
-      .orderBy(desc(conversations.lastMessageAt))
+      .orderBy(desc(conversations.lastMessageAt), desc(conversations.id))
       .limit(limit);
   });
 }

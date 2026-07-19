@@ -128,6 +128,9 @@ export const JOURNEYS_QUEUE = "journeys";
 export interface JourneyStepJob {
   tenantId: string;
   runId: string;
+  /** رقم الخطوة المقصود بهذه المهمة — يحرس ضد انهيار التأخير عند إعادة التسليم:
+   *  المنفّذ لا ينفّذ إلا إن كان current_step في القاعدة == step (وإلا مهمة قديمة، no-op). */
+  step: number;
 }
 
 /** jobId حتمي لخطوة رحلة (بلا ':' — قيد BullMQ) — (run, step) كي تتقدّم الجدولة idempotent. */
