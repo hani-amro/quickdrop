@@ -15,7 +15,7 @@ const LINKS = [
   { href: "/merchants", key: "nav.merchants" }, // §3 — إدارة التجار وكتالوجهم
   { href: "/settlements", key: "nav.settlements" },
   { href: "/analytics", key: "nav.analytics" },
-  { href: "/broadcasts", key: "nav.campaigns" },
+  { href: "/campaigns", key: "nav.campaigns" }, // §24 — الحملات (بث موجّه لشريحة، P2.6)
   { href: "/inbox", key: "nav.inbox" }, // §24/§4.4 — الوارد الموحّد (دعم + محادثات، CRM)
   { href: "/journeys", key: "nav.journeys" }, // §24 — محرك الأتمتة (P2.5)
   { href: "/settings/security", key: "nav.settings" }, // §10.2 — الأمان/المصادقة الثنائية
