@@ -69,6 +69,10 @@ jobs:
       - name: Money guard (static)
         run: pnpm check:money-code
 
+      # D8/§4.2 (قائمة المالك) — مفصل حدثي حصراً: Brain A لا يستدعي الإسناد مباشرة أبداً
+      - name: Brain seam guard (event-only integration)
+        run: pnpm check:brain-seam
+
       - name: Bootstrap database roles
         run: PGPASSWORD=postgres psql -h localhost -U postgres -d quickdrop -v ON_ERROR_STOP=1 -f infra/compose/initdb/01-roles.sql
 

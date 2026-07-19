@@ -26,7 +26,8 @@
     "tenant:provision": "pnpm --filter @quickdrop/api provision-tenant --",
     "staff:create": "pnpm --filter @quickdrop/api create-staff --",
     "backup": "bash infra/scripts/backup.sh",
-    "backup:restore-test": "bash infra/scripts/restore-test.sh"
+    "backup:restore-test": "bash infra/scripts/restore-test.sh",
+    "check:brain-seam": "node scripts/check-brain-seam.mjs"
   },
   "devDependencies": {
     "turbo": "^2.5.0",
