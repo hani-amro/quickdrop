@@ -34,11 +34,12 @@ export interface ToolContext {
 
 const getMenuSchema = z.object({}).strict();
 
+// مراجعة Phase 3 (قرار المالك F4): pickup **غير متاح v1** — التوصيل حصراً حتى يُبنى مسار
+// إتمام الاستلام الذاتي (بلا سائق، ولاء/كوبون). لا حقل fulfillment بالأداة (توصيل دوماً).
 const createOrderSchema = z
   .object({
     merchant_id: z.string().uuid(),
     items: z.array(z.object({ catalog_item_id: z.string().uuid(), qty: z.number().int().min(1).max(20) }).strict()).min(1).max(20),
-    fulfillment: z.enum(["delivery", "pickup"]),
     note: z.string().max(500).optional(),
   })
   .strict();
@@ -62,7 +63,7 @@ export const TOOL_DEFS: LlmToolDef[] = [
   {
     name: "create_order",
     description:
-      "إنشاء طلب للزبون الحالي بعد تأكيده. مرّر معرّفات الأصناف والكميات فقط — الأسعار يحسبها النظام من الكتالوج. fulfillment: delivery (يتطلب موقعاً مشاركاً من الزبون) أو pickup (استلام ذاتي من المطعم).",
+      "إنشاء طلب توصيل للزبون الحالي بعد تأكيده. مرّر معرّفات الأصناف والكميات فقط — الأسعار يحسبها النظام من الكتالوج. التوصيل يتطلب موقعاً شاركه الزبون من واتساب (مشبك ← الموقع).",
     input_schema: {
       type: "object",
       properties: {
@@ -80,10 +81,9 @@ export const TOOL_DEFS: LlmToolDef[] = [
           },
           minItems: 1,
         },
-        fulfillment: { type: "string", enum: ["delivery", "pickup"] },
         note: { type: "string" },
       },
-      required: ["merchant_id", "items", "fulfillment"],
+      required: ["merchant_id", "items"],
       additionalProperties: false,
     },
   },
@@ -151,23 +151,20 @@ export async function executeTool(ctx: ToolContext, name: string, input: unknown
       if (!v.success) return `خطأ مدخل: ${v.error.issues[0]?.message ?? "invalid"} — الأسعار لا تُمرَّر أبداً؛ معرّفات وكميات فقط.`;
       const args = v.data;
 
-      // dropoff للتوصيل = آخر موقع شاركه الزبون (حقيقة last_location) — لا نقاط من النموذج
-      let dropoff: { lat: number; lng: number } | undefined;
-      if (args.fulfillment === "delivery") {
-        const factRows = await withTenant(ctx.db, ctx.tenantId, (tx) =>
-          tx
-            .select({ value: customerFacts.value })
-            .from(customerFacts)
-            .where(and(eq(customerFacts.tenantId, ctx.tenantId), eq(customerFacts.userId, ctx.userId), eq(customerFacts.key, LAST_LOCATION_FACT_KEY)))
-            .limit(1),
-        );
-        const fact = factRows[0];
-        const loc = fact ? lastLocationSchema.safeParse(safeJson(fact.value)) : null;
-        if (!loc || !loc.success) {
-          return "NEED_LOCATION: لا موقع محفوظاً للزبون — اطلب منه مشاركة موقعه من واتساب (مشبك ← الموقع) ثم أعد المحاولة.";
-        }
-        dropoff = loc.data;
+      // F4 (v1): توصيل حصراً — dropoff = آخر موقع شاركه الزبون (حقيقة last_location)، لا من النموذج
+      const factRows = await withTenant(ctx.db, ctx.tenantId, (tx) =>
+        tx
+          .select({ value: customerFacts.value })
+          .from(customerFacts)
+          .where(and(eq(customerFacts.tenantId, ctx.tenantId), eq(customerFacts.userId, ctx.userId), eq(customerFacts.key, LAST_LOCATION_FACT_KEY)))
+          .limit(1),
+      );
+      const fact = factRows[0];
+      const loc = fact ? lastLocationSchema.safeParse(safeJson(fact.value)) : null;
+      if (!loc || !loc.success) {
+        return "NEED_LOCATION: لا موقع محفوظاً للزبون — اطلب منه مشاركة موقعه من واتساب (مشبك ← الموقع) ثم أعد المحاولة.";
       }
+      const dropoff = loc.data;
 
       try {
         const created = await createOrder(ctx.db, ctx.tenantId, {
@@ -175,16 +172,16 @@ export async function executeTool(ctx: ToolContext, name: string, input: unknown
           customerId: ctx.userId, // النطاق من السياق حصراً — لا من النموذج
           merchantId: args.merchant_id,
           items: args.items.map((i) => ({ catalogItemId: i.catalog_item_id, qty: i.qty })),
-          fulfillment: args.fulfillment,
+          fulfillment: "delivery", // F4: pickup غير متاح v1
           pickup: makePoint(0, 0), // يُستبدل بموقع المطعم داخل createOrder (food)
-          ...(dropoff !== undefined ? { dropoff: makePoint(dropoff.lat, dropoff.lng) } : {}),
+          dropoff: makePoint(dropoff.lat, dropoff.lng),
           ...(args.note !== undefined ? { notes: args.note } : {}),
           conversationId: ctx.conversationId,
           source: "ai",
           createdBy: { type: "customer", id: ctx.userId },
         });
         const o = created.order;
-        return `تم إنشاء الطلب #${o.publicCode} — الإجمالي على الزبون ${o.codAmount.toString()} سنت (بضاعة ${o.goodsAmount.toString()} + توصيل ${o.priceTotal.toString()}). ${args.fulfillment === "pickup" ? "استلام ذاتي من المطعم." : "سيصله بعد تأكيد المطعم."} ينتظر الدفع/التأكيد.`;
+        return `تم إنشاء الطلب #${o.publicCode} — الإجمالي على الزبون ${o.codAmount.toString()} سنت (بضاعة ${o.goodsAmount.toString()} + توصيل ${o.priceTotal.toString()}). سيصله بعد تأكيد المطعم. ينتظر الدفع/التأكيد.`;
       } catch (error) {
         if (error instanceof InvalidFoodOrderError) {
           return `تعذّر إنشاء الطلب: ${error.reason} — تحقق من المعرّفات عبر get_menu.`;

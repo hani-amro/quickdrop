@@ -11,6 +11,7 @@ export * from "./realtime.js";
 export * from "./pricing.js";
 export * from "./ledger.js";
 export * from "./coupon-math.js";
+export * from "./eta.js";
 export * from "./plans.js";
 export * from "./logger.js";
 export * from "./metrics.js";

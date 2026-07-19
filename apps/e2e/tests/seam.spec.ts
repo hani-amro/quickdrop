@@ -109,26 +109,24 @@ test.describe("العمود الفقري — order.ready_for_dispatch (§4.2، �
     expect(d.dispatchRequestedAt).toBe(stamp);
   });
 
-  test("طلب fulfillment=pickup لا يصل الإسناد أبداً: لا ختم ولا سائق (adversary #2)", async ({ request }) => {
+  test("F4 (قرار المالك): إنشاء طلب fulfillment=pickup مرفوض من الواجهة (v1 توصيل حصراً)", async ({ request }) => {
     const world = await findMenu(request);
     test.skip(!world, "لا مطعم/صنف مبذوراً بالمستأجر الحي");
 
-    const order = await createFoodOrder(request, world!, "pickup");
-    expect(await post(request, `/api/orders/${order.id}/confirm`)).toBe(200);
-    expect(await post(request, `/api/orders/${order.id}/merchant-confirm`)).toBe(200);
-    expect(await post(request, `/api/orders/${order.id}/ready`)).toBe(200);
-
-    const d = await orderDetail(request, order.id);
-    expect(d.fulfillment).toBe("pickup");
-    expect(d.status).toBe("ready"); // يبقى جاهزاً للاستلام الذاتي — لا انتقال لسائق
-    expect(d.dispatchRequestedAt).toBeNull(); // ⛔ المفصل لا يُختم لـ pickup أبداً
-    expect(d.driver).toBeNull(); // لا سائق فيزيائي أُرسل
-
-    // مهلة قصيرة ثم إعادة فحص: حتى مع worker حي وسائقين متاحين — لا إسناد
-    await new Promise((r) => setTimeout(r, 2_500));
-    const d2 = await orderDetail(request, order.id);
-    expect(d2.status).toBe("ready");
-    expect(d2.driver).toBeNull();
-    expect(d2.dispatchRequestedAt).toBeNull();
+    // pickup غير متاح v1 (لا مسار إتمام استلام ذاتي — بلا سائق، ولاء/كوبون) → 4xx لا 201
+    const res = await request.post(`${API_URL}/api/orders`, {
+      headers: AUTH,
+      data: {
+        tenantSlug: TENANT,
+        service: "food",
+        customerPhone: "+601712345671",
+        pickup: PICKUP_POINT,
+        merchantId: world!.merchantId,
+        items: [{ catalogItemId: world!.itemId, qty: 1 }],
+        fulfillment: "pickup",
+      },
+    });
+    expect(res.status()).toBeGreaterThanOrEqual(400);
+    expect(res.status()).toBeLessThan(500); // خطأ عميل (مدخل مرفوض) لا خطأ خادم
   });
 });

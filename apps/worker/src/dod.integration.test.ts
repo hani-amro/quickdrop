@@ -192,7 +192,7 @@ describe.skipIf(!hasDb)("═ Tier-1 DoD: واتساب ← دفع ← مفصل �
     const llm = scriptedLlm([
       { content: [{ type: "tool_use", id: "t1", name: "get_menu", input: {} }], stopReason: "tool_use", usage: USAGE },
       {
-        content: [{ type: "tool_use", id: "t2", name: "create_order", input: { merchant_id: merchantId, items: [{ catalog_item_id: itemId, qty: 2 }], fulfillment: "delivery" } }],
+        content: [{ type: "tool_use", id: "t2", name: "create_order", input: { merchant_id: merchantId, items: [{ catalog_item_id: itemId, qty: 2 }] } }],
         stopReason: "tool_use",
         usage: USAGE,
       },

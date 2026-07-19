@@ -134,6 +134,10 @@ describe.skipIf(!hasDb)("المفصل §4.2 (تكامل، قاعدة حية)", (
     expect(afterReady.status).toBe("ready");
     expect(afterReady.readyAt).not.toBeNull(); // write-once
     expect(afterReady.dispatchRequestedAt).not.toBeNull(); // الختم
+    // F3 (مراجعة Phase 3): promised_at يُحسب عند ختم المفصل لمسار تأكيد الطعام (لا يمر بـ
+    // confirm() الطاقم) — كان يبقى null. الآن مضبوط ومستقبلي (now + eta + هامش).
+    expect(afterReady.promisedAt).not.toBeNull();
+    expect(afterReady.promisedAt!.getTime()).toBeGreaterThan(Date.now());
     expect(await seamEvents(w.tenantId, orderId)).toBe(1); // الحدث صدر الآن — مرة واحدة
   });
 

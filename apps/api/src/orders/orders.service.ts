@@ -123,7 +123,10 @@ const createBodySchema = z.object({
   // §3/§4.1 — طلب طعام من الداشبورد: المطعم + أصناف الكتالوج (السعر لقطة من الخادم — D11)
   merchantId: uuidSchema.optional(),
   items: z.array(z.object({ catalogItemId: uuidSchema, qty: z.number().int().min(1).max(50) })).min(1).max(50).optional(),
-  fulfillment: z.enum(["delivery", "pickup"]).optional(),
+  // مراجعة Phase 3 (قرار المالك F4): pickup **غير متاح v1** — الحقل يقبل delivery فقط
+  // (لا استلام ذاتي حتى يُبنى مسار إتمامه: بلا سائق، ولاء/كوبون). القاعدة تدعم pickup
+  // للاختبار ومستقبل F4، لكن الإنشاء من الواجهات مقصور على التوصيل.
+  fulfillment: z.literal("delivery").optional(),
 });
 
 // query strings: قيمة فارغة = غير مُرسلة

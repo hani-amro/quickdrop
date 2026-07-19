@@ -118,12 +118,16 @@ describe.skipIf(!hasDb)("وكيل الـ AI (تكامل، قاعدة حية، ن
     expect(roundCostSen({ inputTokens: 0, outputTokens: 0 }, DEFAULT_TOKEN_RATES)).toBe(0n);
   });
 
-  it("الحلقة الكاملة: get_menu ← create_order (pickup، معرّفات فقط) ← نص نهائي = agent.reply — والسعر من الخادم", async () => {
+  it("الحلقة الكاملة (F4: توصيل حصراً): get_menu ← create_order (معرّفات فقط) ← نص = agent.reply — السعر من الخادم", async () => {
+    // موقع محفوظ (يكتبه مستهلك WA عند رسالة موقع) — التوصيل يتطلبه
+    await withTenant(app.db, tenantId, (tx) =>
+      tx.insert(customerFacts).values({ tenantId, userId: customerId, key: LAST_LOCATION_FACT_KEY, value: JSON.stringify(DROP), source: "system" }),
+    );
     const before = await orderCountFor(customerId);
     const llm = scriptedLlm([
       toolResponse("get_menu", {}),
-      toolResponse("create_order", { merchant_id: merchantId, items: [{ catalog_item_id: itemId, qty: 2 }], fulfillment: "pickup" }, "tu_2"),
-      textResponse("تم يا زين! طلبك محجوز — منسفان 🍖"),
+      toolResponse("create_order", { merchant_id: merchantId, items: [{ catalog_item_id: itemId, qty: 2 }] }, "tu_2"),
+      textResponse("تم يا زين! طلبك بالطريق — منسفان 🍖"),
     ]);
     const result = await runAgent(deps(llm), runInput());
     expect(result.outcome).toBe("replied");
@@ -131,7 +135,7 @@ describe.skipIf(!hasDb)("وكيل الـ AI (تكامل، قاعدة حية، ن
     // القائمة وصلت للنموذج كنتيجة أداة بالجولة الثانية
     expect(JSON.stringify(llm.calls[1]!.messages)).toContain("منسف");
 
-    // الطلب: سعر الخادم حصراً (منسف 45000×2)، بنطاق زبون المحادثة، source='ai'
+    // الطلب: توصيل، سعر الخادم حصراً (منسف 45000×2 + توصيل)، بنطاق زبون المحادثة، source='ai'
     const row = await withTenant(app.db, tenantId, async (tx) => {
       const rows = await tx
         .select({ goodsAmount: orders.goodsAmount, codAmount: orders.codAmount, priceTotal: orders.priceTotal, source: orders.source, customerId: orders.customerId, conversationId: orders.conversationId, fulfillment: orders.fulfillment })
@@ -141,8 +145,9 @@ describe.skipIf(!hasDb)("وكيل الـ AI (تكامل، قاعدة حية، ن
     });
     expect(await orderCountFor(customerId)).toBe(before + 1);
     expect(row.goodsAmount).toBe(90_000n); // 45000×2 من الكتالوج — النموذج لم يمرّر سعراً
-    expect(row.priceTotal).toBe(0n); // pickup: لا سعر توصيل
-    expect(row.codAmount).toBe(90_000n);
+    expect(row.fulfillment).toBe("delivery");
+    expect(row.priceTotal > 0n).toBe(true); // سعر توصيل من محرك التسعير (D11)
+    expect(row.codAmount).toBe(row.goodsAmount + row.priceTotal);
     expect(row.source).toBe("ai");
     expect(row.customerId).toBe(customerId);
     expect(row.conversationId).toBe(conversationId);
@@ -160,7 +165,6 @@ describe.skipIf(!hasDb)("وكيل الـ AI (تكامل، قاعدة حية، ن
       toolResponse("create_order", {
         merchant_id: merchantId,
         items: [{ catalog_item_id: itemId, qty: 1, unit_price: 1 }], // حقن سعر بالسطر
-        fulfillment: "pickup",
         total: 1, // وحقن إجمالي
       }),
       textResponse("عذراً، صار خطأ."),
@@ -172,36 +176,36 @@ describe.skipIf(!hasDb)("وكيل الـ AI (تكامل، قاعدة حية، ن
     expect(JSON.stringify(llm.calls[1]!.messages)).toContain("خطأ مدخل");
   });
 
-  it("توصيل بلا موقع محفوظ → NEED_LOCATION ولا طلب؛ وبموقع محفوظ → طلب توصيل بسعر توصيل", async () => {
+  it("F4: pickup محجوب — لا حقل fulfillment بالأداة (تمريره = مفتاح زائد يرفضه strict)", async () => {
     const before = await orderCountFor(customerId);
-    const llm1 = scriptedLlm([
-      toolResponse("create_order", { merchant_id: merchantId, items: [{ catalog_item_id: itemId, qty: 1 }], fulfillment: "delivery" }),
+    const llm = scriptedLlm([
+      toolResponse("create_order", { merchant_id: merchantId, items: [{ catalog_item_id: itemId, qty: 1 }], fulfillment: "pickup" }),
+      textResponse("عذراً."),
+    ]);
+    await runAgent(deps(llm), runInput());
+    expect(await orderCountFor(customerId)).toBe(before); // ⛔ لا طلب (strict رفض المفتاح)
+    expect(JSON.stringify(llm.calls[1]!.messages)).toContain("خطأ مدخل");
+  });
+
+  it("توصيل بلا موقع محفوظ → NEED_LOCATION ولا طلب", async () => {
+    // زبون جديد بلا حقيقة موقع
+    let freshUser = "";
+    await withTenant(app.db, tenantId, async (tx) => {
+      const u = await tx.insert(users).values({ tenantId, role: "customer", waId: "60155500000" }).returning({ id: users.id });
+      freshUser = u[0]!.id;
+    });
+    const before = await orderCountFor(freshUser);
+    const llm = scriptedLlm([
+      toolResponse("create_order", { merchant_id: merchantId, items: [{ catalog_item_id: itemId, qty: 1 }] }),
       textResponse("شاركني موقعك لو سمحت 📍"),
     ]);
-    await runAgent(deps(llm1), runInput());
-    expect(await orderCountFor(customerId)).toBe(before);
-    expect(JSON.stringify(llm1.calls[1]!.messages)).toContain("NEED_LOCATION");
-
-    // موقع محفوظ (يكتبه مستهلك WA عند رسالة موقع) → التوصيل يمر بسعر من محرك التسعير
-    await withTenant(app.db, tenantId, (tx) =>
-      tx.insert(customerFacts).values({ tenantId, userId: customerId, key: LAST_LOCATION_FACT_KEY, value: JSON.stringify(DROP), source: "system" }),
-    );
-    const llm2 = scriptedLlm([
-      toolResponse("create_order", { merchant_id: merchantId, items: [{ catalog_item_id: itemId, qty: 1 }], fulfillment: "delivery" }),
-      textResponse("تم — طلبك بالطريق قريباً 🚀"),
-    ]);
-    await runAgent(deps(llm2), runInput());
-    expect(await orderCountFor(customerId)).toBe(before + 1);
-    const last = await withTenant(app.db, tenantId, async (tx) => {
-      const rows = await tx.select({ priceTotal: orders.priceTotal, fulfillment: orders.fulfillment }).from(orders).where(and(eq(orders.tenantId, tenantId), eq(orders.customerId, customerId)));
-      return rows[rows.length - 1]!;
-    });
-    expect(last.fulfillment).toBe("delivery");
-    expect(last.priceTotal > 0n).toBe(true); // سعر التوصيل من المحرك (D11)
+    await runAgent(deps(llm), { tenantId, userId: freshUser, conversationId, inboundText: "بدي منسف", systemPrompt: "x" });
+    expect(await orderCountFor(freshUser)).toBe(before);
+    expect(JSON.stringify(llm.calls[1]!.messages)).toContain("NEED_LOCATION");
   });
 
   it("النطاق: order_status يعيد طلبات زبون المحادثة حصراً (لا طلبات زبون آخر)", async () => {
-    // طلب لزبون آخر بمبلغ مميّز
+    // طلب لزبون آخر بمبلغ مميّز (طبقة القاعدة تدعم pickup للاختبار — الحجب على الواجهات فقط)
     await createOrder(app.db, tenantId, {
       service: "food",
       customerId: otherCustomerId,

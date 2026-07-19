@@ -1,5 +1,5 @@
 import { and, eq, isNull } from "drizzle-orm";
-import { computeDeliveryLedger, type OrderActorType, type OrderStatus } from "@quickdrop/shared";
+import { computeDeliveryLedger, computePromisedAt, PROMISE_MARGIN_MINUTES, type OrderActorType, type OrderStatus } from "@quickdrop/shared";
 import { applyDeliveryLoyalty, settleCouponOnTerminal } from "./loyalty.js";
 import { writeOutbox } from "./outbox.js";
 import { ledgerEntries, orderEvents, orders, tenants, type Order } from "./schema/index.js";
@@ -277,23 +277,35 @@ export async function transition(
   // الحمولة {orderId} = سكيما spine (packages/spine يعتمد على db فالكتابة مباشرة هنا؛
   // المستهلك يتحقق بـ parseSpineEvent).
   if ((args.to === "confirmed" || args.to === "ready") && order.fulfillment === "delivery") {
+    // نقرأ صف المستأجر مرة (dispatch_trigger لتوقيت food + eta_correction_bp للـ promised_at)
+    const tRows = await tx
+      .select({ dispatchTrigger: tenants.dispatchTrigger, etaCorrectionBp: tenants.etaCorrectionBp })
+      .from(tenants)
+      .where(eq(tenants.id, order.tenantId))
+      .limit(1);
+    const t = tRows[0];
     let shouldClaim = false;
     if (args.to === "ready") {
       shouldClaim = true; // food فقط تصل ready؛ لو كان المُطلِق 'confirmed' فالختم سبق والشرط يمنع الازدواج
     } else if (order.service !== "food") {
       shouldClaim = true; // parcel/p2p: عند التأكيد
     } else {
-      const trigRows = await tx
-        .select({ dispatchTrigger: tenants.dispatchTrigger })
-        .from(tenants)
-        .where(eq(tenants.id, order.tenantId))
-        .limit(1);
-      shouldClaim = (trigRows[0]?.dispatchTrigger ?? "ready") === "confirmed";
+      shouldClaim = (t?.dispatchTrigger ?? "ready") === "confirmed";
     }
     if (shouldClaim) {
+      // §7 (مراجعة Phase 3 F3) — لقطة الوعد عند بدء الإسناد: مسارات تأكيد الطعام
+      // (بوت/داشبورد التاجر) لا تمرّ بـ confirm() الطاقم فتبقى promised_at فارغة. نحسبها
+      // هنا من route_duration_s المخزّن (لا OSRM) إن كانت فارغة — write-once مع الختم.
+      const promisedAt =
+        order.promisedAt ??
+        computePromisedAt(now, order.routeDurationS ?? 0, t?.etaCorrectionBp ?? 12000, PROMISE_MARGIN_MINUTES);
       const claimed = await tx
         .update(orders)
-        .set({ dispatchRequestedAt: now, updatedAt: now })
+        .set({
+          dispatchRequestedAt: now,
+          ...(order.promisedAt === null ? { promisedAt } : {}),
+          updatedAt: now,
+        })
         .where(and(eq(orders.id, order.id), isNull(orders.dispatchRequestedAt), eq(orders.fulfillment, "delivery")))
         .returning({ id: orders.id });
       if (claimed.length === 1) {
