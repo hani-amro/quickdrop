@@ -16,7 +16,7 @@ const LINKS = [
   { href: "/settlements", key: "nav.settlements" },
   { href: "/analytics", key: "nav.analytics" },
   { href: "/broadcasts", key: "nav.campaigns" },
-  { href: "/support", key: "nav.inbox" }, // §9/§4.4 — الوارد الموحّد (دعم + محادثات)
+  { href: "/inbox", key: "nav.inbox" }, // §24/§4.4 — الوارد الموحّد (دعم + محادثات، CRM)
   { href: "/settings/security", key: "nav.settings" }, // §10.2 — الأمان/المصادقة الثنائية
 ] as const;
 
