@@ -1,4 +1,5 @@
 import { Algorithm, hash, verify } from "@node-rs/argon2";
+import { verify as bcryptVerify } from "@node-rs/bcrypt";
 
 // §10.2 — argon2id لكلمات سر الطاقم عبر @node-rs/argon2 (prebuilt — بلا native build).
 // المعايير = الحد الأدنى الموصى به من OWASP: m=19456KiB (19MiB), t=2, p=1.
@@ -15,12 +16,30 @@ export async function hashPassword(password: string): Promise<string> {
   return hash(password, ARGON2_OPTIONS);
 }
 
+// دمج WaFlow (MERGE_PLAN §23/R-09) — توحيد المصادقة: طاقم WaFlow المستورد يحمل هاش
+// **bcrypt** ($2a/$2b/$2y). نتحقّق منه ونعيد الهاش argon2id **كسولاً عند أول دخول ناجح**
+// (needsRehash)، فيُوحَّد المخزن تدريجياً بلا كلمات سر بنص صريح ولا إعادة ضبط جماعية.
+const BCRYPT_RE = /^\$2[aby]\$/;
+
+/** هل الهاش المخزّن بصيغة bcrypt (طاقم WaFlow مستورد)؟ */
+export function isBcryptHash(storedHash: string): boolean {
+  return BCRYPT_RE.test(storedHash);
+}
+
+/** يحتاج إعادة هاش argon2id؟ = هاش bcrypt (كل هاشات argon2 القائمة بمعاييرنا). */
+export function needsRehash(storedHash: string): boolean {
+  return isBcryptHash(storedHash);
+}
+
 /**
- * تحقق آمن: هاش مخزَّن مشوّه = رفض مسجَّل (§16.12 — لا ابتلاع صامت؛ يشير لفساد
- * بيانات، لا لمحاولة دخول خاطئة). لا يُسجَّل الهاش ولا كلمة السر أبداً (§11).
+ * تحقق آمن يوحّد الخوارزميتين: bcrypt (طاقم WaFlow) أو argon2id (طاقم QuickDrop). هاش
+ * مخزَّن مشوّه = رفض مسجَّل (§16.12 — لا ابتلاع صامت). لا يُسجَّل الهاش ولا كلمة السر (§11).
  */
 export async function verifyPassword(storedHash: string, password: string): Promise<boolean> {
   try {
+    if (isBcryptHash(storedHash)) {
+      return await bcryptVerify(password, storedHash);
+    }
     return await verify(storedHash, password);
   } catch {
     console.error(JSON.stringify({ action: "password_verify", outcome: "invalid_hash_format" }));

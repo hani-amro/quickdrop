@@ -25,3 +25,4 @@ export * from "./crm-read.js";
 export * from "./journeys-service.js";
 export * from "./payments.js";
 export * from "./ai-budget.js";
+export * from "./staff-migration.js";

@@ -10,7 +10,7 @@ import { parseOr400, slugSchema } from "../common/staff-http.js";
 import { DB, ENV, REDIS } from "../tokens.js";
 import type { ApiEnv } from "../env.js";
 import { SESSION_ID_RE, SESSION_TTL_S } from "./cookie.js";
-import { DUMMY_PASSWORD_HASH, verifyPassword } from "./hashing.js";
+import { DUMMY_PASSWORD_HASH, hashPassword, needsRehash, verifyPassword } from "./hashing.js";
 import { generateTotpSecret, otpauthUrl, verifyTotp } from "./totp.js";
 
 // §10.2 — مصادقة الطاقم الحقيقية: email + argon2id + جلسات cookie عبر Redis، مع
@@ -164,6 +164,21 @@ export class AuthService {
     }
     if (!passwordOk) {
       return this.failLogin("bad_password", input.tenantSlug);
+    }
+
+    // §23 (توحيد المصادقة) — هجرة كسولة: هاش bcrypt (طاقم WaFlow مستورد) صحّ الآن → أعد
+    // هاشه argon2id واحفظه (كلمة السر بيدنا هذه اللحظة، لا نص صريح مخزَّن). فشل التحديث
+    // لا يمنع الدخول (الهاش القديم صالح؛ الترقية تتكرر بالدخول التالي).
+    if (needsRehash(member.passwordHash)) {
+      try {
+        const upgraded = await hashPassword(input.password);
+        await withTenant(this.handle.db, tenant.id, (tx) =>
+          tx.update(staff).set({ passwordHash: upgraded, updatedAt: new Date() }).where(eq(staff.id, member.id)),
+        );
+        console.log(JSON.stringify({ action: "staff_password_rehashed", tenant_id: tenant.id, staff_id: member.id, from: "bcrypt", to: "argon2id" }));
+      } catch (error) {
+        console.error(JSON.stringify({ action: "staff_password_rehash_failed", tenant_id: tenant.id, staff_id: member.id, message: error instanceof Error ? error.message : String(error) }));
+      }
     }
 
     // §10.2 — دور مُلزَم بـ TOTP وله سرّ مُفعّل: لا جلسة الآن؛ أصدر تحدّياً وسيطاً
