@@ -32,18 +32,33 @@ export const TRANSITIONS: Record<OrderStatus, { to: OrderStatus; allowedActors: 
     { to: "pending", allowedActors: ["system"] },
     // §5 v1.1: الطلب المجدول قابل للإلغاء — زبون حجز لبكرا لازم يقدر يتراجع
     { to: "cancelled_by_customer", allowedActors: ["customer"] },
-    { to: "cancelled_by_office", allowedActors: ["staff"] },
+    { to: "cancelled_by_office", allowedActors: ["staff", "merchant"] },
   ],
   pending: [
-    { to: "confirmed", allowedActors: ["staff", "system"] },
+    // merchant (§4.2 D-M6): قبول التاجر لطلب معلّق = بوابة البشر — يؤكّد ثم يبدأ التحضير
+    { to: "confirmed", allowedActors: ["staff", "system", "merchant"] },
     { to: "cancelled_by_customer", allowedActors: ["customer"] },
-    { to: "cancelled_by_office", allowedActors: ["staff"] },
+    { to: "cancelled_by_office", allowedActors: ["staff", "merchant"] },
   ],
   confirmed: [
     // §6.2: قبول السائق (driver)، إسناد يدوي من الموزّع (staff)، أو dispatch آلي (system)
     { to: "assigned", allowedActors: ["driver", "staff", "system"] },
+    // دمج WaFlow (§4.2 D-M6): قبول التاجر = هذا الانتقال (يضبط merchant_confirmed_at) —
+    // ترميز واحد للحقيقة. حارس service='food' داخل transition (adversary #19).
+    { to: "preparing", allowedActors: ["merchant", "staff"] },
     { to: "cancelled_by_customer", allowedActors: ["customer"] },
-    { to: "cancelled_by_office", allowedActors: ["staff"] },
+    { to: "cancelled_by_office", allowedActors: ["staff", "merchant"] },
+  ],
+  // دمج WaFlow (§4.2.4) — حالتا المطبخ: بدون حواف الإلغاء طلبات المطبخ غير قابلة للقتل
+  // وتحرير الكوبون غير قابل للبلوغ (adversary #9). الإسناد من preparing|ready جائز (§4.2.3).
+  preparing: [
+    { to: "ready", allowedActors: ["merchant", "staff", "system"] },
+    { to: "assigned", allowedActors: ["driver", "staff", "system"] },
+    { to: "cancelled_by_office", allowedActors: ["staff", "merchant"] },
+  ],
+  ready: [
+    { to: "assigned", allowedActors: ["driver", "staff", "system"] },
+    { to: "cancelled_by_office", allowedActors: ["staff", "merchant"] },
   ],
   assigned: [
     { to: "picked_up", allowedActors: ["driver"] },
@@ -126,6 +141,11 @@ export async function transition(
     throw new InvalidTransitionError(from, args.to, args.actor.type);
   }
 
+  // §4.2 (adversary #19) — حالتا المطبخ لطلبات الطعام حصراً: p2p/parcel لا "تحضير" لها
+  if ((args.to === "preparing" || args.to === "ready") && order.service !== "food") {
+    throw new InvalidTransitionError(from, args.to, args.actor.type);
+  }
+
   // الحقول المشتقة تُكتب حصراً داخل هذه الترانزاكشن (§3: driver_id/delivered_at)
   let driverId: string | undefined;
   if (args.to === "assigned") {
@@ -166,6 +186,10 @@ export async function transition(
       status: args.to,
       updatedAt: now,
       ...(args.to === "delivered" ? { deliveredAt: now } : {}),
+      // §4.2 D-M6: دخول preparing = قبول التاجر — يملأ merchant_confirmed_at (مرة واحدة)
+      ...(args.to === "preparing" && order.merchantConfirmedAt === null ? { merchantConfirmedAt: now } : {}),
+      // §4.1: ready_at علم جهوز المطبخ — write-once (ready لا يُعاد دخولها بالآلة)
+      ...(args.to === "ready" && order.readyAt === null ? { readyAt: now } : {}),
       ...(codReceived !== undefined ? { codReceived } : {}),
       ...(driverId !== undefined ? { driverId } : {}),
       ...(failedReason !== undefined ? { failedReason } : {}),

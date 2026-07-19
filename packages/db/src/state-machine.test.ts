@@ -39,8 +39,14 @@ describe("TRANSITIONS — جدول §5 v1.1 بالكامل", () => {
       "pending->cancelled_by_customer",
       "pending->cancelled_by_office",
       "confirmed->assigned",
+      "confirmed->preparing", // §4.2 D-M6 — قبول التاجر (food حصراً، حارس service بـ transition)
       "confirmed->cancelled_by_customer",
       "confirmed->cancelled_by_office",
+      "preparing->ready", // §4.2 — جهوز المطبخ (يملأ ready_at)
+      "preparing->assigned", // §4.2.3 — مدخل الإسناد من كل DISPATCHABLE
+      "preparing->cancelled_by_office", // §4.2.4 adversary #9 — طلبات المطبخ قابلة للقتل
+      "ready->assigned",
+      "ready->cancelled_by_office",
       "assigned->picked_up",
       "assigned->failed",
       "picked_up->in_transit",

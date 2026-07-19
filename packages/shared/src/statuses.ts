@@ -12,6 +12,9 @@ export const ORDER_STATUSES = [
   "scheduled",
   "pending",
   "confirmed",
+  // دمج WaFlow (MERGE_PLAN §4.2) — حالتا المطبخ (طلبات food حصراً، حارس service بـ transition)
+  "preparing",
+  "ready",
   "assigned",
   "picked_up",
   "in_transit",
@@ -45,8 +48,29 @@ export type DriverStatus = (typeof DRIVER_STATUSES)[number];
 export const MERCHANT_CATEGORIES = ["restaurant", "shop"] as const;
 export type MerchantCategory = (typeof MERCHANT_CATEGORIES)[number];
 
-export const ORDER_ACTOR_TYPES = ["customer", "driver", "staff", "system"] as const;
+// دمج WaFlow (§4.2 D-M6) — merchant فاعل مستقل: قبول التاجر = transition(confirmed→preparing)
+export const ORDER_ACTOR_TYPES = ["customer", "driver", "staff", "system", "merchant"] as const;
 export type OrderActorType = (typeof ORDER_ACTOR_TYPES)[number];
+
+// دمج WaFlow (MERGE_PLAN §4.1/§4.2) — طلبات بلا رحلة توصيل (استلام ذاتي من المطعم):
+// pickup لا يصل الإسناد أبداً (adversary #2) — حارس fulfillment بكل مواقع الإسناد.
+export const FULFILLMENTS = ["delivery", "pickup"] as const;
+export type Fulfillment = (typeof FULFILLMENTS)[number];
+
+// §4.1 — أعمدة الدفع أعمدة عادية لا حالات (payment_status ليس بآلة الحالة أبداً).
+// حارس رتيب: UPDATE ... WHERE payment_status <> 'paid' (إعادات Billplz لا تُرجِع مدفوعاً).
+export const PAYMENT_STATUSES = ["unpaid", "paid"] as const;
+export type PaymentStatus = (typeof PAYMENT_STATUSES)[number];
+
+// §4.2.3 — الحالات القابلة للإسناد: مدخل الإسناد confirmed|preparing|ready → assigned.
+// الإسناد يبدأ حصراً باستهلاك order.ready_for_dispatch (الفاصل D8) — هذه المجموعة تحرس
+// مواقع الإسناد الأربعة بـ dispatch.ts (كانت hard-coded على 'confirmed' — adversary #1).
+export const DISPATCHABLE_STATUSES: ReadonlySet<OrderStatus> = new Set<OrderStatus>(["confirmed", "preparing", "ready"]);
+
+// §4.2.3 — توقيت seam الطعام لكل مستأجر: 'ready' (افتراضي — عند جهوز المطبخ) أو
+// 'confirmed' (مطاعم تريد السائق ينطلق مع بدء التحضير). parcel/p2p دوماً عند confirmed.
+export const DISPATCH_TRIGGERS = ["ready", "confirmed"] as const;
+export type DispatchTrigger = (typeof DISPATCH_TRIGGERS)[number];
 
 export const OFFER_STATUSES = ["pending", "accepted", "rejected", "expired"] as const;
 export type OfferStatus = (typeof OFFER_STATUSES)[number];

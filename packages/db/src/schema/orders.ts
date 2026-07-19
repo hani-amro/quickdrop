@@ -1,9 +1,11 @@
 import { sql } from "drizzle-orm";
 import {
   ATTACHMENT_KINDS,
+  FULFILLMENTS,
   OFFER_STATUSES,
   ORDER_ACTOR_TYPES,
   ORDER_STATUSES,
+  PAYMENT_STATUSES,
   SERVICES,
 } from "@quickdrop/shared";
 import {
@@ -26,6 +28,7 @@ import {
   timestamptz,
   updatedAt,
 } from "./_common.js";
+import { conversations } from "./conversations.js";
 import { drivers } from "./drivers.js";
 import { coupons } from "./loyalty.js";
 import { merchants } from "./merchants.js";
@@ -58,6 +61,21 @@ export const orders = pgTable(
     // التاجر من بوته (merchant-flow.ts: قبول الطلب يضبط هذا العمود + merchant_prep_minutes).
     merchantConfirmedAt: timestamptz("merchant_confirmed_at"),
     merchantPrepMinutes: integer("merchant_prep_minutes"), // §3 بوت التاجر — مدة التحضير المختارة عند القبول
+    // —— دمج WaFlow (MERGE_PLAN §4.1) — أعمدة المفصل والدفع ——
+    // pickup = استلام ذاتي بلا رحلة توصيل (لا يصل الإسناد أبداً). نقاط pickup/dropoff تبقى
+    // NOT NULL بهذه المرحلة (طلب pickup يستخدم موقع المطعم للنقطتين)؛ جعلها NULLable مع
+    // CHECK يهبط مع استيراد بيانات WaFlow بـ Phase 5 — لا مسار إنشاء ينتجها الآن.
+    fulfillment: text("fulfillment", { enum: FULFILLMENTS }).notNull().default("delivery"),
+    readyAt: timestamptz("ready_at"), // علم جهوز المطبخ — يُملأ مرة واحدة (transition→ready)
+    // ختم الـ seam الوحيد (D-M1): write-once بـ UPDATE شرطي — صف outbox
+    // order.ready_for_dispatch يُكتب فقط حين يصيب هذا الـ UPDATE صفاً واحداً (لا انبعاث مزدوج)
+    dispatchRequestedAt: timestamptz("dispatch_requested_at"),
+    goodsTax: money("goods_tax").notNull().default(sql`0`), // ضريبة البضاعة (WF tax×100)؛ الإجمالي مشتق لا يُخزَّن
+    paymentStatus: text("payment_status", { enum: PAYMENT_STATUSES }).notNull().default("unpaid"),
+    paymentRef: text("payment_ref"), // معرّف فاتورة Billplz (أو مرجع بوابة أخرى)
+    paymentPaidAt: timestamptz("payment_paid_at"),
+    conversationId: uuid("conversation_id"), // خيط المحادثة الذي وُلد منه الطلب (Brain A)
+    source: text("source"), // إسناد المنشأ: 'ai' | 'staff' | 'bot' | 'miniapp' … (حارس بوابة البشر §3.2)
     deliveredAt: timestamptz("delivered_at"), // denormalized؛ يُملأ بترانزاكشن الانتقال
     weightG: integer("weight_g"), // للطرود الموزونة (per_kg)
     distanceM: integer("distance_m"),
@@ -89,6 +107,8 @@ export const orders = pgTable(
     index("orders_tenant_status_idx").on(t.tenantId, t.status), // §2.3: الفهارس تبدأ بالمستأجر
     index("orders_tenant_created_idx").on(t.tenantId, t.createdAt),
     index("orders_tenant_driver_status_idx").on(t.tenantId, t.driverId, t.status), // ترشيح D14
+    index("orders_tenant_conversation_idx").on(t.tenantId, t.conversationId), // §4.1 [adversary #16]
+    foreignKey({ columns: [t.tenantId, t.conversationId], foreignColumns: [conversations.tenantId, conversations.id], name: "orders_conversation_fk" }),
     foreignKey({ columns: [t.tenantId, t.customerId], foreignColumns: [users.tenantId, users.id], name: "orders_customer_fk" }),
     foreignKey({ columns: [t.tenantId, t.merchantId], foreignColumns: [merchants.tenantId, merchants.id], name: "orders_merchant_fk" }),
     foreignKey({ columns: [t.tenantId, t.driverId], foreignColumns: [drivers.tenantId, drivers.id], name: "orders_driver_fk" }),

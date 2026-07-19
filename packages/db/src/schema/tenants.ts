@@ -1,4 +1,4 @@
-import { newId, TENANT_PLANS, TENANT_STATUSES } from "@quickdrop/shared";
+import { DISPATCH_TRIGGERS, newId, TENANT_PLANS, TENANT_STATUSES } from "@quickdrop/shared";
 import { sql } from "drizzle-orm";
 import {
   customType,
@@ -43,6 +43,9 @@ export const tenants = pgTable("tenants", {
   // round(redeemRate*10000). المنح الفعلي بهذا النموذج يُوصَل بـPhase 3 (طلبات WA المسعّرة).
   loyaltyPointsPerCurrencyUnitBp: integer("loyalty_points_per_currency_unit_bp").notNull().default(0),
   loyaltyRedeemRateBp: integer("loyalty_redeem_rate_bp").notNull().default(0),
+  // دمج WaFlow (§4.2.3) — توقيت seam الطعام لكل مستأجر: 'ready' (افتراضي — عند جهوز
+  // المطبخ) أو 'confirmed' (السائق ينطلق مع بدء التحضير). parcel/p2p دوماً عند confirmed.
+  dispatchTrigger: text("dispatch_trigger", { enum: DISPATCH_TRIGGERS }).notNull().default("ready"),
   referralBonusPoints: integer("referral_bonus_points").notNull().default(100),
   referralMonthlyCap: integer("referral_monthly_cap").notNull().default(5), // منع مزارع الإحالات
   botTokenEncrypted: bytea("bot_token_encrypted"),

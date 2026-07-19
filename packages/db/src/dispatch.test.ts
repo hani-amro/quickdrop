@@ -74,6 +74,8 @@ describe("DRIVER_ACTIVE_ORDER_STATUSES — اشتقاق الانشغال D14", (
       "scheduled",
       "pending",
       "confirmed",
+      "preparing", // §4.2 — مطبخ قبل الإسناد: لا يستهلك سعة سائق
+      "ready",
       "delivered",
       "cancelled_by_customer",
       "cancelled_by_office",

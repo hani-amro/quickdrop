@@ -141,6 +141,13 @@
       "when": 1784415404314,
       "tag": "0019_journeys",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1784500000000,
+      "tag": "0020_seam_columns",
+      "breakpoints": true
     }
   ]
 }

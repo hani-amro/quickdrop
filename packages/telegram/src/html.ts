@@ -14,6 +14,8 @@ export const ORDER_STATUS_LABELS_AR: Record<OrderStatus, string> = {
   scheduled: "مجدول",
   pending: "قيد المراجعة",
   confirmed: "مؤكد",
+  preparing: "قيد التحضير", // §4.2 — مطبخ (food)
+  ready: "جاهز للتوصيل", // §4.2 — مطبخ (food)
   assigned: "مُسند لسائق",
   picked_up: "باستلام الطلب",
   in_transit: "بالطريق",
