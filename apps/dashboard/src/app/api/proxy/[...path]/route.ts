@@ -16,7 +16,9 @@ interface Ctx {
   params: Promise<{ path: string[] }>;
 }
 
-async function forward(req: NextRequest, ctx: Ctx, method: "GET" | "POST"): Promise<NextResponse> {
+type Method = "GET" | "POST" | "PATCH" | "DELETE";
+
+async function forward(req: NextRequest, ctx: Ctx, method: Method): Promise<NextResponse> {
   const env = getEnv();
   const parsedPath = pathSchema.safeParse((await ctx.params).path);
   if (!parsedPath.success) {
@@ -31,9 +33,10 @@ async function forward(req: NextRequest, ctx: Ctx, method: "GET" | "POST"): Prom
   });
   target.searchParams.set("tenantSlug", env.TENANT_SLUG);
 
-  // POST: الجسم JSON object — يُحقن به tenantSlug (عقد POST /api/orders*)
+  // POST/PATCH: الجسم JSON object — يُحقن به tenantSlug. GET/DELETE: tenantSlug بالـ query
+  // (فُرض أعلاه على كل الطرق) — عقد journeys DELETE يقرؤه من الاستعلام.
   let body: string | undefined;
-  if (method === "POST") {
+  if (method === "POST" || method === "PATCH") {
     const raw = await req.text();
     let json: unknown = {};
     if (raw.trim() !== "") {
@@ -87,4 +90,13 @@ export async function GET(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
 
 export async function POST(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
   return forward(req, ctx, "POST");
+}
+
+// §24 — الرحلات/الحملات CRUD: PATCH (تحديث) وDELETE (حذف) بنفس حقن المستأجر والجلسة.
+export async function PATCH(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
+  return forward(req, ctx, "PATCH");
+}
+
+export async function DELETE(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
+  return forward(req, ctx, "DELETE");
 }
