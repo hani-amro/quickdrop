@@ -24,3 +24,4 @@ export * from "./conversations-service.js";
 export * from "./crm-read.js";
 export * from "./journeys-service.js";
 export * from "./payments.js";
+export * from "./ai-budget.js";

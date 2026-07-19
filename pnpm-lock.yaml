@@ -189,6 +189,9 @@ importers:
 
   apps/worker:
     dependencies:
+      '@quickdrop/ai':
+        specifier: workspace:*
+        version: link:../../packages/ai
       '@quickdrop/brain':
         specifier: workspace:*
         version: link:../../packages/brain
@@ -238,6 +241,31 @@ importers:
       tsx:
         specifier: ^4.19.0
         version: 4.23.0
+      typescript:
+        specifier: ^5.8.0
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.0
+        version: 3.2.7(@types/node@24.13.3)(jiti@2.7.0)(lightningcss@1.32.0)(terser@5.49.0)(tsx@4.23.0)
+
+  packages/ai:
+    dependencies:
+      '@quickdrop/db':
+        specifier: workspace:*
+        version: link:../db
+      '@quickdrop/shared':
+        specifier: workspace:*
+        version: link:../shared
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(@opentelemetry/api@1.9.1)(@types/pg@8.20.0)(pg@8.22.0)
+      zod:
+        specifier: ^3.24.0
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.13.3
       typescript:
         specifier: ^5.8.0
         version: 5.9.3

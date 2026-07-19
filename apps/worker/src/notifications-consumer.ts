@@ -915,6 +915,10 @@ export function createNotificationsProcessor(deps: NotificationsConsumerDeps): (
       case "journey.message":
         await handleJourneyMessage(deps, job);
         return;
+      case "agent.reply":
+        // §3.2 — رد وكيل الـ AI: نفس حمولة {userId, text} ونفس نقل R-11 (TG وإلا WA)
+        await handleJourneyMessage(deps, job);
+        return;
       case "payment.paid":
         // خطوة 20 (§4.2.5): تأكيد pickup آلياً + إشعار الزبون (الدماغ/الرحلات عبر BRAIN_QUEUE)
         await handlePaymentPaid(deps, job);

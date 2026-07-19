@@ -38,6 +38,7 @@ import { createBrainProcessor } from "./brain-consumer.js";
 import { startBrainSweep } from "./brain-sweep.js";
 import { createJourneyEnrollProcessor, createJourneyStepProcessor } from "./journeys-consumer.js";
 import { startJourneysRescan } from "./journeys-sweep.js";
+import { createAgentInvoker, llmFromEnv } from "./agent-invoker.js";
 
 installConsoleRedactor(); // §11 — كل console.* يمرّ بالمنقّح (أسرار/هواتف) قبل الطباعة
 
@@ -50,6 +51,9 @@ const env = parseEnv(
     MASTER_KEY: z.string().regex(/^[0-9a-f]{64}$/i, "MASTER_KEY must be 64 hex chars (32 bytes)"),
     // §13 — مراقبة: Sentry (اختياري)، ومنفذ /metrics الداخلي
     SENTRY_DSN: z.string().url().optional(),
+    // §3.2 — وكيل الـ AI: غياب المفتاح = معطّل بهدوء (ميزة اختيارية لكل مستأجر بميزانية)
+    ANTHROPIC_API_KEY: z.string().min(20).optional(),
+    AI_MODEL: z.string().min(3).optional(),
     METRICS_PORT: z.coerce.number().int().positive().default(9100),
     NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   }),
@@ -274,12 +278,19 @@ async function main(): Promise<void> {
     { connection: redis, concurrency: 10 },
   );
 
-  // دمج WaFlow §3.1 — مستهلك تحديثات واتساب (هيكل Phase 1: هوية الزبون + أحداث spine)
+  // دمج WaFlow §3.1/§3.2 — مستهلك تحديثات واتساب: هوية الزبون + أحداث spine + المخزن
+  // الموحّد، ثم إطلاق وكيل الـ AI بعد الالتزام (رسالة نصية بخيط ai_enabled).
+  const invokeAgent = createAgentInvoker({
+    appDb: appDb.db,
+    scanDb: scanDb.db,
+    redis,
+    llm: llmFromEnv(env),
+  });
   const waWorker = new Worker<WaUpdateJob>(
     WA_UPDATES_QUEUE,
     async (job) => {
       // §16.12: لا ابتلاع — الرمي يعيد الجدولة عبر backoff
-      await processWaUpdate({ appDb: appDb.db }, job.data);
+      await processWaUpdate({ appDb: appDb.db, onAgentTrigger: invokeAgent }, job.data);
     },
     { connection: redis, concurrency: 10 },
   );

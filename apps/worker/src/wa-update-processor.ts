@@ -1,5 +1,7 @@
 import {
   cancelActiveJourneyRuns,
+  conversations,
+  customerFacts,
   customerProfiles,
   getOrCreateConversation,
   recordInboundMessage,
@@ -21,6 +23,19 @@ import { and, eq, isNull, sql } from "drizzle-orm";
 
 export interface WaUpdateProcessorDeps {
   appDb: Db;
+  /**
+   * §3.2 — مُطلِق وكيل الـ AI: يُستدعى **بعد التزام** ترانزاكشن المعالجة (نداء LLM شبكي
+   * لا يجوز داخلها D6) لرسالة نصية واردة بخيط ai_enabled. فشله لا يُفشل المهمة (الرسالة
+   * معالَجة سلفاً — retry يكرّرها؛ الفشل يُسجَّل عند المنفّذ).
+   */
+  onAgentTrigger?: (trigger: AgentTrigger) => Promise<void>;
+}
+
+export interface AgentTrigger {
+  tenantId: string;
+  userId: string;
+  conversationId: string;
+  text: string;
 }
 
 export type WaUpdateOutcome =
@@ -112,7 +127,7 @@ const KNOWN_MESSAGE_TYPES = new Set<MessageType>([
  * كمؤشّر `waid:<media_id>` (روابط Meta تنتهي صلاحيتها؛ التنزيل الفعلي مؤجّل). زر/قائمة
  * تفاعلية → نصّها. نوع غير معروف → text (لا نُسقط رسالة بسبب نوع جديد من Meta).
  */
-function extractWaMessage(m: Record<string, unknown>): { type: MessageType; content?: string; mediaUrl?: string; mediaMime?: string } {
+function extractWaMessage(m: Record<string, unknown>): { type: MessageType; content?: string; mediaUrl?: string; mediaMime?: string; location?: { lat: number; lng: number } } {
   const rawType = typeof m["type"] === "string" ? (m["type"] as string) : "text";
   const type: MessageType = KNOWN_MESSAGE_TYPES.has(rawType as MessageType) ? (rawType as MessageType) : "text";
 
@@ -132,7 +147,14 @@ function extractWaMessage(m: Record<string, unknown>): { type: MessageType; cont
   if (rawType === "location") {
     const loc = m["location"] as { latitude?: number; longitude?: number; name?: string } | undefined;
     const content = loc?.name ?? (loc ? `${loc.latitude},${loc.longitude}` : undefined);
-    return { type: "location", ...(content !== undefined ? { content } : {}) };
+    // §3.2 — الإحداثيات بنية منفصلة: تُحفظ حقيقة last_location (مصدر dropoff لطلبات AI)
+    return {
+      type: "location",
+      ...(content !== undefined ? { content } : {}),
+      ...(typeof loc?.latitude === "number" && typeof loc.longitude === "number"
+        ? { location: { lat: loc.latitude, lng: loc.longitude } }
+        : {}),
+    };
   }
   if (rawType === "interactive") {
     const it = m["interactive"] as { button_reply?: { title?: string }; list_reply?: { title?: string } } | undefined;
@@ -147,7 +169,9 @@ function extractWaMessage(m: Record<string, unknown>): { type: MessageType; cont
 }
 
 export async function processWaUpdate(deps: WaUpdateProcessorDeps, job: WaUpdateJob): Promise<WaUpdateOutcome> {
-  return withTenant(deps.appDb, job.tenantId, async (tx) => {
+  // §3.2 — يُجمَع داخل الترانزاكشن ويُطلَق **بعد التزامها** (LLM شبكي — لا داخل ترانزاكشن)
+  let agentTrigger: AgentTrigger | null = null;
+  const outcome = await withTenant(deps.appDb, job.tenantId, async (tx) => {
     const rows = await tx
       .select({ id: waWebhookUpdates.id, status: waWebhookUpdates.status, payload: waWebhookUpdates.payload, eventKey: waWebhookUpdates.eventKey })
       .from(waWebhookUpdates)
@@ -185,7 +209,7 @@ export async function processWaUpdate(deps: WaUpdateProcessorDeps, job: WaUpdate
       // §4.4 — الحفظ بالمخزن الموحّد: خيط الزبون + الرسالة (idempotent بـ wa_message_id)
       const { id: conversationId } = await getOrCreateConversation(tx, job.tenantId, customer.userId);
       const extracted = extractWaMessage(message as Record<string, unknown>);
-      await recordInboundMessage(tx, {
+      const recorded = await recordInboundMessage(tx, {
         tenantId: job.tenantId,
         conversationId,
         channel: "whatsapp",
@@ -202,12 +226,60 @@ export async function processWaUpdate(deps: WaUpdateProcessorDeps, job: WaUpdate
       });
       // §3.4 stop-on-reply — رد الزبون يلغي تسجيلاته النشطة بالرحلات (لا نطارد من تفاعل)
       await cancelActiveJourneyRuns(tx, job.tenantId, customer.userId);
+
+      // §3.2 — رسالة موقع: حقيقة last_location (مصدر dropoff الوحيد لطلبات توصيل الوكيل)
+      if (extracted.location) {
+        await tx
+          .insert(customerFacts)
+          .values({
+            tenantId: job.tenantId,
+            userId: customer.userId,
+            key: "last_location",
+            value: JSON.stringify(extracted.location),
+            source: "system",
+          })
+          .onConflictDoUpdate({
+            target: [customerFacts.tenantId, customerFacts.userId, customerFacts.key],
+            set: { value: JSON.stringify(extracted.location), source: "system", updatedAt: new Date() },
+          });
+      }
+
+      // §3.2 — مُطلِق الوكيل: رسالة نصية جديدة (لا معادة — dedup) بخيط ai_enabled
+      if (recorded === "inserted" && extracted.content && (extracted.type === "text" || extracted.type === "interactive")) {
+        const convRows = await tx
+          .select({ aiEnabled: conversations.aiEnabled })
+          .from(conversations)
+          .where(and(eq(conversations.tenantId, job.tenantId), eq(conversations.id, conversationId)))
+          .limit(1);
+        if (convRows[0]?.aiEnabled) {
+          agentTrigger = { tenantId: job.tenantId, userId: customer.userId, conversationId, text: extracted.content };
+        }
+      }
     }
     // مفاتيح status:{wamid}:{status} — تحديث حالة رسالة صادرة: يُوصَل مع الإرسال الصادر
 
     await markProcessed(tx, job.tenantId, job.updateId);
-    return "processed";
+    return "processed" as const;
   });
+
+  // بعد الالتزام: إطلاق الوكيل. فشله لا يُفشل المهمة (الرسالة معالَجة — retry يكرّر الرد)
+  // (cast: تحليل تدفّق TS لا يتتبّع الإسناد داخل الـ closure فيضيّق إلى never)
+  const trigger = agentTrigger as AgentTrigger | null;
+  if (outcome === "processed" && trigger && deps.onAgentTrigger) {
+    try {
+      await deps.onAgentTrigger(trigger);
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          action: "wa_agent_trigger_failed",
+          tenant_id: trigger.tenantId,
+          conversation_id: trigger.conversationId,
+          message: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
+  }
+  return outcome;
 }
 
 async function markProcessed(
