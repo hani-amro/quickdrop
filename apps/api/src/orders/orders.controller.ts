@@ -88,7 +88,7 @@ export class OrdersController {
     return this.orders.assign(authorization, id, body);
   }
 
-  // §3 v1 — زر "المطعم أكّد": يعلّم لحظة تأكيد التاجر لطلب طعام (عمود عادي لا حالة، D8)
+  // §4.2 D-M6 — زر "المطعم أكّد": transition(confirmed→preparing) — نفس ترميز بوت التاجر
   @Post(":id/merchant-confirm")
   @HttpCode(200)
   async merchantConfirm(
@@ -97,5 +97,16 @@ export class OrdersController {
     @Body() body: unknown,
   ): Promise<MerchantConfirmResponse> {
     return this.orders.merchantConfirm(authorization, id, body);
+  }
+
+  // §4.2 — زر "الطلب جاهز" (المطبخ): transition(preparing→ready) — يشعل المفصل
+  @Post(":id/ready")
+  @HttpCode(200)
+  async kitchenReady(
+    @Headers("authorization") authorization: string | undefined,
+    @Param("id") id: string,
+    @Body() body: unknown,
+  ): Promise<MerchantConfirmResponse> {
+    return this.orders.kitchenReady(authorization, id, body);
   }
 }

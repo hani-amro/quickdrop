@@ -1,25 +1,134 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type APIRequestContext } from "@playwright/test";
+import { API_URL } from "../playwright.config";
 
-// MERGE_PLAN §7 (Phase 1 خطوة 10) — عقد المفصل بين الدماغين، يفشل عمداً حتى Phase 3.
-// ⛔ قائمة §4.2 الحاجبة (قرار المالك 2026-07-18): لا يُرفع الـ fixme قبل أن تتغير مواقع
-// الكود الست hard-coded على 'confirmed' (dispatch.ts ×4، notifications-consumer:239،
-// merchant-bot:161) ويثبت الاختباران: pickup لا يُرسل سائقاً، وseam الطعام يُطلق مرة واحدة.
-test.describe("العمود الفقري — order.ready_for_dispatch (يتحقق بـ Phase 3)", () => {
-  test.fixme(
-    "طلب واتساب مدفوع → payment.paid → confirm → ready → order.ready_for_dispatch يُطلق مرة واحدة → جولة إسناد",
-    async ({ request }) => {
-      // Phase 3: أنشئ طلب food عبر مسار الاستقبال، ادفعه (Billplz test)، علّمه ready،
-      // ثم أثبت: صف outbox واحد بالموضوع order.ready_for_dispatch (ختم write-once
-      // dispatch_requested_at)، وجولة إسناد واحدة بالضبط تحت 5 أحداث متطابقة متزامنة.
-      const response = await request.get("/health");
-      expect(response.status()).toBe(200);
-      throw new Error("seam not wired yet — Phase 3 (§4.2 blocking checklist)");
+// MERGE_PLAN §7 / قائمة §4.2 الحاجبة — عقد المفصل بين الدماغين على المكدّس الحي، عبر
+// HTTP حصراً. الـ fixme أُزيل بعد تغطية المواقع الستة اختبارياً (Phase 3):
+//   seam.integration (7) + seam-consumer (3) + payments-consumer (3) + Tier-1 DoD (6).
+// هنا الطبقة الأخيرة: نفس العقد من فوق الـ API — إنشاء food عبر مسار الكتالوج، مطبخ
+// الداشبورد (merchant-confirm→preparing، ready→ready)، ختم المفصل يظهر بالتفاصيل
+// (write-once)، وpickup لا يُختم ولا يُسند أبداً.
+//
+// مصادقة: Bearer STAFF_API_TOKEN عبر E2E_STAFF_TOKEN. غيابه = تخطٍّ معلَن (نفس نمط
+// بوابة hasDb بحزم vitest) — العقد يبقى مُثبتاً بسويتات vitest أعلاه (بوابة CI).
+
+const STAFF_TOKEN = process.env.E2E_STAFF_TOKEN;
+const TENANT = process.env.E2E_TENANT_SLUG ?? "demo";
+
+const AUTH = { Authorization: `Bearer ${STAFF_TOKEN}` };
+const PICKUP_POINT = { lat: 33.5138, lng: 36.2765 };
+const DROPOFF_POINT = { lat: 33.5588, lng: 36.2765 };
+
+interface MenuWorld {
+  merchantId: string;
+  itemId: string;
+}
+
+/** أول مطعم نشط وأول صنف متاح من كتالوج المستأجر الحي (بذرة seed-dev). */
+async function findMenu(request: APIRequestContext): Promise<MenuWorld | null> {
+  const mRes = await request.get(`${API_URL}/api/merchants?tenantSlug=${TENANT}`, { headers: AUTH });
+  if (mRes.status() !== 200) return null;
+  const merchants = (await mRes.json()).merchants as { id: string; isActive: boolean }[];
+  const merchant = merchants.find((m) => m.isActive);
+  if (!merchant) return null;
+  const cRes = await request.get(`${API_URL}/api/merchants/${merchant.id}/catalog?tenantSlug=${TENANT}`, { headers: AUTH });
+  if (cRes.status() !== 200) return null;
+  const items = (await cRes.json()).items as { id: string; isAvailable: boolean }[];
+  const item = items.find((i) => i.isAvailable);
+  if (!item) return null;
+  return { merchantId: merchant.id, itemId: item.id };
+}
+
+async function createFoodOrder(
+  request: APIRequestContext,
+  world: MenuWorld,
+  fulfillment: "delivery" | "pickup",
+): Promise<{ id: string }> {
+  const res = await request.post(`${API_URL}/api/orders`, {
+    headers: AUTH,
+    data: {
+      tenantSlug: TENANT,
+      service: "food",
+      customerPhone: "+601712345670",
+      customerName: "E2E Seam",
+      pickup: PICKUP_POINT,
+      ...(fulfillment === "delivery" ? { dropoff: DROPOFF_POINT } : {}),
+      merchantId: world.merchantId,
+      items: [{ catalogItemId: world.itemId, qty: 1 }],
+      fulfillment,
     },
-  );
+  });
+  expect(res.status(), await res.text()).toBe(201);
+  return (await res.json()).order as { id: string };
+}
 
-  test.fixme("طلب fulfillment=pickup لا يصل الإسناد أبداً (لا سائق يُرسل فيزيائياً)", async () => {
-    // Phase 3: طلب pickup مؤكّد ومدفوع → صفر صفوف offers وصفر مهام dispatch-order
-    // (adversary #2 — الحارس القديم to==='confirmed' كان يُرسل سائقاً لطلب استلام ذاتي).
-    throw new Error("seam not wired yet — Phase 3 (§4.2 blocking checklist)");
+async function orderDetail(request: APIRequestContext, id: string): Promise<Record<string, unknown>> {
+  const res = await request.get(`${API_URL}/api/orders/${id}?tenantSlug=${TENANT}`, { headers: AUTH });
+  expect(res.status()).toBe(200);
+  return (await res.json()).order as Record<string, unknown>;
+}
+
+async function post(request: APIRequestContext, path: string): Promise<number> {
+  const res = await request.post(`${API_URL}${path}`, { headers: AUTH, data: { tenantSlug: TENANT } });
+  return res.status();
+}
+
+test.describe("العمود الفقري — order.ready_for_dispatch (§4.2، مكدّس حي)", () => {
+  test.skip(!STAFF_TOKEN, "E2E_STAFF_TOKEN غير مضبوط — عقد المفصل مُثبت بسويتات vitest (بوابة CI)");
+
+  test("food توصيل: مطبخ الداشبورد كاملاً → ختم المفصل يظهر مرة واحدة (write-once)", async ({ request }) => {
+    const world = await findMenu(request);
+    test.skip(!world, "لا مطعم/صنف مبذوراً بالمستأجر الحي");
+
+    const order = await createFoodOrder(request, world!, "delivery");
+    let d = await orderDetail(request, order.id);
+    expect(d.status).toBe("pending");
+    expect(d.dispatchRequestedAt).toBeNull(); // لا ختم قبل الجهوز (المُطلِق الافتراضي ready)
+
+    expect(await post(request, `/api/orders/${order.id}/confirm`)).toBe(200);
+    d = await orderDetail(request, order.id);
+    expect(d.status).toBe("confirmed");
+    expect(d.dispatchRequestedAt).toBeNull(); // food لا يُختم عند التأكيد (ready هو المُطلِق)
+
+    // D-M6: زر «المطعم أكّد» = transition(confirmed→preparing) — نفس ترميز بوت التاجر
+    expect(await post(request, `/api/orders/${order.id}/merchant-confirm`)).toBe(200);
+    d = await orderDetail(request, order.id);
+    expect(d.status).toBe("preparing");
+    expect(d.merchantConfirmedAt).not.toBeNull();
+
+    // «الطلب جاهز» → ready: يملأ ready_at ويختم المفصل (الحدث بنفس الترانزاكشن — D6)
+    expect(await post(request, `/api/orders/${order.id}/ready`)).toBe(200);
+    d = await orderDetail(request, order.id);
+    expect(["ready", "assigned"]).toContain(d.status); // worker حي قد يُسند فوراً
+    expect(d.readyAt).not.toBeNull();
+    expect(d.dispatchRequestedAt).not.toBeNull(); // ⚡ الختم — المنتِج الشرعي الوحيد
+
+    // ضغطة «جاهز» ثانية idempotent — والختم لا يتغيّر (write-once)
+    const stamp = d.dispatchRequestedAt;
+    expect(await post(request, `/api/orders/${order.id}/ready`)).toBe(200);
+    d = await orderDetail(request, order.id);
+    expect(d.dispatchRequestedAt).toBe(stamp);
+  });
+
+  test("طلب fulfillment=pickup لا يصل الإسناد أبداً: لا ختم ولا سائق (adversary #2)", async ({ request }) => {
+    const world = await findMenu(request);
+    test.skip(!world, "لا مطعم/صنف مبذوراً بالمستأجر الحي");
+
+    const order = await createFoodOrder(request, world!, "pickup");
+    expect(await post(request, `/api/orders/${order.id}/confirm`)).toBe(200);
+    expect(await post(request, `/api/orders/${order.id}/merchant-confirm`)).toBe(200);
+    expect(await post(request, `/api/orders/${order.id}/ready`)).toBe(200);
+
+    const d = await orderDetail(request, order.id);
+    expect(d.fulfillment).toBe("pickup");
+    expect(d.status).toBe("ready"); // يبقى جاهزاً للاستلام الذاتي — لا انتقال لسائق
+    expect(d.dispatchRequestedAt).toBeNull(); // ⛔ المفصل لا يُختم لـ pickup أبداً
+    expect(d.driver).toBeNull(); // لا سائق فيزيائي أُرسل
+
+    // مهلة قصيرة ثم إعادة فحص: حتى مع worker حي وسائقين متاحين — لا إسناد
+    await new Promise((r) => setTimeout(r, 2_500));
+    const d2 = await orderDetail(request, order.id);
+    expect(d2.status).toBe("ready");
+    expect(d2.driver).toBeNull();
+    expect(d2.dispatchRequestedAt).toBeNull();
   });
 });

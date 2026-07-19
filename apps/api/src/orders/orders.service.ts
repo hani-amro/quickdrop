@@ -6,6 +6,7 @@ import {
   UnprocessableEntityException,
 } from "@nestjs/common";
 import {
+  InvalidFoodOrderError,
   InvalidTransitionError,
   NoPricingRuleError,
   assignManually,
@@ -111,13 +112,18 @@ const createBodySchema = z.object({
   customerPhone: phoneSchema,
   customerName: z.string().trim().min(1).max(120).optional(),
   pickup: pointSchema,
-  dropoff: pointSchema,
+  // §4.1 — pickup (استلام ذاتي، food حصراً) لا يحتاج وجهة: dropoff تُشتق = موقع المطعم
+  dropoff: pointSchema.optional(),
   dropoffText: z.string().trim().min(1).max(500).optional(),
   recipientPhone: phoneSchema.optional(), // الطلب لشخص آخر (الفخ 16)
   weightG: weightGSchema.optional(),
   goodsAmount: moneyStringSchema.optional(),
   notes: z.string().trim().min(1).max(1000).optional(),
   scheduledAt: scheduledAtSchema.optional(),
+  // §3/§4.1 — طلب طعام من الداشبورد: المطعم + أصناف الكتالوج (السعر لقطة من الخادم — D11)
+  merchantId: uuidSchema.optional(),
+  items: z.array(z.object({ catalogItemId: uuidSchema, qty: z.number().int().min(1).max(50) })).min(1).max(50).optional(),
+  fulfillment: z.enum(["delivery", "pickup"]).optional(),
 });
 
 // query strings: قيمة فارغة = غير مُرسلة
@@ -211,6 +217,10 @@ export interface OrderDetailResponse {
     driver: { id: string; name: string | null } | null;
     merchant: { name: string; phone: string | null } | null; // §3 v1
     merchantConfirmedAt: string | null;
+    fulfillment: string; // §4.1 — delivery|pickup
+    dispatchRequestedAt: string | null; // §4.2 — ختم المفصل: مرة واحدة أو null (pickup)
+    readyAt: string | null;
+    paymentStatus: string;
     pickupText: string | null;
     dropoffText: string | null;
     recipientPhone: string | null;
@@ -315,13 +325,17 @@ export class OrdersService {
         service: input.service,
         customerId,
         pickup: input.pickup,
-        dropoff: input.dropoff,
+        ...(input.dropoff !== undefined ? { dropoff: input.dropoff } : {}),
         ...(input.dropoffText !== undefined ? { dropoffText: input.dropoffText } : {}),
         ...(input.recipientPhone !== undefined ? { recipientPhone: input.recipientPhone } : {}),
         ...(input.weightG !== undefined ? { weightG: input.weightG } : {}),
         ...(input.goodsAmount !== undefined ? { goodsAmount: input.goodsAmount } : {}),
         ...(input.notes !== undefined ? { notes: input.notes } : {}),
         ...(input.scheduledAt !== undefined ? { scheduledAt: input.scheduledAt } : {}),
+        // §3/§4.1 — مسار الطعام من الداشبورد: كتالوج + fulfillment (نفس مسار miniapp/AI)
+        ...(input.merchantId !== undefined ? { merchantId: input.merchantId } : {}),
+        ...(input.items !== undefined ? { items: input.items.map((i) => ({ catalogItemId: i.catalogItemId, qty: i.qty })) } : {}),
+        ...(input.fulfillment !== undefined ? { fulfillment: input.fulfillment } : {}),
         // أمان مؤقت: لا هوية موظف مع التوكن الثابت — actor.id يُملأ مع staff auth §10.2
         createdBy: { type: "staff" },
       });
@@ -366,6 +380,13 @@ export class OrdersService {
         trackingToken, // §7 — التوكن لا يُسجَّل باللوغ: سر قصير العمر بيد الزبون فقط
       };
     } catch (error) {
+      // §3 — أخطاء بناء طلب الطعام (مطعم/أصناف/pickup لغير food) = 422 أعمال لا 500
+      if (error instanceof InvalidFoodOrderError) {
+        throw new UnprocessableEntityException(`invalid food order: ${error.reason}`);
+      }
+      if (error instanceof TypeError && error.message.includes("dropoff is required")) {
+        throw new UnprocessableEntityException("dropoff is required for delivery orders");
+      }
       throw this.mapPricingError(error);
     }
   }
@@ -454,6 +475,10 @@ export class OrdersService {
           customerPhone: users.phoneE164,
           driverName: driverUsers.firstName,
           merchantConfirmedAt: orders.merchantConfirmedAt, // §3 v1
+          fulfillment: orders.fulfillment, // §4.1 — pickup لا سائق له أبداً
+          dispatchRequestedAt: orders.dispatchRequestedAt, // §4.2 — ختم المفصل (write-once)
+          readyAt: orders.readyAt,
+          paymentStatus: orders.paymentStatus,
           merchantName: merchants.name,
           merchantPhone: merchants.phone, // §3 — الموزّع يتصل بالتاجر
         })
@@ -538,6 +563,10 @@ export class OrdersService {
           driver: row.driverId !== null ? { id: row.driverId, name: row.driverName } : null,
           merchant: row.merchantName !== null ? { name: row.merchantName, phone: row.merchantPhone } : null,
           merchantConfirmedAt: row.merchantConfirmedAt?.toISOString() ?? null,
+          fulfillment: row.fulfillment,
+          dispatchRequestedAt: row.dispatchRequestedAt?.toISOString() ?? null,
+          readyAt: row.readyAt?.toISOString() ?? null,
+          paymentStatus: row.paymentStatus,
           pickupText: row.pickupText,
           dropoffText: row.dropoffText,
           recipientPhone: row.recipientPhone,
@@ -737,8 +766,10 @@ export class OrdersService {
     }
   }
 
-  // §3 v1 — تأكيد التاجر: عمود عادي (merchant_confirmed_at) لا حالة — لا يمسّ transition/D8.
-  // ذو معنى لطلبات food مع merchant_id؛ يُملأ مرة واحدة (IS NULL شرط). 409 لغير المؤهل.
+  // §4.2 D-M6 (adversary #20) — **ترميز واحد**: تأكيد التاجر من الداشبورد =
+  // transition(confirmed→preparing) نفسها التي يستخدمها بوت التاجر (transition تملأ
+  // merchant_confirmed_at). طلب معلّق: التأكيد بوابة البشر — pending→confirmed ثم
+  // preparing بنفس الترانزاكشن. idempotent للضغطتين (بالمطبخ سلفاً → 200).
   async merchantConfirm(authorization: string | undefined, id: string, body: unknown): Promise<MerchantConfirmResponse> {
     this.assertStaffToken(authorization);
     const orderId = this.parseOr400(uuidSchema, id, "orders_merchant_confirm_id");
@@ -747,33 +778,70 @@ export class OrdersService {
 
     const result = await withTenant(this.handle.db, tenant.id, async (tx) => {
       const rows = await tx
-        .update(orders)
-        .set({ merchantConfirmedAt: new Date(), updatedAt: new Date() }) // D6: UTC
-        .where(
-          and(
-            eq(orders.id, orderId),
-            eq(orders.service, "food"),
-            isNull(orders.merchantConfirmedAt), // يُملأ مرة واحدة
-            isNull(orders.deletedAt),
-          ),
-        )
-        .returning({ publicCode: orders.publicCode, merchantConfirmedAt: orders.merchantConfirmedAt });
-      return rows[0];
+        .select({ service: orders.service, status: orders.status, publicCode: orders.publicCode, merchantConfirmedAt: orders.merchantConfirmedAt })
+        .from(orders)
+        .where(and(eq(orders.id, orderId), isNull(orders.deletedAt)))
+        .limit(1);
+      const order = rows[0];
+      if (!order) return { outcome: "not_found" as const };
+      if (order.service !== "food") return { outcome: "conflict" as const };
+      if (order.status === "preparing" || order.status === "ready") {
+        return { outcome: "already" as const, publicCode: order.publicCode, at: order.merchantConfirmedAt ?? new Date() };
+      }
+      if (order.status !== "pending" && order.status !== "confirmed") return { outcome: "conflict" as const };
+      const actor = { type: "staff" as const };
+      try {
+        if (order.status === "pending") {
+          await transition(tx, { orderId, to: "confirmed", actor, meta: { by: "dashboard_merchant_confirm" } });
+        }
+        const next = await transition(tx, { orderId, to: "preparing", actor, meta: { by: "dashboard_merchant_confirm" } });
+        return { outcome: "confirmed" as const, publicCode: order.publicCode, at: next.merchantConfirmedAt ?? new Date() };
+      } catch (error) {
+        if (error instanceof InvalidTransitionError) return { outcome: "conflict" as const }; // سباق بين القراءة والقفل
+        throw error;
+      }
     });
 
-    if (!result || result.merchantConfirmedAt === null) {
-      // لم يُحدَّث صف: غير موجود، أو ليس food، أو مؤكَّد سلفاً — نميّز 404 عن 409
-      const exists = await withTenant(this.handle.db, tenant.id, (tx) =>
-        tx.select({ id: orders.id }).from(orders).where(and(eq(orders.id, orderId), isNull(orders.deletedAt))).limit(1),
-      );
-      if (exists.length === 0) throw new NotFoundException("not found");
-      throw new ConflictException("order is not a pending food order"); // §11 رسالة عامة
-    }
-
+    if (result.outcome === "not_found") throw new NotFoundException("not found");
+    if (result.outcome === "conflict") throw new ConflictException("order is not a confirmable food order"); // §11 رسالة عامة
     console.log(
-      JSON.stringify({ action: "order_merchant_confirmed", tenant_id: tenant.id, order_id: orderId, actor: "staff" }),
+      JSON.stringify({ action: "order_merchant_confirmed", tenant_id: tenant.id, order_id: orderId, actor: "staff", outcome: result.outcome }),
     );
-    return { order: { id: orderId, publicCode: result.publicCode, merchantConfirmedAt: result.merchantConfirmedAt.toISOString() } };
+    return { order: { id: orderId, publicCode: result.publicCode, merchantConfirmedAt: result.at.toISOString() } };
+  }
+
+  // §4.2 — جهوز المطبخ من الداشبورد: transition(preparing→ready) — يملأ ready_at ويشعل
+  // المفصل (المُطلِق الافتراضي 'ready'). idempotent للضغطتين (ready سلفاً → 200).
+  async kitchenReady(authorization: string | undefined, id: string, body: unknown): Promise<MerchantConfirmResponse> {
+    this.assertStaffToken(authorization);
+    const orderId = this.parseOr400(uuidSchema, id, "orders_kitchen_ready_id");
+    const input = this.parseOr400(merchantConfirmBodySchema, body, "orders_kitchen_ready");
+    const tenant = await this.resolveActiveTenant(input.tenantSlug);
+
+    const result = await withTenant(this.handle.db, tenant.id, async (tx) => {
+      const rows = await tx
+        .select({ service: orders.service, status: orders.status, publicCode: orders.publicCode, readyAt: orders.readyAt })
+        .from(orders)
+        .where(and(eq(orders.id, orderId), isNull(orders.deletedAt)))
+        .limit(1);
+      const order = rows[0];
+      if (!order) return { outcome: "not_found" as const };
+      if (order.service !== "food") return { outcome: "conflict" as const };
+      if (order.status === "ready") return { outcome: "already" as const, publicCode: order.publicCode, at: order.readyAt ?? new Date() };
+      if (order.status !== "preparing") return { outcome: "conflict" as const };
+      try {
+        const next = await transition(tx, { orderId, to: "ready", actor: { type: "staff" }, meta: { by: "dashboard_kitchen_ready" } });
+        return { outcome: "ready" as const, publicCode: order.publicCode, at: next.readyAt ?? new Date() };
+      } catch (error) {
+        if (error instanceof InvalidTransitionError) return { outcome: "conflict" as const };
+        throw error;
+      }
+    });
+
+    if (result.outcome === "not_found") throw new NotFoundException("not found");
+    if (result.outcome === "conflict") throw new ConflictException("order is not in the kitchen"); // §11 رسالة عامة
+    console.log(JSON.stringify({ action: "order_kitchen_ready", tenant_id: tenant.id, order_id: orderId, actor: "staff", outcome: result.outcome }));
+    return { order: { id: orderId, publicCode: result.publicCode, merchantConfirmedAt: result.at.toISOString() } };
   }
 
   // D15 — البحث بفهرس (tenant_id, phone_e164) ضمن دور customer؛ غير موجود = إنشاء
