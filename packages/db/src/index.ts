@@ -23,3 +23,4 @@ export * from "./admin-auth.js";
 export * from "./conversations-service.js";
 export * from "./crm-read.js";
 export * from "./journeys-service.js";
+export * from "./payments.js";

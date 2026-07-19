@@ -1,17 +1,23 @@
 import {
   conversations,
   drivers,
+  getOrCreateConversation,
+  InvalidTransitionError,
   listOperatorChatsForMerchant,
   offers,
   orderItems,
   orders,
+  recordOutboundMessage,
   tenants,
   trackingTokens,
+  transition,
   users,
+  waAccounts,
   withTenant,
   type Db,
 } from "@quickdrop/db";
 import {
+  decryptSecret,
   ORDER_STATUSES,
   publishRt,
   RT_EVENTS,
@@ -19,6 +25,7 @@ import {
   type NotificationJob,
   type RtPublishClient,
 } from "@quickdrop/shared";
+import { WaClient } from "@quickdrop/whatsapp";
 import {
   decryptBotToken,
   escapeHtml,
@@ -27,6 +34,7 @@ import {
   merchantOrderKeyboard,
   offerCard,
   orderCard,
+  ORDER_STATUS_LABELS_AR,
   registerCustomerFlow,
   type Bot,
   type ConvRedis,
@@ -57,10 +65,12 @@ export interface NotificationsConsumerDeps {
   redis: ConvRedis;
   /** §4.2: MASTER_KEY (32 بايت) لفك تشفير bot_token_encrypted. */
   masterKey: Buffer;
-  /** طابور الإسناد — إدراج dispatch-order عند confirmed وoffer-timeout عند offer.created (§6). */
+  /** طابور الإسناد — إدراج dispatch-order عند استهلاك order.ready_for_dispatch (§4.2.3). */
   dispatchQueue: Queue<DispatchJob>;
   /** §10.1 — ناشر الوقت الحقيقي: PUBLISH على قناة RT_REDIS_CHANNEL (عملياً نفس عميل ioredis). */
   rtRedis: RtPublishClient;
+  /** R-11 — حقن fetch لإرسال واتساب بالاختبارات (الافتراضي fetch العالمي). */
+  waFetch?: typeof fetch;
 }
 
 // —— منطق صافٍ قابل للاختبار (§15) ——
@@ -127,6 +137,27 @@ export const supportReplyPayloadSchema = z.object({
   threadId: z.string().uuid(),
   text: z.string().min(1),
 });
+
+// دمج WaFlow (خطوة 20/21) — حمولتا الدفع
+export const paymentLinkPayloadSchema = z.object({
+  orderId: z.string().uuid(),
+  userId: z.string().uuid(),
+  url: z.string().url(),
+});
+
+// خطوة 21 (R-11) — حالات تُبلَّغ لزبون واتساب نصياً (المرئية له؛ لا draft/scheduled الداخلية)
+const WA_STATUS_NOTIFY: ReadonlySet<string> = new Set([
+  "confirmed",
+  "preparing",
+  "ready",
+  "assigned",
+  "picked_up",
+  "in_transit",
+  "arrived",
+  "delivered",
+  "cancelled_by_office",
+  "failed",
+]);
 
 // —— أدوات مشتركة ——
 
@@ -215,6 +246,84 @@ async function sendOrMarkBlocked(
   }
 }
 
+// —— R-11: نقل إشعارات الزبون الموحّد (NotificationTransport) — القناة سمة الزبون ——
+// تيليغرام أولاً (بطاقات غنية)؛ وإلا واتساب (نص عبر Graph — توكن wa_accounts المشفّر).
+// رسالة WA الصادرة تُسجَّل بالمخزن الموحّد (conversations/messages) قبل الإرسال —
+// الكتابة داخل ترانزاكشن والإرسال بعدها (D6: لا نداء شبكي داخل ترانزاكشن).
+
+type CustomerSendOutcome = "sent_telegram" | "sent_whatsapp" | "skipped_no_channel" | "skipped_blocked";
+
+interface CustomerChannelRow {
+  userId: string;
+  telegramUserId: number | null;
+  waId: string | null;
+  blockedAt: Date | null;
+}
+
+async function loadCustomerChannel(deps: NotificationsConsumerDeps, tenantId: string, userId: string): Promise<CustomerChannelRow | null> {
+  const rows = await withTenant(deps.appDb, tenantId, (tx) =>
+    tx
+      .select({ userId: users.id, telegramUserId: users.telegramUserId, waId: users.waId, blockedAt: users.blockedAt })
+      .from(users)
+      .where(and(eq(users.tenantId, tenantId), eq(users.id, userId)))
+      .limit(1),
+  );
+  return rows[0] ?? null;
+}
+
+/** عميل WA للمستأجر (توكن wa_accounts مفكوك بالمفتاح الرئيسي) — null إن لم تُهيّأ القناة. */
+async function getTenantWaClient(deps: NotificationsConsumerDeps, tenantId: string): Promise<WaClient | null> {
+  const rows = await withTenant(deps.appDb, tenantId, (tx) =>
+    tx
+      .select({ phoneNumberId: waAccounts.phoneNumberId, accessTokenEnc: waAccounts.accessTokenEnc, isActive: waAccounts.isActive })
+      .from(waAccounts)
+      .where(eq(waAccounts.tenantId, tenantId))
+      .limit(1),
+  );
+  const acc = rows[0];
+  if (!acc || !acc.isActive || !acc.accessTokenEnc) return null;
+  const accessToken = decryptSecret(acc.accessTokenEnc, deps.masterKey);
+  return new WaClient({
+    accessToken,
+    phoneNumberId: acc.phoneNumberId,
+    ...(deps.waFetch !== undefined ? { fetchImpl: deps.waFetch } : {}),
+  });
+}
+
+/**
+ * إرسال نص لزبون عبر قناته: TG إن وُجد (403→blocked_at)، وإلا WA. رسالة WA تُسجَّل
+ * بالمخزن الموحّد **بعد نجاح الإرسال** (تسجيلٌ قبله يزدوج صفوفاً عند retry بلا إرسال؛
+ * الصادر سجلّ عرض لا مصدر حقيقة — فقدان صف عند crash بين الإرسال والتسجيل مقبول).
+ * فشل شبكة WA يُرمى (retry عبر BullMQ §16.12).
+ */
+async function sendTextToCustomer(
+  deps: NotificationsConsumerDeps,
+  tenant: ActiveTenant,
+  tenantId: string,
+  customer: CustomerChannelRow,
+  text: string,
+): Promise<CustomerSendOutcome> {
+  if (customer.blockedAt !== null) return "skipped_blocked";
+  if (customer.telegramUserId !== null) {
+    const bot = await getTenantBot(deps, tenantId, tenant);
+    // §4.3 — parse_mode HTML افتراضي من المصنع: النص قد يحمل مدخل مستخدم → escape للتيليغرام
+    await sendOrMarkBlocked(deps, { tenantId, bot, chatId: customer.telegramUserId, userId: customer.userId, text: escapeHtml(text) });
+    return "sent_telegram";
+  }
+  if (customer.waId !== null) {
+    const wa = await getTenantWaClient(deps, tenantId);
+    if (!wa) return "skipped_no_channel"; // زبون WA بلا حساب WA مهيأ — لوغ عند المستدعي
+    await wa.sendText(customer.waId, text);
+    // سجلّ المحادثة الموحّد (§4.4): الرسالة الصادرة تُسجَّل بعد نجاح الإرسال
+    await withTenant(deps.appDb, tenantId, async (tx) => {
+      const { id: conversationId } = await getOrCreateConversation(tx, tenantId, customer.userId);
+      await recordOutboundMessage(tx, { tenantId, conversationId, channel: "whatsapp", type: "text", content: text, metadata: { system: true } });
+    });
+    return "sent_whatsapp";
+  }
+  return "skipped_no_channel";
+}
+
 // —— المفصل (§4.2.3 D-M1): order.ready_for_dispatch هو **مُنتِج الإسناد الوحيد** ——
 // المحفّز القديم (to='confirmed' هنا) حُذف (adversary #2): كان يُرسل سائقاً فيزيائياً
 // لطلبات pickup ويُشعل الطعام مرتين. الحدث يصدر حصراً من ختم write-once بـ transition()،
@@ -273,6 +382,7 @@ async function handleOrderStatusChanged(deps: NotificationsConsumerDeps, job: No
         customerMsgId: orders.customerMsgId,
         customerUserId: users.id,
         customerTgId: users.telegramUserId,
+        customerWaId: users.waId,
         customerBlockedAt: users.blockedAt,
       })
       .from(orders)
@@ -287,7 +397,20 @@ async function handleOrderStatusChanged(deps: NotificationsConsumerDeps, job: No
   }
 
   if (row.customerTgId === null) {
-    // D15 — زبون تلفون بلا تيليغرام: تتبعه بالهاتف/رابط /t/{token} — تخطٍّ بصمت مع لوغ
+    // R-11 (خطوة 21) — زبون واتساب: رسالة حالة نصية عبر Graph للحالات المرئية للزبون؛
+    // زبون تلفون (لا قناة): تتبعه بالهاتف/رابط /t/{token} — تخطٍّ بلوغ (D15).
+    if (row.customerWaId !== null && row.customerBlockedAt === null && WA_STATUS_NOTIFY.has(row.status)) {
+      const wa = await getTenantWaClient(deps, job.tenantId);
+      if (wa) {
+        const text = `📦 طلبك #${row.publicCode}: ${ORDER_STATUS_LABELS_AR[row.status]}`;
+        await wa.sendText(row.customerWaId, text);
+        await withTenant(deps.appDb, job.tenantId, async (tx) => {
+          const { id: conversationId } = await getOrCreateConversation(tx, job.tenantId, row.customerUserId);
+          await recordOutboundMessage(tx, { tenantId: job.tenantId, conversationId, channel: "whatsapp", type: "text", content: text, metadata: { system: true, orderStatus: row.status } });
+        });
+        return;
+      }
+    }
     console.log(
       JSON.stringify({ action: "notification_skipped_no_telegram", tenantId: job.tenantId, orderId: row.orderId }),
     );
@@ -673,6 +796,68 @@ async function handleSupportReply(deps: NotificationsConsumerDeps, job: Notifica
   });
 }
 
+// —— payment.paid (§4.2.5 / adversary #18): تأكيد pickup آلياً + إشعار الزبون ——
+// بوابة البشر: التأكيد الآلي بالدفع لطلبات fulfillment='pickup' **حصراً** (لا إسناد لها
+// أبداً)؛ طلبات التوصيل يؤكّدها موظف/تاجر — الدفع وحده لا يحرّك سائقاً.
+
+async function handlePaymentPaid(deps: NotificationsConsumerDeps, job: NotificationJob): Promise<void> {
+  const parsed = parseSpineEvent("payment.paid", job.payload);
+  if (!parsed.ok || parsed.event.topic !== "payment.paid") {
+    throw new Error(`payment.paid: invalid payload (${parsed.ok ? "topic mismatch" : parsed.reason})`); // §16.12
+  }
+  const { orderId } = parsed.event.payload;
+  const tenant = await loadActiveTenant(deps, job.tenantId, job.topic);
+  if (!tenant) return;
+
+  const row = await withTenant(deps.appDb, job.tenantId, async (tx) => {
+    const rows = await tx
+      .select({ id: orders.id, publicCode: orders.publicCode, status: orders.status, fulfillment: orders.fulfillment, customerId: orders.customerId })
+      .from(orders)
+      .where(and(eq(orders.tenantId, job.tenantId), eq(orders.id, orderId)))
+      .limit(1);
+    return rows[0];
+  });
+  if (!row) {
+    throw new Error(`payment.paid: order ${orderId} not found`); // §16.12 — فساد بيانات
+  }
+
+  if (row.fulfillment === "pickup" && row.status === "pending") {
+    try {
+      await withTenant(deps.appDb, job.tenantId, (tx) =>
+        transition(tx, { orderId, to: "confirmed", actor: { type: "system" }, meta: { reason: "payment_paid_pickup" } }),
+      );
+    } catch (error) {
+      // §4.2.5 (adversary #6): الطلب تحرّك بين القراءة والقفل (أُكّد/أُلغي) — نجاح idempotent
+      if (!(error instanceof InvalidTransitionError)) throw error;
+    }
+  }
+
+  // إشعار الزبون بقناته (R-11) — فشل الإرسال يعيد المهمة؛ التأكيد أعلاه idempotent
+  const customer = await loadCustomerChannel(deps, job.tenantId, row.customerId);
+  if (customer) {
+    const outcome = await sendTextToCustomer(deps, tenant, job.tenantId, customer, `✅ استلمنا دفعتك لطلب #${row.publicCode} — شكراً لك!`);
+    if (outcome !== "sent_telegram" && outcome !== "sent_whatsapp") {
+      console.log(JSON.stringify({ action: "payment_paid_notify_skipped", tenantId: job.tenantId, orderId, outcome }));
+    }
+  }
+}
+
+// —— payment.link (خطوة 20): إيصال رابط الدفع للزبون عبر قناته ——
+
+async function handlePaymentLink(deps: NotificationsConsumerDeps, job: NotificationJob): Promise<void> {
+  const payload = paymentLinkPayloadSchema.parse(job.payload);
+  const tenant = await loadActiveTenant(deps, job.tenantId, job.topic);
+  if (!tenant) return;
+  const customer = await loadCustomerChannel(deps, job.tenantId, payload.userId);
+  if (!customer) {
+    throw new Error(`payment.link: user ${payload.userId} not found`); // §16.12
+  }
+  const outcome = await sendTextToCustomer(deps, tenant, job.tenantId, customer, `💳 رابط الدفع لطلبك:\n${payload.url}`);
+  if (outcome !== "sent_telegram" && outcome !== "sent_whatsapp") {
+    console.log(JSON.stringify({ action: "payment_link_notify_skipped", tenantId: job.tenantId, orderId: payload.orderId, outcome }));
+  }
+}
+
 // —— journey.message: إيصال رسالة رحلة أتمتة إلى الزبون عبر البوت (§3.4) ——
 
 const journeyMessagePayloadSchema = z.object({ userId: z.string().uuid(), text: z.string().min(1) }).passthrough();
@@ -682,36 +867,16 @@ async function handleJourneyMessage(deps: NotificationsConsumerDeps, job: Notifi
   const tenant = await loadActiveTenant(deps, job.tenantId, job.topic);
   if (!tenant) return;
 
-  const row = await withTenant(deps.appDb, job.tenantId, async (tx) => {
-    const rows = await tx
-      .select({ userId: users.id, telegramUserId: users.telegramUserId, blockedAt: users.blockedAt })
-      .from(users)
-      .where(and(eq(users.tenantId, job.tenantId), eq(users.id, payload.userId)))
-      .limit(1);
-    return rows[0];
-  });
+  const row = await loadCustomerChannel(deps, job.tenantId, payload.userId);
   if (!row) {
     // §16.12 — رسالة رحلة لزبون غير موجود = فساد بيانات — فشل صاخب
     throw new Error(`notifications: user ${payload.userId} not found for journey.message`);
   }
-  if (row.telegramUserId === null) {
-    // WA-only أو زبون تلفون: نقل واتساب للرحلات مؤجّل (R-11، Phase 3) — تخطٍّ بلوغ
-    console.log(JSON.stringify({ action: "journey_message_skipped_no_telegram", tenantId: job.tenantId, userId: row.userId }));
-    return;
+  // R-11 (اكتمل بـ Phase 3): النقل الموحّد — TG أولاً وإلا WA؛ لا قناة/محظور → تخطٍّ بلوغ
+  const outcome = await sendTextToCustomer(deps, tenant, job.tenantId, row, payload.text);
+  if (outcome === "skipped_no_channel" || outcome === "skipped_blocked") {
+    console.log(JSON.stringify({ action: "journey_message_skipped", tenantId: job.tenantId, userId: row.userId, outcome }));
   }
-  if (row.blockedAt !== null) {
-    console.log(JSON.stringify({ action: "journey_message_skipped_user_blocked", tenantId: job.tenantId, userId: row.userId }));
-    return;
-  }
-
-  const bot = await getTenantBot(deps, job.tenantId, tenant);
-  await sendOrMarkBlocked(deps, {
-    tenantId: job.tenantId,
-    bot,
-    chatId: row.telegramUserId,
-    userId: row.userId,
-    text: escapeHtml(payload.text), // نص قالب مُصاغ من المكتب — HTML escape (§4.3)
-  });
 }
 
 /**
@@ -749,6 +914,13 @@ export function createNotificationsProcessor(deps: NotificationsConsumerDeps): (
         return;
       case "journey.message":
         await handleJourneyMessage(deps, job);
+        return;
+      case "payment.paid":
+        // خطوة 20 (§4.2.5): تأكيد pickup آلياً + إشعار الزبون (الدماغ/الرحلات عبر BRAIN_QUEUE)
+        await handlePaymentPaid(deps, job);
+        return;
+      case "payment.link":
+        await handlePaymentLink(deps, job);
         return;
       default:
         // topic مجهول (منتج أحدث/أقدم): لوغ تحذيري بلا رمي — retry بلا فائدة (§16.12

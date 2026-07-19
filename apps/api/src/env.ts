@@ -29,6 +29,10 @@ const envSchema = z.object({
   // غيابهما = بوابة /wa معطَّلة بصوت عالٍ (403 verify / تجاهل موقَّع) — لا فتح مفتوح.
   META_APP_SECRET: z.string().min(16).optional(),
   META_VERIFY_TOKEN: z.string().min(16).optional(),
+  // دمج WaFlow (خطوة 20) — Billplz: قاعدة الـ API (sandbox للاختبار) وعنواننا العام
+  // (يُبنى منه callback_url). الاعتمادات نفسها لكل مستأجر بالقاعدة (مشفّرة — ترحيل 0021).
+  BILLPLZ_BASE_URL: z.string().url().default("https://www.billplz.com/api/v3"),
+  PUBLIC_API_URL: z.string().url().default("http://localhost:3000"),
 });
 
 export type ApiEnv = z.infer<typeof envSchema>;

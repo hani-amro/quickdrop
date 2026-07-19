@@ -84,6 +84,10 @@ export function classifyRoute(method: string, rawPath: string): RateTier | null 
   // 300/5د العام يُطلق 429 → Meta يتراجع/يعطّل الاشتراك → رسائل تضيع (خرق R-12).
   // آمنٌ للإعفاء: البوابة موقّعة (توقيع Meta) وذات inbox dedup — نفس مبرّر /tg/.
   if (path.startsWith("/wa/")) return null;
+  // دمج WaFlow (خطوة 20) — بوابة Billplz معفاة بنفس مبرّر /wa/: موقّعة (HMAC لكل مستأجر،
+  // التحقق ثابت الزمن) ورتيبة idempotent (الحارس الرتيب على payment_status)؛ 429 عليها
+  // يجعل Billplz يعلّم النداء فاشلاً — تأكيد دفع يضيع.
+  if (path.startsWith("/payments/billplz/")) return null;
   // §11 — كل مسارات إثبات الهوية (كلمة سر أو TOTP، للطاقم أو المشرف) بطبقة login الأضيق:
   // قوة غاشمة على أيّها تُخنق بنفس الحد (10/دقيقة/IP) — بما فيها تخمين رمز TOTP السداسي.
   if (

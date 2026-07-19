@@ -57,6 +57,11 @@ export const tenants = pgTable("tenants", {
   // تحت FORCE RLS. فريد جزئياً عالمياً (R-13 — findFirst الغامض بـ WaFlow كان يوصل
   // رسائل مستأجر لصندوق مستأجر آخر). القيد بالترحيل (drizzle بلا partial-unique هنا).
   waPhoneNumberId: text("wa_phone_number_id"),
+  // دمج WaFlow (ترحيل 0021) — اعتمادات Billplz لكل مستأجر: أسرار AES-256-GCM تحت
+  // MASTER_KEY (R-21 — لا نص صريح)؛ collection_id ليس سراً.
+  billplzApiKeyEnc: bytea("billplz_api_key_enc"),
+  billplzXSignatureEnc: bytea("billplz_x_signature_enc"),
+  billplzCollectionId: text("billplz_collection_id"),
   settings: jsonb("settings").notNull().default(sql`'{}'::jsonb`),
   limits: jsonb("limits").notNull().default(sql`'{}'::jsonb`),
   createdAt: timestamp("created_at", { withTimezone: true, mode: "date" }).notNull().defaultNow(),
