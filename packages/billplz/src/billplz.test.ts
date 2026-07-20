@@ -63,6 +63,35 @@ describe("createBill (fetch محقون — بلا شبكة)", () => {
     expect(captured!.auth).toBe(`Basic ${Buffer.from("k:").toString("base64")}`);
   });
 
+  // P5.2 — MYR سنتات (sen) من طرف لطرف: المبلغ bigint بأصغر وحدة MYR ويُرسَل نصاً صحيحاً
+  // بلا فاصلة عشرية ولا أثر float. Billplz تعرض على صفحتها قنوات الدفع الماليزية (FPX
+  // ومنها DuitNow، والبطاقات) — تكاملنا محايد للقناة: نُنشئ فاتورة MYR والزبون يختار القناة.
+  it("MYR sen طرف-لطرف: مبالغ واقعية تُرسَل أعداداً صحيحة بلا نقطة عشرية (لا float)", async () => {
+    const cases: Array<{ ringgit: string; sen: bigint }> = [
+      { ringgit: "RM 0.50", sen: 50n },
+      { ringgit: "RM 10.00", sen: 1_000n },
+      { ringgit: "RM 1,234.56", sen: 123_456n },
+      { ringgit: "RM 9,999.99", sen: 999_999n },
+    ];
+    for (const c of cases) {
+      let body = "";
+      const fetchImpl = ((_url: string, init: RequestInit) => {
+        body = String(init.body);
+        return Promise.resolve(new Response(JSON.stringify({ id: "b", url: "https://billplz.com/bills/b" }), { status: 200 }));
+      }) as unknown as typeof fetch;
+      await createBill({ ...config, fetchImpl }, {
+        name: "Ahmad",
+        amountSen: c.sen,
+        description: `Food order (${c.ringgit})`,
+        callbackUrl: "https://qd.test/payments/billplz/t1/callback",
+      });
+      const amount = new URLSearchParams(body).get("amount");
+      expect(amount).toBe(c.sen.toString()); // سنتات صحيحة
+      expect(amount).not.toContain("."); // لا فاصلة عشرية — لا float بالمسار (D3)
+      expect(amount).toMatch(/^\d+$/); // أرقام فقط
+    }
+  });
+
   it("مبلغ ≤ 0 → RangeError قبل أي نداء؛ حالة غير ok → BillplzApiError؛ شكل استجابة غريب → خطأ", async () => {
     await expect(
       createBill(config, { name: "x", amountSen: 0n, description: "d", callbackUrl: "https://cb.test" }),
