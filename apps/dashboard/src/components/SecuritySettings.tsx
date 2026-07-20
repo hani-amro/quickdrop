@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { ApiError, api, describeError } from "@/lib/api";
+import { useT } from "@/lib/i18n";
 
 // §10.2 — تسجيل المصادقة الثنائية (TOTP) للطاقم. إلزامي لدور owner وaccountant.
 // التدفّق: زر التفعيل → POST /api/proxy/auth/totp/enroll يرجع otpauth URL → نعرض
@@ -34,6 +35,7 @@ type Phase =
   | { step: "done" };
 
 export function SecuritySettings() {
+  const t = useT();
   const [phase, setPhase] = useState<Phase>({ step: "idle" });
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
@@ -64,9 +66,9 @@ export function SecuritySettings() {
     } catch (e) {
       // §11 — الخادم يرد عاماً؛ نترجم الحالة لرسالة مفيدة للطاقم
       if (e instanceof ApiError && e.status === 401) {
-        setError("الرمز غير صحيح — تأكّد أن وقت هاتفك مضبوط تلقائياً ثم أعد إدخال الرمز الحالي.");
+        setError(t("security.err401"));
       } else if (e instanceof ApiError && e.status === 400) {
-        setError("انتهت مهلة التسجيل أو الرمز غير صالح — ابدأ التفعيل من جديد.");
+        setError(t("security.err400"));
       } else {
         setError(describeError(e));
       }
@@ -90,35 +92,27 @@ export function SecuritySettings() {
   return (
     <div className="mx-auto flex max-w-xl flex-col gap-4">
       <div>
-        <h1 className="text-lg font-bold text-slate-900">المصادقة الثنائية (2FA)</h1>
-        <p className="mt-1 text-sm text-slate-500">
-          طبقة حماية إضافية عند الدخول برمز متغيّر من تطبيق مصادقة. إلزامية لدور المالك
-          والمحاسب.
-        </p>
+        <h1 className="text-lg font-bold text-slate-900">{t("security.title")}</h1>
+        <p className="mt-1 text-sm text-slate-500">{t("security.subtitle")}</p>
       </div>
 
       {phase.step === "done" ? (
         <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-5 text-sm text-emerald-900">
-          <p className="font-bold">تم تفعيل المصادقة الثنائية ✓</p>
-          <p className="mt-1">
-            سيُطلب منك رمز من تطبيق المصادقة في كل تسجيل دخول جديد. احتفظ بجهازك بأمان.
-          </p>
+          <p className="font-bold">{t("security.doneTitle")}</p>
+          <p className="mt-1">{t("security.doneBody")}</p>
         </div>
       ) : (
         <div className="rounded-2xl border border-slate-200 bg-white p-5">
           {phase.step === "idle" && (
             <>
-              <p className="text-sm text-slate-600">
-                ستحتاج تطبيق مصادقة على هاتفك (مثل Google Authenticator أو Authy). اضغط
-                للبدء ثم أضف الحساب يدوياً بالمفتاح الذي سيظهر.
-              </p>
+              <p className="text-sm text-slate-600">{t("security.idleDesc")}</p>
               <button
                 type="button"
                 disabled={busy}
                 onClick={() => void startEnroll()}
                 className="mt-4 rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-800 disabled:opacity-50"
               >
-                {busy ? "جارٍ التحضير…" : "فعّل المصادقة الثنائية"}
+                {busy ? t("security.preparing") : t("security.enroll")}
               </button>
             </>
           )}
@@ -126,14 +120,14 @@ export function SecuritySettings() {
           {phase.step === "enrolled" && (
             <div className="flex flex-col gap-4">
               <ol className="list-inside list-decimal space-y-1 text-sm text-slate-600">
-                <li>افتح تطبيق المصادقة واختر «إضافة حساب» ثم «إدخال مفتاح يدوياً».</li>
-                <li>انسخ المفتاح أدناه والصقه في التطبيق (نوع الرمز: مبني على الوقت TOTP).</li>
-                <li>أدخل الرمز المكوّن من ٦ أرقام الظاهر بالتطبيق لتأكيد التفعيل.</li>
+                <li>{t("security.step1")}</li>
+                <li>{t("security.step2")}</li>
+                <li>{t("security.step3")}</li>
               </ol>
 
               {/* المفتاح (secret) — الأسهل للإدخال اليدوي */}
               <CopyField
-                label="المفتاح السرّي"
+                label={t("security.secret")}
                 value={phase.secret}
                 copied={copied === "secret"}
                 onCopy={() => void copy(phase.secret, "secret")}
@@ -142,7 +136,7 @@ export function SecuritySettings() {
 
               {/* otpauth URL الكامل — لمن يستطيع لصق الرابط مباشرة */}
               <CopyField
-                label="رابط otpauth (بديل)"
+                label={t("security.otpauthUrl")}
                 value={phase.otpauthUrl}
                 copied={copied === "url"}
                 onCopy={() => void copy(phase.otpauthUrl, "url")}
@@ -151,7 +145,7 @@ export function SecuritySettings() {
               />
 
               <label className="block text-sm text-slate-700">
-                رمز التأكيد (٦ أرقام)
+                {t("security.tokenLabel")}
                 <input
                   inputMode="numeric"
                   autoComplete="one-time-code"
@@ -170,7 +164,7 @@ export function SecuritySettings() {
                   onClick={() => void confirmEnroll()}
                   className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
                 >
-                  {busy ? "جارٍ التأكيد…" : "تأكيد التفعيل"}
+                  {busy ? t("security.confirming") : t("security.confirm")}
                 </button>
                 <button
                   type="button"
@@ -182,7 +176,7 @@ export function SecuritySettings() {
                   }}
                   className="rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
                 >
-                  إلغاء
+                  {t("common.cancel")}
                 </button>
               </div>
             </div>
@@ -214,6 +208,7 @@ function CopyField({
   mono?: boolean;
   small?: boolean;
 }) {
+  const t = useT();
   return (
     <div>
       <p className="mb-1 text-xs text-slate-500">{label}</p>
@@ -231,7 +226,7 @@ function CopyField({
           onClick={onCopy}
           className="shrink-0 rounded-lg border border-slate-300 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50"
         >
-          {copied ? "نُسخ ✓" : "نسخ"}
+          {copied ? t("common.copied") : t("common.copy")}
         </button>
       </div>
     </div>

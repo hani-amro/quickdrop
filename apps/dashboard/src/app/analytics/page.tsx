@@ -1,9 +1,7 @@
-import type { Metadata } from "next";
 import { AnalyticsDashboard } from "@/components/AnalyticsDashboard";
 
-export const metadata: Metadata = { title: "التحليلات — QuickDrop" };
-
-// §13/§10 — شاشة التحليلات: بطاقات KPI + رسم أعمدة الطلبات الأسبوعي.
+// §13/§10/§24 — شاشة التحليلات: بطاقات KPI + رسم أعمدة الطلبات الأسبوعي (ثنائية اللغة).
+// لا metadata لكل صفحة (كباقي الصفحات المنقولة) — عنوان التبويب من التخطيط المُدوّل.
 export default function AnalyticsPage() {
   return <AnalyticsDashboard />;
 }
