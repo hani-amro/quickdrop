@@ -1,5 +1,18 @@
-import { createDb, drivers, tenants, users, withTenant, type DbHandle } from "@quickdrop/db";
-import { eq } from "drizzle-orm";
+import {
+  createOrder,
+  drivers,
+  createDb,
+  ledgerEntries,
+  orders,
+  pricingRules,
+  tenants,
+  transition,
+  users,
+  withTenant,
+  type DbHandle,
+} from "@quickdrop/db";
+import { makePoint } from "@quickdrop/shared";
+import { eq, sql } from "drizzle-orm";
 import { Redis } from "ioredis";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { ApiEnv } from "../env.js";
@@ -41,11 +54,19 @@ describe.skipIf(!hasDeps)("DriverService — مصادقة قابلة للإبط�
   });
 
   afterAll(async () => {
-    await withTenant(handle.db, tenantId, async (tx) => {
-      await tx.delete(drivers).where(eq(drivers.tenantId, tenantId));
-      await tx.delete(users).where(eq(users.tenantId, tenantId));
-    });
-    await handle.db.delete(tenants).where(eq(tenants.id, tenantId));
+    // تنظيف أفضل-جهد مقيَّد بالمستأجر (لا TRUNCATE عام — يصطدم بالحزم المتزامنة). ledger_entries
+    // append-only (لا حذف — 42501) فيبقى المستأجر يتيماً بعد اختبار DoD: مقبول (المستأجر معزول،
+    // وكل المجسّات مقيّدة بالمستأجر فلا تتأثر). نحذف ما يُحذف كي لا نكوّم بلا داعٍ.
+    try {
+      await withTenant(handle.db, tenantId, async (tx) => {
+        for (const t of ["order_events", "offers", "tracking_tokens", "order_attachments", "driver_locations", "outbox", "orders", "drivers", "pricing_rules", "users"]) {
+          await tx.execute(sql.raw(`DELETE FROM "${t}" WHERE tenant_id = '${tenantId}'`)).catch(() => undefined);
+        }
+      });
+      await handle.db.delete(tenants).where(eq(tenants.id, tenantId)).catch(() => undefined);
+    } catch {
+      // أفضل-جهد — بيانات اختبار يتيمة معزولة غير مؤذية
+    }
     await handle.close();
     redis.disconnect();
   });
@@ -108,5 +129,46 @@ describe.skipIf(!hasDeps)("DriverService — مصادقة قابلة للإبط�
     expect(r.status).toBe("online");
     const back = await service.shift(`Bearer ${token}`, { action: "end" });
     expect(back.status).toBe("offline");
+  });
+
+  // P5.4 — DoD (رجل قناة السائق): السائق يقود التسليم لنهايته عبر /api/driver، وdelivered
+  // يكتب قيد الدفتر (§8.1). يثبت أن قناة PWA الجديدة تُكمل التسليم على النظام المدموج.
+  it("DoD: السائق يُكمل تسليماً عبر /api/driver (assigned→…→delivered) ويُكتب الدفتر", async () => {
+    // بذر تسعير + زبون + طلب p2p مؤكّد، ثم إسناده لهذا السائق (assigned)
+    const customerId = await withTenant(handle.db, tenantId, async (tx) => {
+      await tx.insert(pricingRules).values({ tenantId, service: "p2p", base: 5_000n, perKm: 1_000n, perKg: 0n, minTotal: 0n, surgeMultiplierBp: 10_000, priority: 0 });
+      const u = await tx.insert(users).values({ tenantId, role: "customer", firstName: "Cust", phoneE164: "+60123999888" }).returning({ id: users.id });
+      return u[0]!.id;
+    });
+    const created = await createOrder(handle.db, tenantId, {
+      service: "p2p",
+      customerId,
+      pickup: makePoint(3.139, 101.6869),
+      dropoff: makePoint(3.158, 101.711),
+      goodsAmount: 40_000n,
+      createdBy: { type: "staff" },
+    });
+    const orderId = created.order.id;
+    await withTenant(handle.db, tenantId, (tx) => transition(tx, { orderId, to: "confirmed", actor: { type: "staff" } }));
+    await withTenant(handle.db, tenantId, (tx) => transition(tx, { orderId, to: "assigned", actor: { type: "staff" }, driverId }));
+
+    const token = await issueAndAuth();
+    const auth = `Bearer ${token}`;
+    // السائق يرى الطلب المُسنَد
+    const mine = await service.orders(auth);
+    expect(mine.orders.map((o) => o.id)).toContain(orderId);
+
+    // يقود سلسلة الحالة عبر القناة
+    for (const to of ["picked_up", "in_transit", "arrived", "delivered"] as const) {
+      const r = await service.status(auth, orderId, { to });
+      expect(r.ok, `transition to ${to}`).toBe(true);
+      expect(r.status).toBe(to);
+    }
+
+    const row = await withTenant(handle.db, tenantId, async (tx) => (await tx.select({ status: orders.status }).from(orders).where(eq(orders.id, orderId)))[0]!);
+    expect(row.status).toBe("delivered");
+    // §8.1 — التسليم يكتب قيود الدفتر
+    const ledger = await withTenant(handle.db, tenantId, (tx) => tx.select({ id: ledgerEntries.id }).from(ledgerEntries).where(eq(ledgerEntries.orderId, orderId)));
+    expect(ledger.length).toBeGreaterThan(0);
   });
 });
