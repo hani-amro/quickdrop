@@ -2,6 +2,7 @@ import {
   drivers,
   InvalidTransitionError,
   orders,
+  setDriverShift,
   tenants,
   transition,
   users,
@@ -164,28 +165,8 @@ type ShiftAction = "start" | "end" | "toggle";
  * §16.11: قراءة-ثم-كتابة على حالة → FOR UPDATE.
  */
 async function flipShift(deps: DriverFlowDeps, driverId: string, action: ShiftAction): Promise<DriverStatus> {
-  return withTenant(deps.db, deps.tenantId, async (tx) => {
-    const locked = await tx
-      .select({ status: drivers.status })
-      .from(drivers)
-      .where(eq(drivers.id, driverId))
-      .for("update");
-    const current = locked[0];
-    if (!current) {
-      throw new Error(`flipShift: driver ${driverId} not found`); // §16.12
-    }
-
-    const target: DriverStatus =
-      action === "start" ? "online" : action === "end" ? "offline" : current.status === "online" ? "offline" : "online";
-    if (target === current.status) return target; // ضغطة مكررة (الفخ 7) — idempotent بلا كتابة
-
-    const now = new Date(); // D6: TIMESTAMPTZ بتوقيت UTC
-    await tx
-      .update(drivers)
-      .set({ status: target, shiftStartedAt: target === "online" ? now : null, updatedAt: now })
-      .where(eq(drivers.id, driverId));
-    return target;
-  });
+  // P5.1 — المنطق مصدره الوحيد @quickdrop/db (setDriverShift)، مشترك مع قناة السائق PWA.
+  return setDriverShift(deps.db, deps.tenantId, driverId, action);
 }
 
 /**
