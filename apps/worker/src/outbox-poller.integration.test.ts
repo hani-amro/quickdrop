@@ -84,7 +84,13 @@ describe.skipIf(!hasDb)("R-16 — الصف السام بالـ outbox (تكام�
   });
 
   it("دورة أولى: السليم يُرسَل sent والسام يُحاسَب (attempts=1، backoff مستقبلي، يبقى pending)", async () => {
-    await pollOnce(deps(), () => false);
+    // المسح **عام** بسقف دفعة (BATCH_LIMIT=100) وبلا ORDER BY: قد تسبق صفوفَنا بقايا outbox
+    // معلّقة من ملفات اختبار أخرى تشارك القاعدة (تكتب outbox ولا تنظّفه) فتُزاحمها خارج الدفعة.
+    // نكرّر pollOnce حتى يُرسَل صفّنا السليم (كل دورة تُصرّف حتى 100 معلّقاً: بقايا المستأجرين
+    // الآخرين تُبتلع sent، وسمّنا يُحاسَب مرة ثم يُتخطّى بموعده المستقبلي فيبقى attempts=1).
+    for (let i = 0; i < 200 && (await readRow(healthyId)).status !== "sent"; i += 1) {
+      await pollOnce(deps(), () => false);
+    }
 
     expect(delivered).toHaveLength(1);
     expect(delivered[0]!.topic).toBe(HEALTHY_TOPIC);

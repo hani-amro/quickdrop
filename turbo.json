@@ -10,7 +10,7 @@
     },
     "test": {
       "dependsOn": ["^build"],
-      "env": ["DATABASE_URL", "DATABASE_URL_MIGRATOR", "REDIS_URL", "MASTER_KEY"]
+      "env": ["DATABASE_URL", "DATABASE_URL_MIGRATOR", "DATABASE_URL_WORKER", "REDIS_URL", "MASTER_KEY"]
     }
   }
 }
