@@ -25,6 +25,7 @@ describe("realtime rooms and names", () => {
     expect(RT_REDIS_CHANNEL).toBe("quickdrop:rt");
     expect(RT_EVENTS.orderChanged).toBe("order.changed");
     expect(RT_EVENTS.driverLocation).toBe("driver.location");
+    expect(RT_EVENTS.conversationChanged).toBe("conversation.changed");
   });
 });
 
@@ -52,6 +53,25 @@ describe("rtMessageSchema", () => {
       },
     };
     expect(rtMessageSchema.parse(JSON.parse(JSON.stringify(message)))).toEqual(message);
+  });
+
+  it("roundtrips a conversation.changed message through JSON (id + direction only, §11)", () => {
+    const message: RtMessage = {
+      tenantId,
+      event: RT_EVENTS.conversationChanged,
+      payload: { conversationId: "55555555-5555-4555-8555-555555555555", direction: "in" },
+    };
+    expect(rtMessageSchema.parse(JSON.parse(JSON.stringify(message)))).toEqual(message);
+  });
+
+  it("rejects a conversation.changed with a bad direction", () => {
+    expect(
+      rtMessageSchema.safeParse({
+        tenantId,
+        event: RT_EVENTS.conversationChanged,
+        payload: { conversationId: "55555555-5555-4555-8555-555555555555", direction: "sideways" },
+      }).success,
+    ).toBe(false);
   });
 
   it("rejects unknown events and out-of-range coordinates", () => {

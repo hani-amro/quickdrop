@@ -41,6 +41,8 @@ export const RT_EVENTS = {
   orderChanged: "order.changed",
   /** نقطة موقع سائق غير مشبوهة كُتبت — لشاشة الخريطة/اللوحة. */
   driverLocation: "driver.location",
+  /** رسالة جديدة بمحادثة (وارد/صادر) — الوارد الموحّد (§24/§25) يعيد جلب القائمة/الخيط. */
+  conversationChanged: "conversation.changed",
 } as const;
 
 export type RtEventName = (typeof RT_EVENTS)[keyof typeof RT_EVENTS];
@@ -65,6 +67,15 @@ export const driverLocationEventSchema = z.object({
 /** حمولة 'driver.location' — معرّف وإحداثيات ووقت فقط. */
 export type DriverLocationEvent = z.infer<typeof driverLocationEventSchema>;
 
+export const conversationChangedEventSchema = z.object({
+  conversationId: z.string().uuid(),
+  // اتجاه آخر رسالة: 'in' وارد الزبون (يحتاج انتباه)، 'out' رد صادر. معرّف واتجاه فقط —
+  // لا نص/اسم/هاتف (§11)؛ الداشبورد يعيد الجلب عبر قناته الموثّقة (proxy) عند الوصول.
+  direction: z.enum(["in", "out"]),
+});
+/** حمولة 'conversation.changed' — معرّف المحادثة واتجاه آخر رسالة فقط (§11). */
+export type ConversationChangedEvent = z.infer<typeof conversationChangedEventSchema>;
+
 /** رسالة قناة RT_REDIS_CHANNEL — discriminated union على اسم الحدث. */
 export const rtMessageSchema = z.discriminatedUnion("event", [
   z.object({
@@ -76,6 +87,11 @@ export const rtMessageSchema = z.discriminatedUnion("event", [
     tenantId: z.string().uuid(),
     event: z.literal(RT_EVENTS.driverLocation),
     payload: driverLocationEventSchema,
+  }),
+  z.object({
+    tenantId: z.string().uuid(),
+    event: z.literal(RT_EVENTS.conversationChanged),
+    payload: conversationChangedEventSchema,
   }),
 ]);
 export type RtMessage = z.infer<typeof rtMessageSchema>;

@@ -158,4 +158,36 @@ describe.skipIf(!hasDb)("wa-update-processor (تكامل، قاعدة حية)", 
     expect(attached.filter((r) => r.waId === "60177776666")).toHaveLength(1);
     expect(attached.filter((r) => r.waId === null)).toHaveLength(1);
   });
+
+  it("§25 — إدراج وارد جديد يبثّ conversation.changed{in} مرة واحدة؛ إعادة التسليم لا تبثّ", async () => {
+    const published: { tenantId: string; event: string; payload: unknown }[] = [];
+    // fake RtPublishClient — يسجّل ما يُنشر على قناة الوقت الحقيقي (لا Redis حي)
+    const rtRedis = {
+      publish: (_channel: string, raw: string): Promise<number> => {
+        published.push(JSON.parse(raw) as { tenantId: string; event: string; payload: unknown });
+        return Promise.resolve(1);
+      },
+    };
+    const waId = "60123123123";
+    const rowId = await seedInboxRow("wamid.rt1", inboxValue(waId, "wamid.rt1"));
+    const outcome = await processWaUpdate({ appDb: app.db, rtRedis }, { tenantId, updateId: rowId });
+    expect(outcome).toBe("processed");
+
+    const conversationId = await withTenant(app.db, tenantId, async (tx) => {
+      const u = await tx.select({ id: users.id }).from(users).where(and(eq(users.tenantId, tenantId), eq(users.waId, waId)));
+      const c = await tx.select({ id: conversations.id }).from(conversations).where(and(eq(conversations.tenantId, tenantId), eq(conversations.userId, u[0]!.id)));
+      return c[0]!.id;
+    });
+
+    const convEvents = published.filter((p) => p.event === "conversation.changed");
+    expect(convEvents).toHaveLength(1);
+    // العزل + §11: الحمولة معرّف واتجاه فقط، والبثّ لغرفة هذا المستأجر (tenantId مطابق)
+    expect(convEvents[0]).toEqual({ tenantId, event: "conversation.changed", payload: { conversationId, direction: "in" } });
+
+    // إعادة التسليم = duplicate → لا بثّ إضافي (idempotent — لا يُضخّم الوارد)
+    published.length = 0;
+    const again = await processWaUpdate({ appDb: app.db, rtRedis }, { tenantId, updateId: rowId });
+    expect(again).toBe("duplicate");
+    expect(published.filter((p) => p.event === "conversation.changed")).toHaveLength(0);
+  });
 });

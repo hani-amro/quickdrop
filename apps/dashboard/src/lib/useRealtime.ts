@@ -4,10 +4,12 @@ import { useEffect, useRef, useState } from "react";
 // الاستيراد من المسار الفرعي الآمن للمتصفح حصراً — برميل "@quickdrop/shared" يجر
 // crypto/env (node:crypto) فيكسر حزمة العميل؛ realtime وحده خالٍ من واجهات Node.
 import {
+  conversationChangedEventSchema,
   driverLocationEventSchema,
   orderChangedEventSchema,
   RT_BOARD_NAMESPACE,
   RT_EVENTS,
+  type ConversationChangedEvent,
   type DriverLocationEvent,
   type OrderChangedEvent,
 } from "@quickdrop/shared/realtime";
@@ -26,6 +28,8 @@ export interface RealtimeHandlers {
   onOrderChanged?: (event: OrderChangedEvent) => void;
   /** نقطة سائق غير مشبوهة — لشاشة الخريطة/مؤشرات السائقين. */
   onDriverLocation?: (event: DriverLocationEvent) => void;
+  /** رسالة جديدة بمحادثة (§25) — الوارد الموحّد: refetch القائمة/الخيط المفتوح. */
+  onConversationChanged?: (event: ConversationChangedEvent) => void;
 }
 
 export interface RealtimeState {
@@ -74,6 +78,10 @@ export function useRealtime(handlers: RealtimeHandlers): RealtimeState {
     socket.on(RT_EVENTS.driverLocation, (raw: unknown) => {
       const parsed = driverLocationEventSchema.safeParse(raw);
       if (parsed.success) handlersRef.current.onDriverLocation?.(parsed.data);
+    });
+    socket.on(RT_EVENTS.conversationChanged, (raw: unknown) => {
+      const parsed = conversationChangedEventSchema.safeParse(raw);
+      if (parsed.success) handlersRef.current.onConversationChanged?.(parsed.data);
     });
 
     return () => {

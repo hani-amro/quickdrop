@@ -317,13 +317,24 @@ async function sendTextToCustomer(
     // سجلّ المحادثة الموحّد (§4.4): الرسالة الصادرة تُسجَّل بعد نجاح الإرسال. مراجعة Phase 3
     // (idem-F3): فشل التسجيل **لا يُرمى** — الإرسال نجح سلفاً، ورمي الخطأ يعيد المهمة فيُرسَل
     // النص ثانيةً (رسالة WA مكرّرة، لا dedup مثل تعديل تيليغرام). التسجيل سجلّ عرض لا مصدر حقيقة.
+    let recordedConversationId: string | null = null;
     try {
-      await withTenant(deps.appDb, tenantId, async (tx) => {
+      recordedConversationId = await withTenant(deps.appDb, tenantId, async (tx) => {
         const { id: conversationId } = await getOrCreateConversation(tx, tenantId, customer.userId);
         await recordOutboundMessage(tx, { tenantId, conversationId, channel: "whatsapp", type: "text", content: text, metadata: { system: true } });
+        return conversationId;
       });
     } catch (error) {
       console.error(JSON.stringify({ action: "wa_outbound_record_failed", tenantId, userId: customer.userId, message: error instanceof Error ? error.message : String(error) }));
+    }
+    // §25 — بثّ conversation.changed (صادر) بعد التسجيل الناجح: يحدّث الوارد الموحّد فوراً
+    // (رد وكيل/رحلة/دفع يظهر حياً). أفضل جهد فوق polling؛ فشل التسجيل → لا بث (convId=null).
+    if (recordedConversationId !== null) {
+      await publishRt(deps.rtRedis, {
+        tenantId,
+        event: RT_EVENTS.conversationChanged,
+        payload: { conversationId: recordedConversationId, direction: "out" },
+      });
     }
     return "sent_whatsapp";
   }

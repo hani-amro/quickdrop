@@ -1,9 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { crm, type ConversationDetail, type ConversationListItem, type Customer360 } from "@/lib/crm";
 import { ApiError } from "@/lib/api";
 import { useT } from "@/lib/i18n";
+import { useRealtime } from "@/lib/useRealtime";
+
+// §25 — احتياط polling تحت الوقت الحقيقي: يضمن حداثة الوارد حتى للمسارات غير المبثوثة
+// (رد المكتب المسجَّل بالـ API، دعم تيليغرام) ولو انقطع WS. الوقت الحقيقي يسرّع الحالة الشائعة.
+const INBOX_POLL_MS = 12_000;
 
 // دمج WaFlow (§24) — الوارد الموحّد: قائمة محادثات (start) + الخيط المحدَّد (رسائل + رد) +
 // بطاقة الزبون 360 (end). قناة واحدة لكل زبون مهما تعدّدت القنوات (المخزن الموحّد P2.4c).
@@ -25,6 +30,10 @@ export function InboxView() {
   const [replyText, setReplyText] = useState("");
   const [sending, setSending] = useState(false);
 
+  // معرّف المحادثة المفتوحة بمرجع حي — يقرأه معالج الوقت الحقيقي وحلقة polling بلا إعادة اشتراك
+  const selectedRef = useRef<string | null>(null);
+  selectedRef.current = selected;
+
   const loadList = useCallback(async () => {
     try {
       const { conversations } = await crm.listConversations();
@@ -35,9 +44,35 @@ export function InboxView() {
     }
   }, []);
 
+  // تحديث خلفي للخيط المفتوح (رسالة جديدة/polling): لا يمحو الخيط عند فشل عابر — على عكس
+  // openConversation الذي يُظهر حالة تحميل. الرسائل فقط تُحدَّث؛ بطاقة 360 لا تتأثر برسالة.
+  const loadThread = useCallback(async (id: string) => {
+    const d = await crm.getConversation(id).catch(() => null);
+    if (d !== null) setDetail(d);
+  }, []);
+
   useEffect(() => {
     void loadList();
   }, [loadList]);
+
+  // §25 — احتياط polling: يحدّث القائمة (والخيط المفتوح إن وُجد) دورياً ضماناً للحداثة
+  useEffect(() => {
+    const timer = setInterval(() => {
+      void loadList();
+      const id = selectedRef.current;
+      if (id !== null) void loadThread(id);
+    }, INBOX_POLL_MS);
+    return () => clearInterval(timer);
+  }, [loadList, loadThread]);
+
+  // §25 — الوقت الحقيقي فوق الاحتياط: رسالة جديدة (وارد/صادر) تعيد جلب القائمة فوراً،
+  // والخيط المفتوح إن كان هو المتغيّر. المعالج يقرأ selectedRef الحيّ (لا إعادة اشتراك).
+  useRealtime({
+    onConversationChanged: (e) => {
+      void loadList();
+      if (e.conversationId === selectedRef.current) void loadThread(e.conversationId);
+    },
+  });
 
   const openConversation = useCallback(async (item: ConversationListItem) => {
     setSelected(item.id);

@@ -12,7 +12,7 @@ import {
 } from "@quickdrop/db";
 import { publishSpineEvent } from "@quickdrop/spine";
 import { waChangeValueSchema, type WaChangeValue } from "@quickdrop/whatsapp";
-import type { MessageType, WaUpdateJob } from "@quickdrop/shared";
+import { publishRt, RT_EVENTS, type MessageType, type RtPublishClient, type WaUpdateJob } from "@quickdrop/shared";
 import { and, eq, isNull, sql } from "drizzle-orm";
 
 // MERGE_PLAN §3.1 (هيكل Phase 1) — مستهلك تحديثات واتساب: يقرأ صف الـ inbox (مصدر
@@ -36,6 +36,12 @@ export interface WaUpdateProcessorDeps {
    * مرئي بالمراقبة. رد durable+idempotent (dedup آثار الأدوات لكل رسالة) عملٌ لاحق موثّق.
    */
   onAgentTrigger?: (trigger: AgentTrigger) => Promise<void>;
+  /**
+   * §10.1/§25 — ناشر الوقت الحقيقي (اختياري): عند إدراج رسالة واردة **جديدة** (لا معادة)
+   * نبثّ conversation.changed لغرفة المستأجر فيُضيء الوارد الموحّد فوراً بدل انتظار polling.
+   * أفضل جهد (publishRt لا يرمي)؛ غيابه (اختبارات بلا Redis) = لا بث، لا كسر.
+   */
+  rtRedis?: RtPublishClient;
 }
 
 export interface AgentTrigger {
@@ -178,6 +184,8 @@ function extractWaMessage(m: Record<string, unknown>): { type: MessageType; cont
 export async function processWaUpdate(deps: WaUpdateProcessorDeps, job: WaUpdateJob): Promise<WaUpdateOutcome> {
   // §3.2 — يُجمَع داخل الترانزاكشن ويُطلَق **بعد التزامها** (LLM شبكي — لا داخل ترانزاكشن)
   let agentTrigger: AgentTrigger | null = null;
+  // §25 — معرّف المحادثة عند إدراج وارد جديد؛ يُبثّ conversation.changed بعد الالتزام (أفضل جهد)
+  let inboundConversationId: string | null = null;
   const outcome = await withTenant(deps.appDb, job.tenantId, async (tx) => {
     const rows = await tx
       .select({ id: waWebhookUpdates.id, status: waWebhookUpdates.status, payload: waWebhookUpdates.payload, eventKey: waWebhookUpdates.eventKey })
@@ -226,6 +234,8 @@ export async function processWaUpdate(deps: WaUpdateProcessorDeps, job: WaUpdate
         ...(extracted.mediaUrl !== undefined ? { mediaUrl: extracted.mediaUrl } : {}),
         ...(extracted.mediaMime !== undefined ? { mediaMime: extracted.mediaMime } : {}),
       });
+      // §25 — إدراج جديد فقط (لا معاد): يُشعل بثّ الوارد بعد الالتزام (unread تغيّر بالقاعدة أيضاً)
+      if (recorded === "inserted") inboundConversationId = conversationId;
       await publishSpineEvent(tx, job.tenantId, "wa.message.received", {
         waMessageId: message.id,
         conversationId,
@@ -272,6 +282,17 @@ export async function processWaUpdate(deps: WaUpdateProcessorDeps, job: WaUpdate
   // بعد الالتزام: إطلاق الوكيل (at-most-once مقصود — idem-F1 برأس الملف). فشله لا يُعاد
   // تشغيله (retry يخاطر بطلب مزدوج لوكيل غير idempotent)؛ يُلتقط بلوغ error مرئي بالمراقبة
   // — قد يضيع رد واحد على انقطاع LLM (نادر، غير مُفسِد؛ الزبون يعيد الإرسال أو يتدخّل بشري).
+  // §25 — بثّ conversation.changed بعد الالتزام (أفضل جهد؛ publishRt لا يرمي): يُضيء الوارد
+  // الموحّد فوراً بدل انتظار دورة polling. cast لنفس سبب agentTrigger أدناه (تدفّق closure).
+  const changedConversationId = inboundConversationId as string | null;
+  if (outcome === "processed" && changedConversationId && deps.rtRedis) {
+    await publishRt(deps.rtRedis, {
+      tenantId: job.tenantId,
+      event: RT_EVENTS.conversationChanged,
+      payload: { conversationId: changedConversationId, direction: "in" },
+    });
+  }
+
   // (cast: تحليل تدفّق TS لا يتتبّع الإسناد داخل الـ closure فيضيّق إلى never)
   const trigger = agentTrigger as AgentTrigger | null;
   if (outcome === "processed" && trigger && deps.onAgentTrigger) {

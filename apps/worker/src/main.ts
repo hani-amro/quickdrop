@@ -290,7 +290,7 @@ async function main(): Promise<void> {
     WA_UPDATES_QUEUE,
     async (job) => {
       // §16.12: لا ابتلاع — الرمي يعيد الجدولة عبر backoff
-      await processWaUpdate({ appDb: appDb.db, onAgentTrigger: invokeAgent }, job.data);
+      await processWaUpdate({ appDb: appDb.db, onAgentTrigger: invokeAgent, rtRedis: redis }, job.data);
     },
     { connection: redis, concurrency: 10 },
   );

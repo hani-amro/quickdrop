@@ -6,6 +6,7 @@ import {
   RT_EVENTS,
   RT_REDIS_CHANNEL,
   rtMessageSchema,
+  type ConversationChangedEvent,
   type DriverLocationEvent,
   type OrderChangedEvent,
 } from "@quickdrop/shared";
@@ -35,11 +36,13 @@ export interface RealtimeDeps {
 // أي انحراف عن RT_EVENTS يفشل التحويل البرمجي، لا يعمل بصمت باسم مختلف.
 const RT_EVENTS_ORDER_CHANGED: typeof RT_EVENTS.orderChanged = RT_EVENTS.orderChanged;
 const RT_EVENTS_DRIVER_LOCATION: typeof RT_EVENTS.driverLocation = RT_EVENTS.driverLocation;
+const RT_EVENTS_CONVERSATION_CHANGED: typeof RT_EVENTS.conversationChanged = RT_EVENTS.conversationChanged;
 
 // أحداث الخادم → العميل (typed emits — لا 'any' عبر العقد)
 interface BoardServerEvents {
   [RT_EVENTS_ORDER_CHANGED]: (payload: OrderChangedEvent) => void;
   [RT_EVENTS_DRIVER_LOCATION]: (payload: DriverLocationEvent) => void;
+  [RT_EVENTS_CONVERSATION_CHANGED]: (payload: ConversationChangedEvent) => void;
 }
 
 interface BoardSocketData {
@@ -102,11 +105,23 @@ function rebroadcast(board: BoardNamespace, raw: string): void {
   }
   const message = parsed.data;
   const local = board.local.to(roomForTenant(message.tenantId));
-  // فرعان صريحان بدل emit ديناميكي: يربط TS اسم الحدث بنوع حمولته (لا 'any')
-  if (message.event === RT_EVENTS_ORDER_CHANGED) {
-    local.emit(RT_EVENTS_ORDER_CHANGED, message.payload);
-  } else {
-    local.emit(RT_EVENTS_DRIVER_LOCATION, message.payload);
+  // فروع صريحة بدل emit ديناميكي: الاتحاد المميَّز يربط TS اسم الحدث بنوع حمولته (لا 'any').
+  // إضافة أي حدث لـ RT_EVENTS بلا فرع هنا = خطأ تحويل (الحمولة never) — لا سقوط صامت.
+  switch (message.event) {
+    case RT_EVENTS_ORDER_CHANGED:
+      local.emit(RT_EVENTS_ORDER_CHANGED, message.payload);
+      return;
+    case RT_EVENTS_DRIVER_LOCATION:
+      local.emit(RT_EVENTS_DRIVER_LOCATION, message.payload);
+      return;
+    case RT_EVENTS_CONVERSATION_CHANGED:
+      local.emit(RT_EVENTS_CONVERSATION_CHANGED, message.payload);
+      return;
+    default: {
+      // exhaustiveness: عضو اتحاد جديد بلا case → message ليس never → خطأ تحويل (لا سقوط صامت)
+      const _exhaustive: never = message;
+      void _exhaustive;
+    }
   }
 }
 
