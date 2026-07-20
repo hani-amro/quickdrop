@@ -131,6 +131,31 @@ describe.skipIf(!hasDeps)("DriverService — مصادقة قابلة للإبط�
     expect(back.status).toBe("offline");
   });
 
+  // مراجعة Phase 5 (SEC) — إصلاح تجاوز الإبطال: إعادة إصدار الرابط تُبطل الكود السابق فوراً
+  it("إعادة إصدار الرابط تُبطل الكود الأقدم (لا استعادة وصول عبر كود يتيم بعد revoke)", async () => {
+    const link1 = await service.issueLink(staffAuth, driverId, { tenantSlug: slug });
+    const link2 = await service.issueLink(staffAuth, driverId, { tenantSlug: slug }); // إعادة إصدار
+    // الكود الأقدم أُبطل بإعادة الإصدار (كود حيّ واحد لكل سائق)
+    await expect(service.auth({ tenantSlug: slug, code: link1.code })).rejects.toMatchObject({ status: 401 });
+    // الجديد يعمل؛ ثم الإبطال يقطع الجلسة، والكود الأقدم يبقى مُبطلاً (لا استعادة)
+    const token = (await service.auth({ tenantSlug: slug, code: link2.code })).token;
+    await service.revokeAccess(staffAuth, driverId, { tenantSlug: slug });
+    await expect(service.me(`Bearer ${token}`)).rejects.toMatchObject({ status: 401 });
+    await expect(service.auth({ tenantSlug: slug, code: link1.code })).rejects.toMatchObject({ status: 401 });
+  });
+
+  // مراجعة Phase 5 (SEC/idem) — قصّ recordedAt المستقبلي: لا تجميد last_point بطابع جهاز منحرف/متلاعَب
+  it("recordedAt مستقبلي بعيد يُقصّ لزمن الخادم (last_point لا يتجمّد بالمستقبل)", async () => {
+    const token = await issueAndAuth();
+    await service.location(`Bearer ${token}`, { lat: 3.15, lng: 101.7, recordedAt: "2999-01-01T00:00:00Z" });
+    const row = await withTenant(handle.db, tenantId, async (tx) =>
+      (await tx.select({ at: drivers.lastPointAt }).from(drivers).where(eq(drivers.id, driverId)))[0]!,
+    );
+    expect(row.at).not.toBeNull();
+    // قُصّ لزمن الخادم — ليس 2999 (لولا القصّ لتجمّد last_point ضد كل نبضة لاحقة)
+    expect(row.at!.getTime()).toBeLessThan(Date.now() + 120_000);
+  });
+
   // P5.4 — DoD (رجل قناة السائق): السائق يقود التسليم لنهايته عبر /api/driver، وdelivered
   // يكتب قيد الدفتر (§8.1). يثبت أن قناة PWA الجديدة تُكمل التسليم على النظام المدموج.
   it("DoD: السائق يُكمل تسليماً عبر /api/driver (assigned→…→delivered) ويُكتب الدفتر", async () => {

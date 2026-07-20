@@ -59,7 +59,8 @@ const statusBodySchema = z.object({ to: z.enum(["picked_up", "in_transit", "arri
 const locationBodySchema = z.object({
   lat: z.number().gte(-90).lte(90),
   lng: z.number().gte(-180).lte(180),
-  // ISO اختياري — نتسامح مع غيابه (الآن)؛ نرفض المستقبل البعيد/الماضي السحيق ضمنياً بالنوع
+  // ISO اختياري (ساعة الجهاز). ملاحظة: z.datetime() يتحقق من الصيغة فقط لا المدى — القصّ
+  // على زمن الخادم يتمّ في location() (مراجعة Phase 5): طابع مستقبلي يجمّد last_point للأبد.
   recordedAt: z.string().datetime().optional(),
 });
 const podBodySchema = z.object({
@@ -126,6 +127,11 @@ export class DriverService {
     );
     if (!exists[0]) throw new HttpException("driver not found", HttpStatus.NOT_FOUND);
 
+    // مراجعة Phase 5 (SEC): كود ربط واحد حيّ لكل سائق — احذف أي كود معلّق سابق قبل الجديد
+    // (إعادة الإصدار «لم يصله الرابط» شائعة). وإلا بقي الكود الأقدم قابلاً للاستبدال بعد revoke
+    // (الذي يحذف الأحدث فقط) → استعادة الوصول بعد الإبطال. يطابق تدوير الجلسة الواحدة النشطة.
+    const prevCode = await this.redis.get(`${LINK_BY_DRIVER_PREFIX}${tenantId}:${driverId}`);
+    if (prevCode !== null) await this.redis.del(this.linkKey(tenantId, prevCode));
     const code = randomBytes(8).toString("hex"); // 16 hex
     await this.redis.set(this.linkKey(tenantId, code), driverId, "EX", LINK_TTL_S);
     await this.redis.set(`${LINK_BY_DRIVER_PREFIX}${tenantId}:${driverId}`, code, "EX", LINK_TTL_S);
@@ -266,7 +272,14 @@ export class DriverService {
   async location(authorization: string | undefined, body: unknown): Promise<{ ok: true; suspect: boolean }> {
     const s = await this.resolveSession(authorization);
     const input = parseOr400(locationBodySchema, body, "driver_location");
-    const recordedAt = input.recordedAt !== undefined ? new Date(input.recordedAt) : new Date();
+    // مراجعة Phase 5 (SEC/idem): قصّ recordedAt على زمن الخادم — طابع مستقبلي (ساعة جهاز
+    // منحرفة أو تلاعب سائق موثّق) يجمّد drivers.last_point ويسمّم ترتيب geofence للأبد
+    // (المسار القديم كان يستمدّه من طابع تيليغرام الخادمي؛ الـ PWA يتحكّم به العميل). لا نثق
+    // بمستقبل أبعد من انحراف بسيط؛ الماضي مقبول (نقطة أقدم لا تُقدّم last_point — سليم).
+    const now = new Date();
+    const clientAt = input.recordedAt !== undefined ? new Date(input.recordedAt) : now;
+    const CLOCK_SKEW_MS = 60_000;
+    const recordedAt = clientAt.getTime() > now.getTime() + CLOCK_SKEW_MS ? now : clientAt;
     const { isSuspect } = await recordDriverLocationTx(this.handle.db, s.tenantId, s.driverId, { lat: input.lat, lng: input.lng }, recordedAt);
     if (!isSuspect) {
       // §10.1 — نقطة غير مشبوهة → حدث driver.location لغرفة المستأجر (أفضل جهد؛ publishRt لا يرمي)
