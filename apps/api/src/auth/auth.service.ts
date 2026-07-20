@@ -10,7 +10,7 @@ import { parseOr400, slugSchema } from "../common/staff-http.js";
 import { DB, ENV, REDIS } from "../tokens.js";
 import type { ApiEnv } from "../env.js";
 import { SESSION_ID_RE, SESSION_TTL_S } from "./cookie.js";
-import { DUMMY_PASSWORD_HASH, hashPassword, needsRehash, verifyPassword } from "./hashing.js";
+import { DUMMY_PASSWORD_HASH, hashPassword, needsRehash, remainingDelayMs, verifyPassword } from "./hashing.js";
 import { generateTotpSecret, otpauthUrl, verifyTotp } from "./totp.js";
 
 // §10.2 — مصادقة الطاقم الحقيقية: email + argon2id + جلسات cookie عبر Redis، مع
@@ -40,7 +40,15 @@ function totpMandatory(role: StaffRole): boolean {
   return role === "owner" || role === "accountant";
 }
 
-/** §11 — فشل الدخول برسالة عامة واحدة + تأخير ثابت: لا يفرّق بريداً مجهولاً عن كلمة سر خاطئة. */
+// §11/مراجعة Phase 4 (security) — فشل الدخول بموعد نهائي ثابت (لا تأخير إضافي): توحيد المصادقة
+// (§23) أدخل مسار bcrypt (طاقم WaFlow) الأبطأ من argon2 بـ ~200ms؛ التأخير الإضافي كان يترك
+// هذا الفارق بالزمن الكلي فيكشف حساباً قديماً غير مُرقّى (enumeration). النوم حتى موعد ثابت
+// يجعل زمن كل مسارات الفشل واحداً مهما كان الـ KDF. الموعد يتجاوز أبطأ مسار (bcrypt cost-12
+// ~350ms + استعلامات) بهامش مريح.
+const FAILED_LOGIN_DEADLINE_MS = 700;
+
+// §11 — تأخير فشل ثابت لمسارات TOTP (تحقق رمز HMAC، لا KDF كلمة سر): لا تباين توقيت يُخفى،
+// فالتأخير الإضافي البسيط يكفي (مسار كلمة السر بالدخول يستخدم الموعد النهائي أعلاه).
 const FAILED_LOGIN_DELAY_MS = 300;
 
 const loginSchema = z.object({
@@ -124,6 +132,9 @@ export class AuthService {
    */
   async login(body: unknown): Promise<LoginResult> {
     const input = parseOr400(loginSchema, body, "auth_login");
+    // §11/مراجعة Phase 4 (security) — بداية نافذة التوقيت الثابت: كل مسارات الفشل تنام حتى
+    // موعد نهائي واحد (لا تأخير إضافي)، فلا يكشف الزمن أي KDF جرى (argon2 سريع vs bcrypt بطيء).
+    const startedAt = Date.now();
 
     // البحث بالـ slug قبل معرفة المستأجر — استثناء RLS مسمّى (§2.4، نمط staff-http)
     const tenantRows = await this.handle.db
@@ -133,7 +144,7 @@ export class AuthService {
       .limit(1);
     const tenant = tenantRows[0];
     if (!tenant || tenant.status === "suspended" || tenant.status === "churned") {
-      return this.failLogin("tenant_unavailable", input.tenantSlug);
+      return this.failLogin("tenant_unavailable", input.tenantSlug, startedAt);
     }
 
     const staffRows = await withTenant(this.handle.db, tenant.id, (tx) =>
@@ -155,15 +166,15 @@ export class AuthService {
     if (!member) {
       // §11 — تسوية التوقيت: تحقق ضد هاش وهمي كي لا يكشف الزمن وجود البريد
       await verifyPassword(DUMMY_PASSWORD_HASH, input.password);
-      return this.failLogin("unknown_email", input.tenantSlug);
+      return this.failLogin("unknown_email", input.tenantSlug, startedAt);
     }
     const passwordOk = await verifyPassword(member.passwordHash, input.password);
     if (!member.isActive) {
       // التحقق جرى قبل الفحص عمداً (توقيت موحّد)؛ الموقوف يُرفض ولو صحّت كلمة السر
-      return this.failLogin("inactive_staff", input.tenantSlug);
+      return this.failLogin("inactive_staff", input.tenantSlug, startedAt);
     }
     if (!passwordOk) {
-      return this.failLogin("bad_password", input.tenantSlug);
+      return this.failLogin("bad_password", input.tenantSlug, startedAt);
     }
 
     // §23 (توحيد المصادقة) — هجرة كسولة: هاش bcrypt (طاقم WaFlow مستورد) صحّ الآن → أعد
@@ -425,10 +436,15 @@ export class AuthService {
     });
   }
 
-  /** §11 — رسالة عامة واحدة + تأخير ثابت؛ السبب باللوغ فقط (slug بلا بريد — لا PII). */
-  private async failLogin(reason: string, tenantSlug: string): Promise<never> {
+  /**
+   * §11 — رسالة عامة واحدة + **زمن كلّي ثابت** بموعد نهائي؛ السبب باللوغ فقط (slug بلا بريد).
+   * النوم = الموعد ناقص الزمن المنقضي منذ startedAt، فيتساوى إجمالي الرد بين مسار argon2
+   * السريع ومسار bcrypt البطيء (مراجعة Phase 4: منع كشف الحساب بفارق التوقيت). المنقضي إن
+   * تجاوز الموعد (نادر، خادم محمّل) → نوم 0؛ لا سالب.
+   */
+  private async failLogin(reason: string, tenantSlug: string, startedAt: number): Promise<never> {
     console.warn(JSON.stringify({ action: "auth_login", outcome: "failed", reason, tenantSlug }));
-    await sleep(FAILED_LOGIN_DELAY_MS);
+    await sleep(remainingDelayMs(FAILED_LOGIN_DEADLINE_MS, startedAt, Date.now()));
     throw new UnauthorizedException("invalid credentials");
   }
 }

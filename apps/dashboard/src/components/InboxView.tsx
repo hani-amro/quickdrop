@@ -5,6 +5,7 @@ import { crm, type ConversationDetail, type ConversationListItem, type Customer3
 import { ApiError } from "@/lib/api";
 import { useT } from "@/lib/i18n";
 import { useRealtime } from "@/lib/useRealtime";
+import { isResponseForSelected, shouldRecordInboxError, shouldShowInboxError } from "@/lib/inbox-guards";
 
 // §25 — احتياط polling تحت الوقت الحقيقي: يضمن حداثة الوارد حتى للمسارات غير المبثوثة
 // (رد المكتب المسجَّل بالـ API، دعم تيليغرام) ولو انقطع WS. الوقت الحقيقي يسرّع الحالة الشائعة.
@@ -30,9 +31,12 @@ export function InboxView() {
   const [replyText, setReplyText] = useState("");
   const [sending, setSending] = useState(false);
 
-  // معرّف المحادثة المفتوحة بمرجع حي — يقرأه معالج الوقت الحقيقي وحلقة polling بلا إعادة اشتراك
+  // معرّفا المحادثة المفتوحة والقائمة بمرجع حيّ — يقرأهما معالج الوقت الحقيقي وحلقة polling
+  // والدوال غير المتزامنة بلا إعادة اشتراك ولا إغلاق قديم (stale closure).
   const selectedRef = useRef<string | null>(null);
   selectedRef.current = selected;
+  const itemsRef = useRef<ConversationListItem[] | null>(null);
+  itemsRef.current = items;
 
   const loadList = useCallback(async () => {
     try {
@@ -40,15 +44,19 @@ export function InboxView() {
       setItems(conversations);
       setError(null);
     } catch (e) {
-      setError(e instanceof ApiError ? e.status : 500);
+      // مراجعة Phase 4 (correctness): لا تهدم الواجهة على فشل poll/realtime خلفي. شاشة
+      // الخطأ فقط على التحميل الأولي (لا قائمة بعد)؛ قائمة محمّلة + انقطاع عابر = أبقِ آخر
+      // حالة جيدة (كـ loadThread)، ويُصحَّح بأول poll ناجح (§25: الاحتياط صامت لا هادم).
+      if (shouldRecordInboxError(itemsRef.current)) setError(e instanceof ApiError ? e.status : 500);
     }
   }, []);
 
   // تحديث خلفي للخيط المفتوح (رسالة جديدة/polling): لا يمحو الخيط عند فشل عابر — على عكس
   // openConversation الذي يُظهر حالة تحميل. الرسائل فقط تُحدَّث؛ بطاقة 360 لا تتأثر برسالة.
+  // مراجعة Phase 4 (correctness): حارس سباق الترتيب — لا تكتب استجابة خيطٍ لم يعد المحدَّد.
   const loadThread = useCallback(async (id: string) => {
     const d = await crm.getConversation(id).catch(() => null);
-    if (d !== null) setDetail(d);
+    if (d !== null && isResponseForSelected(selectedRef.current, id)) setDetail(d);
   }, []);
 
   useEffect(() => {
@@ -82,6 +90,9 @@ export function InboxView() {
       crm.getConversation(item.id).catch(() => null),
       crm.getCustomer360(item.userId).catch(() => null),
     ]);
+    // مراجعة Phase 4 (correctness): سباق ترتيب — إن بدّل المستخدم الخيط أثناء الجلب،
+    // تجاهل هذه الاستجابة القديمة (لا تكتب رسائل/بطاقة زبون لا تطابق المحدَّد الحالي).
+    if (!isResponseForSelected(selectedRef.current, item.id)) return;
     setDetail(d);
     setProfile(p);
   }, []);
@@ -92,13 +103,14 @@ export function InboxView() {
     try {
       await crm.reply(selected, replyText.trim());
       setReplyText("");
-      await crm.getConversation(selected).then(setDetail).catch(() => undefined);
+      // إعادة الجلب عبر loadThread المحروس (سباق الترتيب + لا محو عند فشل عابر)
+      await loadThread(selected);
     } finally {
       setSending(false);
     }
-  }, [selected, replyText, sending]);
+  }, [selected, replyText, sending, loadThread]);
 
-  if (error !== null) {
+  if (shouldShowInboxError(items, error)) {
     return (
       <div className="rounded-lg border border-red-200 bg-red-50 p-4 text-red-800">
         <button onClick={() => void loadList()} className="font-semibold underline">
