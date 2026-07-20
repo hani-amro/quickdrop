@@ -33,6 +33,9 @@ const envSchema = z.object({
   // (يُبنى منه callback_url). الاعتمادات نفسها لكل مستأجر بالقاعدة (مشفّرة — ترحيل 0021).
   BILLPLZ_BASE_URL: z.string().url().default("https://www.billplz.com/api/v3"),
   PUBLIC_API_URL: z.string().url().default("http://localhost:3000"),
+  // P5.1 — قناة السائق (PWA): جذر مضيف تطبيق السائق لبناء رابط الربط (deep-link) الذي
+  // يُرسله المكتب. غيابه = افتراضي التطوير المحلي (لا فشل — الرابط يُبنى بأي حال).
+  DRIVER_APP_URL: z.string().url().optional(),
 });
 
 export type ApiEnv = z.infer<typeof envSchema>;

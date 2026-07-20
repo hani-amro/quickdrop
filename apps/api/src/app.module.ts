@@ -45,6 +45,8 @@ import { WaModule } from "./wa-gateway/wa.module.js";
 import { CrmModule } from "./crm/crm.module.js";
 import { JourneysModule } from "./journeys/journeys.module.js";
 import { PaymentsModule } from "./payments/payments.module.js";
+import { DriverController } from "./driver/driver.controller.js";
+import { DriverService } from "./driver/driver.service.js";
 
 @Module({
   imports: [CoreModule, WaModule, CrmModule, JourneysModule, PaymentsModule],
@@ -52,6 +54,7 @@ import { PaymentsModule } from "./payments/payments.module.js";
     HealthController,
     OrdersController,
     DriversController,
+    DriverController, // P5.1 — قناة السائق (PWA): /api/driver/* (ذاتي المصادقة بتوكن جلسة السائق)
     MerchantsController, // §3 — إدارة التجار وكتالوجهم
     MiniappController, // §10.3 — واجهة الـ Mini App (initData + توكن + بيانات)
     RealtimeController, // §10.1 — إصدار تذكرة اتصال الوقت الحقيقي (محروس بالجلسة)
@@ -87,6 +90,7 @@ import { PaymentsModule } from "./payments/payments.module.js";
     TelegramGatewayService,
     OrdersService,
     DriversService,
+    DriverService, // P5.1 — قناة السائق (جلسة Redis قابلة للإبطال + أفعال السائق)
     MerchantsService, // §3 — إدارة التجار وكتالوجهم
     MiniappService, // §10.3 — واجهة الـ Mini App
     SettlementsService,

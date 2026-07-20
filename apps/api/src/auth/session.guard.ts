@@ -45,6 +45,10 @@ export function isSessionGuardedPath(rawPath: string): boolean {
   // §10.3 — الـ Mini App نطاق زبون ذاتي المصادقة (initData ثم توكن Bearer مجهول)،
   // ليس نطاق الطاقم — يحرسه MiniappService بنفسه. حرسه بجلسة الطاقم كان سيمنعه كلياً.
   if (path === "/api/miniapp" || path.startsWith("/api/miniapp/")) return false;
+  // P5.1 — قناة السائق (PWA) نطاق ذاتي المصادقة (كود ربط ثم توكن Bearer جلسة السائق)،
+  // تحرسها DriverService بنفسها. ملاحظة: "/api/drivers" (مسارات المكتب) تبقى محروسة —
+  // "/api/drivers" لا يطابق "/api/driver" ولا يبدأ بـ "/api/driver/".
+  if (path === "/api/driver" || path.startsWith("/api/driver/")) return false;
   return true;
 }
 
