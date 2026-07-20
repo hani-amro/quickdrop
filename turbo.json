@@ -11,6 +11,22 @@
     "test": {
       "dependsOn": ["^build"],
       "env": ["DATABASE_URL", "DATABASE_URL_MIGRATOR", "DATABASE_URL_WORKER", "REDIS_URL", "MASTER_KEY"]
+    },
+    "@quickdrop/brain#test": {
+      "dependsOn": ["^build", "@quickdrop/db#test"],
+      "env": ["DATABASE_URL", "DATABASE_URL_MIGRATOR", "DATABASE_URL_WORKER", "REDIS_URL", "MASTER_KEY"]
+    },
+    "@quickdrop/ai#test": {
+      "dependsOn": ["^build", "@quickdrop/brain#test"],
+      "env": ["DATABASE_URL", "DATABASE_URL_MIGRATOR", "DATABASE_URL_WORKER", "REDIS_URL", "MASTER_KEY"]
+    },
+    "@quickdrop/api#test": {
+      "dependsOn": ["^build", "@quickdrop/ai#test"],
+      "env": ["DATABASE_URL", "DATABASE_URL_MIGRATOR", "DATABASE_URL_WORKER", "REDIS_URL", "MASTER_KEY"]
+    },
+    "@quickdrop/worker#test": {
+      "dependsOn": ["^build", "@quickdrop/api#test"],
+      "env": ["DATABASE_URL", "DATABASE_URL_MIGRATOR", "DATABASE_URL_WORKER", "REDIS_URL", "MASTER_KEY"]
     }
   }
 }
