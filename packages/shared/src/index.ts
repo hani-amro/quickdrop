@@ -1,5 +1,6 @@
 export * from "./ids.js";
 export * from "./money.js";
+export * from "./currency.js";
 export * from "./time.js";
 export * from "./geo.js";
 export * from "./crypto.js";
