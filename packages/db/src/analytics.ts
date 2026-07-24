@@ -114,13 +114,16 @@ export async function getDashboardStats(
       .groupBy(orders.status);
 
     // 2) السلسلة اليومية (GROUP BY يوم المستأجر — استعلام واحد)
+    // GROUP BY 1 (الترتيب) لا GROUP BY dayExpr: إعادة تضمين dayExpr تُصدِّر وسيط
+    // المنطقة الزمنية مرتين ($1 في SELECT و$4 في GROUP BY)، وPostgres يعتبر
+    // العقدتين مختلفتين ⇒ "created_at must appear in GROUP BY". الترتيب يطابق SELECT.
     const dailyRows = await tx
       .select({ day: dayExpr, count: countExpr })
       .from(orders)
       .where(
         and(eq(orders.tenantId, tenantId), isNull(orders.deletedAt), gte(orders.createdAt, windowStart)),
       )
-      .groupBy(dayExpr);
+      .groupBy(sql`1`);
 
     // 3) إيراد + متوسط التوصيل + عدد المسلَّم (طلبات delivered ضمن النافذة — استعلام واحد)
     const deliveredRows = await tx
