@@ -13,3 +13,6 @@ coverage/
 # Contains LIVE secrets: _db_backup_*.sql (plaintext Meta tokens/TOTP), .env files,
 # dump.rdb, _server.log. NEVER commit this tree; port code by rewriting, not copying.
 WhatsApp_SASS/
+
+# One-off deploy-time debug script (throwaway; hardcodes a demo password). Kept local only.
+apps/e2e/debug-login.mjs
