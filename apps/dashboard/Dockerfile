@@ -35,6 +35,10 @@ ENV CI=true \
 ARG NEXT_PUBLIC_API_URL=""
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
 
+# عملة المستأجر (نشرة مستأجر-واحد) تُخبز في المتصفح: تحدّد الرمز/المنازل/الهاتف/الخريطة.
+ARG NEXT_PUBLIC_TENANT_CURRENCY="MYR"
+ENV NEXT_PUBLIC_TENANT_CURRENCY=$NEXT_PUBLIC_TENANT_CURRENCY
+
 RUN corepack enable
 
 WORKDIR /repo

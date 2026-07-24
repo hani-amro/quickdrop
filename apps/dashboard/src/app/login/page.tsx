@@ -1,7 +1,11 @@
 import type { Metadata } from "next";
 import { LoginForm } from "@/components/LoginForm";
+import { getServerT } from "@/lib/i18n/server-t";
 
-export const metadata: Metadata = { title: "تسجيل الدخول — QuickDrop" };
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getServerT();
+  return { title: `${t("page.loginTitle")} — QuickDrop` };
+}
 
 // §10.2 — دخول الطاقم: بريد + كلمة سر → جلسة cookie (عبر auth-proxy). tenantSlug
 // يُفرض من env بالخادم، فلا يظهر بالنموذج.

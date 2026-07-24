@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
-import { DRIVER_STATUS_LABELS, agoLabel } from "@/lib/format";
+import { driverStatusLabel, agoLabel } from "@/lib/format";
+import { useT } from "@/lib/i18n";
 import type { DriverRow, OrderRow } from "@/lib/types";
 import { Modal } from "./Modal";
 
@@ -18,6 +19,7 @@ export function AssignDriverModal({
   onAssign: (driver: DriverRow) => void;
   onClose: () => void;
 }) {
+  const t = useT();
   const [drivers, setDrivers] = useState<DriverRow[] | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -37,11 +39,11 @@ export function AssignDriverModal({
   }, []);
 
   return (
-    <Modal title={`إسناد الطلب ${order.publicCode}`} onClose={onClose}>
-      {failed && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">تعذر جلب قائمة السائقين — أغلق وأعد المحاولة</p>}
-      {!failed && drivers === null && <p className="p-3 text-sm text-slate-500">جارٍ جلب السائقين…</p>}
+    <Modal title={t("assign.title", { code: order.publicCode })} onClose={onClose}>
+      {failed && <p className="rounded-lg bg-red-50 p-3 text-sm text-red-700">{t("assign.fetchFailed")}</p>}
+      {!failed && drivers === null && <p className="p-3 text-sm text-slate-500">{t("assign.loadingDrivers")}</p>}
       {drivers !== null && drivers.length === 0 && (
-        <p className="p-3 text-sm text-slate-500">لا سائقين مسجّلين بعد</p>
+        <p className="p-3 text-sm text-slate-500">{t("assign.noDrivers")}</p>
       )}
       {drivers !== null && drivers.length > 0 && (
         <ul className="flex flex-col gap-2">
@@ -70,13 +72,13 @@ export function AssignDriverModal({
                   </span>
                   <span className="flex items-center gap-3 text-xs text-slate-600">
                     <span className={driver.status === "online" ? "text-emerald-700" : "text-slate-500"}>
-                      {DRIVER_STATUS_LABELS[driver.status]}
+                      {driverStatusLabel(t, driver.status)}
                     </span>
                     <span>
-                      نشِطة{" "}
-                      {capacityKnown ? `${driver.activeOrders}/${driver.maxConcurrentOrders}` : "؟/؟"}
+                      {t("assign.active")}{" "}
+                      {capacityKnown ? `${driver.activeOrders}/${driver.maxConcurrentOrders}` : t("assign.capacityUnknown")}
                     </span>
-                    <span>آخر موقع {agoLabel(driver.lastPointAt)}</span>
+                    <span>{t("assign.lastLocation")} {agoLabel(t, driver.lastPointAt)}</span>
                   </span>
                 </button>
               </li>

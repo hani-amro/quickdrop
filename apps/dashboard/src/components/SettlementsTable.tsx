@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { ApiError, api, describeError } from "@/lib/api";
-import { agoLabel, formatMoney } from "@/lib/format";
+import { agoLabel, formatMoney, type Translate } from "@/lib/format";
+import { useT } from "@/lib/i18n";
 import type { SettlementBoardRow } from "@/lib/types";
 import { usePolling } from "@/lib/use-polling";
 import { ConnectionBadge } from "./ConnectionBadge";
@@ -33,14 +34,15 @@ function diffOf(expected: string, receivedDigits: string): bigint {
 }
 
 // §8.2 — 409 هنا لها معنى واحد محدد: unique (tenant, driver, period_date)
-function describeCloseError(error: unknown): string {
+function describeCloseError(t: Translate, error: unknown): string {
   if (error instanceof ApiError && error.status === 409) {
-    return "اليوم مقفول لهذا السائق — حدّث اللوحة";
+    return t("settlementsTable.dayLocked");
   }
   return describeError(error);
 }
 
 export function SettlementsTable() {
+  const t = useT();
   const toast = useToast();
   const { data, failed, lastUpdated, refresh } = usePolling(api.settlementBoard, 5000);
 
@@ -57,7 +59,7 @@ export function SettlementsTable() {
     try {
       const result = await api.closeSettlement(row.driverId, receivedDigits === "" ? "0" : receivedDigits);
       // §8.2 — الفرق يظهر ولا يُخفى: يُقال بصوت عالٍ حتى بلحظة النجاح
-      toast.success(`أُغلق اليوم — الفرق ${formatMoney(result.settlement.diff)}`);
+      toast.success(t("settlementsTable.dayClosed", { diff: formatMoney(result.settlement.diff) }));
       setConfirming(null);
       setReceived((current) => {
         const next = { ...current };
@@ -66,7 +68,7 @@ export function SettlementsTable() {
       });
       await refresh(); // بعد النجاح: حقيقة الخادم لا تفاؤل الواجهة
     } catch (error) {
-      toast.error(describeCloseError(error)); // §10.1: لا فشل صامت — توست عام
+      toast.error(describeCloseError(t, error)); // §10.1: لا فشل صامت — توست عام
     } finally {
       setBusy(false);
     }
@@ -76,11 +78,11 @@ export function SettlementsTable() {
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h1 className="text-lg font-bold text-slate-900">
-          التسوية اليومية
+          {t("settlementsTable.title")}
           {data !== null && (
             <span className="ms-2 text-sm font-normal text-slate-500">
               {/* الفخ 8 — يوم المستأجر محسوب خادمياً (tenantDay)، لا يوم المتصفح */}
-              يوم <bdi className="tabular-nums">{data.periodDate}</bdi>
+              {t("settlementsTable.dayLabel")} <bdi className="tabular-nums">{data.periodDate}</bdi>
             </span>
           )}
         </h1>
@@ -91,12 +93,12 @@ export function SettlementsTable() {
         <table className="w-full min-w-[52rem] text-sm tabular-nums">
           <thead>
             <tr className="border-b border-slate-200 bg-slate-50 text-xs text-slate-500">
-              <th className="p-3 text-start font-semibold">السائق</th>
-              <th className="p-3 text-start font-semibold">القيود</th>
-              <th className="p-3 text-start font-semibold">آخر قيد</th>
-              <th className="p-3 text-start font-semibold">المتوقَّع</th>
-              <th className="p-3 text-start font-semibold">المستلَم</th>
-              <th className="p-3 text-start font-semibold">الفرق</th>
+              <th className="p-3 text-start font-semibold">{t("settlementsTable.driver")}</th>
+              <th className="p-3 text-start font-semibold">{t("settlementsTable.entries")}</th>
+              <th className="p-3 text-start font-semibold">{t("settlementsTable.lastEntry")}</th>
+              <th className="p-3 text-start font-semibold">{t("settlementsTable.expected")}</th>
+              <th className="p-3 text-start font-semibold">{t("settlementsTable.received")}</th>
+              <th className="p-3 text-start font-semibold">{t("settlementsTable.difference")}</th>
               <th className="p-3 text-start font-semibold" />
             </tr>
           </thead>
@@ -110,7 +112,7 @@ export function SettlementsTable() {
                     <bdi>{row.name ?? "—"}</bdi>
                   </td>
                   <td className="p-3 text-slate-700">{row.entryCount}</td>
-                  <td className="p-3 text-slate-600">{agoLabel(row.lastEntryAt)}</td>
+                  <td className="p-3 text-slate-600">{agoLabel(t, row.lastEntryAt)}</td>
                   <td className="p-3 font-semibold text-slate-900">{formatMoney(row.expected)}</td>
                   <td className="p-3">
                     <input
@@ -125,7 +127,7 @@ export function SettlementsTable() {
                         }))
                       }
                       placeholder="0"
-                      aria-label={`المستلَم من ${row.name ?? "السائق"}`}
+                      aria-label={t("settlementsTable.receivedFrom", { name: row.name ?? t("settlementsTable.driver") })}
                       className="w-32 rounded-lg border border-slate-300 p-2 text-end text-sm tabular-nums focus:border-sky-500 focus:outline-none"
                     />
                   </td>
@@ -144,7 +146,7 @@ export function SettlementsTable() {
                       onClick={() => setConfirming(row)}
                       className="rounded-lg bg-sky-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      إغلاق اليوم
+                      {t("settlementsTable.closeDay")}
                     </button>
                   </td>
                 </tr>
@@ -153,14 +155,14 @@ export function SettlementsTable() {
             {data !== null && rows.length === 0 && (
               <tr>
                 <td colSpan={7} className="p-6 text-center text-slate-400">
-                  لا قيود غير مسوّاة — كل السائقين مسوّون
+                  {t("settlementsTable.allSettled")}
                 </td>
               </tr>
             )}
             {data === null && !failed && (
               <tr>
                 <td colSpan={7} className="p-6 text-center text-slate-400">
-                  جارٍ التحميل…
+                  {t("settlementsTable.loading")}
                 </td>
               </tr>
             )}
@@ -169,20 +171,20 @@ export function SettlementsTable() {
       </div>
 
       {confirming !== null && (
-        <Modal title={`إغلاق يوم ${confirming.name ?? "السائق"}`} onClose={() => setConfirming(null)}>
+        <Modal title={t("settlementsTable.closeDayFor", { name: confirming.name ?? t("settlementsTable.driver") })} onClose={() => setConfirming(null)}>
           {(() => {
             const receivedDigits = received[confirming.driverId] ?? "";
             const diff = diffOf(confirming.expected, receivedDigits);
             return (
               <div className="flex flex-col gap-3 text-sm">
                 <dl className="grid grid-cols-2 gap-2 tabular-nums">
-                  <dt className="text-slate-500">المتوقَّع</dt>
+                  <dt className="text-slate-500">{t("settlementsTable.expected")}</dt>
                   <dd className="font-semibold text-slate-900">{formatMoney(confirming.expected)}</dd>
-                  <dt className="text-slate-500">المستلَم</dt>
+                  <dt className="text-slate-500">{t("settlementsTable.received")}</dt>
                   <dd className="font-semibold text-slate-900">
                     {formatMoney(receivedDigits === "" ? "0" : receivedDigits)}
                   </dd>
-                  <dt className="text-slate-500">الفرق</dt>
+                  <dt className="text-slate-500">{t("settlementsTable.difference")}</dt>
                   <dd
                     className={`font-semibold ${
                       diff > 0n ? "text-amber-700" : diff < 0n ? "text-sky-700" : "text-emerald-700"
@@ -193,8 +195,7 @@ export function SettlementsTable() {
                 </dl>
                 {/* §8.2 — بعد الإغلاق ممنوع أي تعديل؛ التصحيح قيد adjustment جديد بسبب إلزامي */}
                 <p className="rounded-lg bg-amber-50 p-2 text-xs text-amber-800">
-                  بعد الإغلاق لا يمكن تعديل التسوية — أي تصحيح لاحق يكون بقيد تسوية جديد موقَّع وبسبب
-                  مسمّى.
+                  {t("settlementsTable.afterCloseNote")}
                 </p>
                 <div className="flex items-center justify-end gap-2">
                   <button
@@ -202,7 +203,7 @@ export function SettlementsTable() {
                     onClick={() => setConfirming(null)}
                     className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm text-slate-700 hover:bg-slate-50"
                   >
-                    تراجع
+                    {t("settlementsTable.cancel")}
                   </button>
                   <button
                     type="button"
@@ -210,7 +211,7 @@ export function SettlementsTable() {
                     onClick={() => void closeDay(confirming)}
                     className="rounded-lg bg-sky-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {busy ? "جارٍ الإغلاق…" : "تأكيد إغلاق اليوم"}
+                    {busy ? t("settlementsTable.closing") : t("settlementsTable.confirmCloseDay")}
                   </button>
                 </div>
               </div>

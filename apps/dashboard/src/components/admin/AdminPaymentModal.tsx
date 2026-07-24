@@ -33,7 +33,7 @@ export function AdminPaymentModal({
     try {
       await adminApi.registerPayment(tenant.id, amount, note);
       // §16.12 — النتيجة تُقال بصوت عالٍ حتى بلحظة النجاح
-      toast.success(`سُجّلت دفعة ${formatMoney(amount)} ل.س`);
+      toast.success(`سُجّلت دفعة ${formatMoney(amount)}`);
       await onDone();
       onClose();
     } catch (error) {
@@ -47,7 +47,7 @@ export function AdminPaymentModal({
     <Modal title={`تسجيل دفعة — ${tenant.label}`} onClose={onClose}>
       <div className="flex flex-col gap-3 text-sm">
         <label className="flex flex-col gap-1">
-          <span className="text-slate-600">المبلغ (ل.س)</span>
+          <span className="text-slate-600">المبلغ</span>
           <input
             type="text"
             inputMode="numeric"

@@ -6,6 +6,8 @@ import type { MerchantCategory } from "@quickdrop/shared";
 import { api, describeError } from "@/lib/api";
 import { normalizePhoneE164 } from "@/lib/phone";
 import type { CatalogItemView, CreateMerchantRequest, MerchantView, Point } from "@/lib/types";
+import { tenantCurrencyConfig } from "@/lib/tenant";
+import { useT } from "@/lib/i18n";
 import { useToast } from "./Toast";
 import type { PickTarget } from "./MapPicker";
 
@@ -20,11 +22,14 @@ const MapPicker = dynamic(() => import("./MapPicker"), {
 });
 
 // التصنيفات محلياً (لا نجرّ ثابت runtime من shared للحزمة) — النوع type-only يُمحى
-const CATEGORY_OPTIONS: { value: MerchantCategory; label: string }[] = [
-  { value: "restaurant", label: "مطعم" },
-  { value: "shop", label: "محل" },
+const CATEGORY_OPTIONS: { value: MerchantCategory; labelKey: string }[] = [
+  { value: "restaurant", labelKey: "merchantsMgr.categoryRestaurant" },
+  { value: "shop", labelKey: "merchantsMgr.categoryShop" },
 ];
-const CATEGORY_LABELS: Record<MerchantCategory, string> = { restaurant: "مطعم", shop: "محل" };
+const CATEGORY_LABEL_KEYS: Record<MerchantCategory, string> = {
+  restaurant: "merchantsMgr.categoryRestaurant",
+  shop: "merchantsMgr.categoryShop",
+};
 
 const inputCls =
   "mt-1 w-full rounded-lg border border-slate-300 p-2 text-sm focus:border-sky-500 focus:outline-none";
@@ -33,6 +38,7 @@ const inputCls =
 const PRICE_RE = /^\d{1,15}$/;
 
 export function MerchantsManager() {
+  const t = useT();
   const toast = useToast();
   const [merchants, setMerchants] = useState<MerchantView[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -59,7 +65,7 @@ export function MerchantsManager() {
     setMerchants((current) => [merchant, ...(current ?? [])].sort((a, b) => a.name.localeCompare(b.name, "ar")));
     setSelectedId(merchant.id);
     setShowAdd(false);
-    toast.success(`أُضيف التاجر ${merchant.name}`);
+    toast.success(t("merchantsMgr.merchantAdded", { name: merchant.name }));
   }
 
   return (
@@ -67,30 +73,32 @@ export function MerchantsManager() {
       {/* عمود قائمة المطاعم */}
       <div className="flex flex-col gap-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-bold text-slate-700">التجار</h2>
+          <h2 className="text-sm font-bold text-slate-700">{t("merchantsMgr.merchants")}</h2>
           <button
             type="button"
             onClick={() => setShowAdd((v) => !v)}
             aria-pressed={showAdd}
             className="rounded-lg border border-sky-500 px-3 py-1 text-xs font-semibold text-sky-700 hover:bg-sky-50"
           >
-            {showAdd ? "إلغاء" : "+ تاجر جديد"}
+            {showAdd ? t("merchantsMgr.cancel") : t("merchantsMgr.newMerchant")}
           </button>
         </div>
 
         {loadFailed && (
           <p className="rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-700" role="alert">
-            تعذّر تحميل القائمة —{" "}
+            {t("merchantsMgr.loadListFailed")}{" "}
             <button type="button" onClick={() => void loadMerchants()} className="underline">
-              أعد المحاولة
+              {t("merchantsMgr.retry")}
             </button>
           </p>
         )}
 
-        {merchants === null && !loadFailed && <p className="text-sm text-slate-400">جارٍ التحميل…</p>}
+        {merchants === null && !loadFailed && (
+          <p className="text-sm text-slate-400">{t("merchantsMgr.loading")}</p>
+        )}
         {merchants !== null && merchants.length === 0 && (
           <p className="rounded-xl border border-slate-200 bg-white p-4 text-center text-sm text-slate-400">
-            لا تجار بعد — أضف أول مطعم
+            {t("merchantsMgr.noMerchants")}
           </p>
         )}
 
@@ -112,7 +120,7 @@ export function MerchantsManager() {
                     <bdi>{m.name}</bdi>
                   </span>
                   <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-600">
-                    {CATEGORY_LABELS[m.category]}
+                    {t(CATEGORY_LABEL_KEYS[m.category])}
                   </span>
                 </div>
                 <div className="mt-1 flex items-center gap-3 text-xs text-slate-500">
@@ -121,8 +129,10 @@ export function MerchantsManager() {
                       <bdi>{m.phone}</bdi>
                     </span>
                   )}
-                  {m.prepMinutesDefault !== null && <span>تحضير ~{m.prepMinutesDefault} د</span>}
-                  {!m.isActive && <span className="text-red-600">موقوف</span>}
+                  {m.prepMinutesDefault !== null && (
+                    <span>{t("merchantsMgr.prepMinutes", { min: m.prepMinutesDefault })}</span>
+                  )}
+                  {!m.isActive && <span className="text-red-600">{t("merchantsMgr.suspended")}</span>}
                 </div>
               </button>
             </li>
@@ -138,7 +148,7 @@ export function MerchantsManager() {
         ) : (
           !showAdd && (
             <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-400">
-              اختر تاجراً من القائمة لإدارة كتالوجه
+              {t("merchantsMgr.selectMerchantHint")}
             </div>
           )
         )}
@@ -150,6 +160,7 @@ export function MerchantsManager() {
 // §3 — نموذج إضافة تاجر: الاسم، التصنيف، الهاتف (اختياري)، مدة التحضير (اختياري)،
 // ونقطة الموقع بنقرة على الخريطة (نعيد استخدام MapPicker بهدف pickup وحده).
 function AddMerchantForm({ onCreated }: { onCreated: (merchant: MerchantView) => void }) {
+  const t = useT();
   const [name, setName] = useState("");
   const [category, setCategory] = useState<MerchantCategory>("restaurant");
   const [phone, setPhone] = useState("");
@@ -160,18 +171,18 @@ function AddMerchantForm({ onCreated }: { onCreated: (merchant: MerchantView) =>
 
   async function handleSubmit(): Promise<void> {
     if (name.trim() === "") {
-      setError("اسم التاجر مطلوب");
+      setError(t("merchantsMgr.merchantNameRequired"));
       return;
     }
     if (point === null) {
-      setError("حدّد موقع التاجر على الخريطة");
+      setError(t("merchantsMgr.pickLocationOnMap"));
       return;
     }
     let normalizedPhone: string | undefined;
     if (phone.trim() !== "") {
       const normalized = normalizePhoneE164(phone);
       if (normalized === null) {
-        setError("رقم الهاتف غير صالح — أدخله بصيغة دولية مثل ‎+963 9xx xxx xxx");
+        setError(t("merchantsMgr.invalidPhone", { example: tenantCurrencyConfig().phonePlaceholder }));
         return;
       }
       normalizedPhone = normalized;
@@ -180,7 +191,7 @@ function AddMerchantForm({ onCreated }: { onCreated: (merchant: MerchantView) =>
     if (prepText.trim() !== "") {
       const n = Number(prepText.trim());
       if (!Number.isInteger(n) || n <= 0 || n > 600) {
-        setError("مدة التحضير غير صالحة — عدد دقائق حتى 600");
+        setError(t("merchantsMgr.invalidPrep"));
         return;
       }
       prep = n;
@@ -215,15 +226,15 @@ function AddMerchantForm({ onCreated }: { onCreated: (merchant: MerchantView) =>
       }}
     >
       <div className="flex flex-col gap-3">
-        <h2 className="text-sm font-bold text-slate-700">تاجر جديد</h2>
+        <h2 className="text-sm font-bold text-slate-700">{t("merchantsMgr.newMerchantTitle")}</h2>
 
         <label className="block text-sm text-slate-700">
-          الاسم <span className="text-red-600">*</span>
+          {t("merchantsMgr.nameLabel")} <span className="text-red-600">*</span>
           <input value={name} onChange={(e) => setName(e.target.value)} maxLength={120} className={inputCls} />
         </label>
 
         <fieldset className="text-sm text-slate-700">
-          <legend>التصنيف</legend>
+          <legend>{t("merchantsMgr.categoryLegend")}</legend>
           <div className="mt-1 flex items-center gap-2">
             {CATEGORY_OPTIONS.map((c) => (
               <button
@@ -237,32 +248,32 @@ function AddMerchantForm({ onCreated }: { onCreated: (merchant: MerchantView) =>
                     : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
                 }`}
               >
-                {c.label}
+                {t(c.labelKey)}
               </button>
             ))}
           </div>
         </fieldset>
 
         <label className="block text-sm text-slate-700">
-          الهاتف (اختياري — الموزّع يتصل بالتاجر)
+          {t("merchantsMgr.phoneLabel")}
           <input
             value={phone}
             onChange={(e) => setPhone(e.target.value)}
             inputMode="tel"
             dir="ltr"
-            placeholder="+963 9xx xxx xxx"
+            placeholder={tenantCurrencyConfig().phonePlaceholder}
             className={`${inputCls} text-start`}
           />
         </label>
 
         <label className="block text-sm text-slate-700">
-          مدة التحضير الافتراضية بالدقائق (اختياري)
+          {t("merchantsMgr.prepLabel")}
           <input
             value={prepText}
             onChange={(e) => setPrepText(e.target.value)}
             inputMode="numeric"
             dir="ltr"
-            placeholder="مثال: 20"
+            placeholder={t("merchantsMgr.prepPlaceholder")}
             className={`${inputCls} text-start`}
           />
         </label>
@@ -278,12 +289,12 @@ function AddMerchantForm({ onCreated }: { onCreated: (merchant: MerchantView) =>
           disabled={saving || point === null}
           className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {saving ? "جارٍ الحفظ…" : "أضف التاجر"}
+          {saving ? t("merchantsMgr.savingMerchant") : t("merchantsMgr.addMerchant")}
         </button>
       </div>
 
       <div className="flex flex-col gap-2">
-        <span className="text-xs text-slate-500">انقر على الخريطة لتحديد موقع التاجر</span>
+        <span className="text-xs text-slate-500">{t("merchantsMgr.clickMapHint")}</span>
         <MapPicker
           pickup={point}
           dropoff={null}
@@ -291,13 +302,13 @@ function AddMerchantForm({ onCreated }: { onCreated: (merchant: MerchantView) =>
           onPick={(_t, p) => setPoint(p)}
         />
         <div className="text-xs text-slate-600">
-          <span className="inline-block size-2.5 rounded-full bg-emerald-600" /> الموقع:{" "}
+          <span className="inline-block size-2.5 rounded-full bg-emerald-600" /> {t("merchantsMgr.location")}{" "}
           {point !== null ? (
             <bdi>
               {point.lat.toFixed(5)}, {point.lng.toFixed(5)}
             </bdi>
           ) : (
-            "غير محدد"
+            t("merchantsMgr.notSet")
           )}
         </div>
       </div>
@@ -307,6 +318,7 @@ function AddMerchantForm({ onCreated }: { onCreated: (merchant: MerchantView) =>
 
 // §3 — لوحة الكتالوج للمطعم المحدَّد: قائمة الأصناف (اسم/سعر/توفّر) + إضافة صنف.
 function CatalogPanel({ merchant }: { merchant: MerchantView }) {
+  const t = useT();
   const toast = useToast();
   const [items, setItems] = useState<CatalogItemView[] | null>(null);
   const [loadFailed, setLoadFailed] = useState(false);
@@ -354,30 +366,30 @@ function CatalogPanel({ merchant }: { merchant: MerchantView }) {
     <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-bold text-slate-700">
-          كتالوج <bdi>{merchant.name}</bdi>
+          {t("merchantsMgr.catalog")} <bdi>{merchant.name}</bdi>
         </h2>
         <BindBotButton merchant={merchant} />
       </div>
 
       {loadFailed && (
         <p className="rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-700" role="alert">
-          تعذّر تحميل الكتالوج —{" "}
+          {t("merchantsMgr.loadCatalogFailed")}{" "}
           <button type="button" onClick={() => void load()} className="underline">
-            أعد المحاولة
+            {t("merchantsMgr.retry")}
           </button>
         </p>
       )}
 
-      {items === null && !loadFailed && <p className="text-sm text-slate-400">جارٍ التحميل…</p>}
+      {items === null && !loadFailed && <p className="text-sm text-slate-400">{t("merchantsMgr.loading")}</p>}
 
       {items !== null && (
         <div className="overflow-x-auto rounded-xl border border-slate-200">
           <table className="w-full min-w-[32rem] text-sm">
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50 text-start text-xs text-slate-500">
-                <th className="p-3 text-start font-semibold">الصنف</th>
-                <th className="p-3 text-start font-semibold">السعر (قرش)</th>
-                <th className="p-3 text-start font-semibold">التوفّر</th>
+                <th className="p-3 text-start font-semibold">{t("merchantsMgr.itemColumn")}</th>
+                <th className="p-3 text-start font-semibold">{t("merchantsMgr.priceColumn")}</th>
+                <th className="p-3 text-start font-semibold">{t("merchantsMgr.availabilityColumn")}</th>
               </tr>
             </thead>
             <tbody>
@@ -393,7 +405,7 @@ function CatalogPanel({ merchant }: { merchant: MerchantView }) {
               {items.length === 0 && (
                 <tr>
                   <td colSpan={3} className="p-6 text-center text-slate-400">
-                    لا أصناف بعد — أضف أول صنف أدناه
+                    {t("merchantsMgr.noItems")}
                   </td>
                 </tr>
               )}
@@ -410,6 +422,7 @@ function CatalogPanel({ merchant }: { merchant: MerchantView }) {
 // §3 (بوت التاجر) — زر توليد رابط ربط: المشغّل يفتحه بتيليغرام فيربط حسابه بالمطعم،
 // وبعدها تصله الطلبات الجديدة ليقبلها (+ مدة تحضير) أو يرفضها. الكود قصير العمر لمرة واحدة.
 function BindBotButton({ merchant }: { merchant: MerchantView }) {
+  const t = useT();
   const toast = useToast();
   const [link, setLink] = useState<{ deepLink: string | null; code: string } | null>(null);
   const [loading, setLoading] = useState(false);
@@ -429,9 +442,9 @@ function BindBotButton({ merchant }: { merchant: MerchantView }) {
   async function copy(text: string): Promise<void> {
     try {
       await navigator.clipboard.writeText(text);
-      toast.success("نُسخ الرابط");
+      toast.success(t("merchantsMgr.linkCopied"));
     } catch {
-      toast.error("تعذّر النسخ — انسخه يدوياً");
+      toast.error(t("merchantsMgr.copyFailed"));
     }
   }
 
@@ -443,11 +456,11 @@ function BindBotButton({ merchant }: { merchant: MerchantView }) {
         disabled={loading}
         className="rounded-lg border border-sky-500 px-3 py-1 text-xs font-semibold text-sky-700 hover:bg-sky-50 disabled:opacity-50"
       >
-        {loading ? "…" : link === null ? "🔗 ربط بوت التاجر" : "🔄 رابط جديد"}
+        {loading ? "…" : link === null ? t("merchantsMgr.bindBot") : t("merchantsMgr.newLink")}
       </button>
       {link !== null && (
         <div className="w-full max-w-xs rounded-lg border border-sky-200 bg-sky-50 p-2 text-xs text-slate-700">
-          <p className="mb-1 text-slate-500">أرسل هذا الرابط لمشغّل المطعم — يفتحه بتيليغرام (صالح 15 دقيقة):</p>
+          <p className="mb-1 text-slate-500">{t("merchantsMgr.sendLinkHint")}</p>
           {link.deepLink !== null ? (
             <button
               type="button"
@@ -460,7 +473,8 @@ function BindBotButton({ merchant }: { merchant: MerchantView }) {
             </button>
           ) : (
             <p dir="ltr" className="font-mono">
-              الكود: {link.code} <span className="text-slate-400">(اسم البوت غير مضبوط)</span>
+              {t("merchantsMgr.code")} {link.code}{" "}
+              <span className="text-slate-400">{t("merchantsMgr.botNameUnset")}</span>
             </p>
           )}
         </div>
@@ -481,6 +495,7 @@ function CatalogItemRow({
   onSaved: (item: CatalogItemView) => void;
   onToggle: () => void;
 }) {
+  const t = useT();
   const toast = useToast();
   const [nameAr, setNameAr] = useState(item.nameAr);
   const [price, setPrice] = useState(item.price);
@@ -496,11 +511,11 @@ function CatalogItemRow({
 
   async function save(): Promise<void> {
     if (nameAr.trim() === "") {
-      toast.error("اسم الصنف مطلوب");
+      toast.error(t("merchantsMgr.itemNameRequired"));
       return;
     }
     if (!PRICE_RE.test(price.trim())) {
-      toast.error("السعر غير صالح — عدد صحيح بالقرش");
+      toast.error(t("merchantsMgr.invalidPrice"));
       return;
     }
     setSaving(true);
@@ -511,7 +526,7 @@ function CatalogItemRow({
         price: price.trim(),
       });
       onSaved(res.item);
-      toast.success("حُفظ الصنف");
+      toast.success(t("merchantsMgr.itemSaved"));
     } catch (err) {
       toast.error(describeError(err));
     } finally {
@@ -545,7 +560,7 @@ function CatalogItemRow({
               disabled={saving}
               className="rounded-lg bg-sky-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-sky-700 disabled:opacity-50"
             >
-              {saving ? "…" : "حفظ"}
+              {saving ? "…" : t("merchantsMgr.save")}
             </button>
           )}
         </div>
@@ -561,7 +576,7 @@ function CatalogItemRow({
               : "bg-slate-100 text-slate-500 hover:bg-slate-200"
           }`}
         >
-          {item.isAvailable ? "متوفّر" : "غير متوفّر"}
+          {item.isAvailable ? t("merchantsMgr.available") : t("merchantsMgr.unavailable")}
         </button>
       </td>
     </tr>
@@ -576,6 +591,7 @@ function AddItemRow({
   merchantId: string;
   onAdded: (item: CatalogItemView) => void;
 }) {
+  const t = useT();
   const toast = useToast();
   const [nameAr, setNameAr] = useState("");
   const [price, setPrice] = useState("");
@@ -583,11 +599,11 @@ function AddItemRow({
 
   async function add(): Promise<void> {
     if (nameAr.trim() === "") {
-      toast.error("اسم الصنف مطلوب");
+      toast.error(t("merchantsMgr.itemNameRequired"));
       return;
     }
     if (!PRICE_RE.test(price.trim())) {
-      toast.error("السعر غير صالح — عدد صحيح بالقرش");
+      toast.error(t("merchantsMgr.invalidPrice"));
       return;
     }
     setSaving(true);
@@ -596,7 +612,7 @@ function AddItemRow({
       onAdded(res.item);
       setNameAr("");
       setPrice("");
-      toast.success(`أُضيف ${res.item.nameAr}`);
+      toast.success(t("merchantsMgr.itemAdded", { name: res.item.nameAr }));
     } catch (err) {
       toast.error(describeError(err));
     } finally {
@@ -613,17 +629,17 @@ function AddItemRow({
       }}
     >
       <label className="flex-1 text-xs text-slate-600">
-        صنف جديد
+        {t("merchantsMgr.newItemLabel")}
         <input
           value={nameAr}
           onChange={(e) => setNameAr(e.target.value)}
           maxLength={200}
-          placeholder="مثال: شاورما"
+          placeholder={t("merchantsMgr.itemPlaceholder")}
           className="mt-1 w-full rounded-lg border border-slate-300 p-2 text-sm focus:border-sky-500 focus:outline-none"
         />
       </label>
       <label className="text-xs text-slate-600">
-        السعر (قرش)
+        {t("merchantsMgr.priceColumn")}
         <input
           value={price}
           onChange={(e) => setPrice(e.target.value)}
@@ -638,7 +654,7 @@ function AddItemRow({
         disabled={saving}
         className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700 disabled:opacity-50"
       >
-        {saving ? "…" : "أضف الصنف"}
+        {saving ? "…" : t("merchantsMgr.addItem")}
       </button>
     </form>
   );

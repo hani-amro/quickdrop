@@ -111,26 +111,28 @@ export const api = {
     request("auth/totp/enroll/confirm", { method: "POST", body: { token } }),
 };
 
-// أخطاء عامة بالعربي (§11: الخادم يرد رسائل عامة — الواجهة تترجم الحالة فقط)
+// رسائل خطأ عامة (§11: الخادم يرد حالة عامة — الواجهة تترجم الحالة فقط). بالإنجليزية
+// (لغة العرض الافتراضية en)؛ تظهر بتوستات الخطأ عند فشل النداءات. مستدعاة بـ29 موقعاً
+// دون تمرير t، فالإنجليزية الافتراضية هي الخيار المتّسق (بدل العربية سابقاً).
 export function describeError(error: unknown): string {
   if (error instanceof ApiError) {
     switch (error.status) {
       case 400:
-        return "مدخلات غير صالحة — تحقق من الحقول";
+        return "Invalid input — check the fields";
       case 401:
       case 503:
-        return "تعذر التخويل مع الخادم — راجع الإعدادات";
+        return "Server authorization failed — check the settings";
       case 404:
-        return "المورد غير موجود";
+        return "Resource not found";
       case 409:
-        return "تعارض بالحالة — حدّث اللوحة وأعد المحاولة";
+        return "State conflict — refresh the board and try again";
       case 422:
-        return "لا قاعدة تسعير فعّالة لهذه الخدمة/المنطقة";
+        return "No active pricing rule for this service/area";
       case 502:
-        return "الخادم غير متاح حالياً";
+        return "The server is currently unavailable";
       default:
-        return "خطأ غير متوقع من الخادم";
+        return "Unexpected server error";
     }
   }
-  return "تعذر الاتصال بالشبكة";
+  return "Could not connect to the network";
 }

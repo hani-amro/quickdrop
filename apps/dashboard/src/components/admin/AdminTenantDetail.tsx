@@ -8,6 +8,7 @@ import { useAdminTenantActions } from "@/lib/admin-actions";
 import { adminApi } from "@/lib/admin-api";
 import { TENANT_PLAN_LABELS, TENANT_STATUS_LABELS, trialDaysLeft } from "@/lib/admin-format";
 import { agoLabel, formatMoney } from "@/lib/format";
+import { useT } from "@/lib/i18n";
 import { usePolling } from "@/lib/use-polling";
 import { AdminPaymentModal } from "./AdminPaymentModal";
 import { TenantStatusBadge } from "./TenantStatusBadge";
@@ -18,6 +19,7 @@ export function AdminTenantDetail({ id }: { id: string }) {
   const fetcher = useCallback(() => adminApi.getTenant(id), [id]);
   const { data, failed, lastUpdated, refresh } = usePolling(fetcher, 10000);
   const actions = useAdminTenantActions(refresh);
+  const t = useT();
 
   const [suspending, setSuspending] = useState(false);
   const [suspendReason, setSuspendReason] = useState("");
@@ -79,7 +81,7 @@ export function AdminTenantDetail({ id }: { id: string }) {
               </div>
               <div>
                 <dt className="text-slate-500">آخر طلب</dt>
-                <dd className="font-semibold text-slate-900">{agoLabel(tenant.lastOrderAt)}</dd>
+                <dd className="font-semibold text-slate-900">{agoLabel(t, tenant.lastOrderAt)}</dd>
               </div>
               <div>
                 <dt className="text-slate-500">طلبات اليوم</dt>
@@ -165,9 +167,9 @@ export function AdminTenantDetail({ id }: { id: string }) {
                 <tbody>
                   {payments.map((p) => (
                     <tr key={p.id} className="border-b border-slate-100 last:border-b-0">
-                      <td className="p-2.5 text-slate-600">{agoLabel(p.createdAt)}</td>
+                      <td className="p-2.5 text-slate-600">{agoLabel(t, p.createdAt)}</td>
                       <td className="p-2.5 font-semibold text-slate-900 tabular-nums">
-                        {formatMoney(p.amount)} ل.س
+                        {formatMoney(p.amount)}
                       </td>
                       <td className="p-2.5 text-slate-600">
                         <bdi>{p.note ?? "—"}</bdi>
@@ -193,7 +195,7 @@ export function AdminTenantDetail({ id }: { id: string }) {
               <ul className="flex flex-col gap-2 text-sm">
                 {statusLog.map((s) => (
                   <li key={s.id} className="flex flex-wrap items-center gap-2 border-b border-slate-100 pb-2 last:border-b-0">
-                    <span className="text-slate-600">{agoLabel(s.at)}</span>
+                    <span className="text-slate-600">{agoLabel(t, s.at)}</span>
                     <span className="text-slate-400">—</span>
                     {s.from !== undefined && s.from !== null && (
                       <span className="text-slate-500">{TENANT_STATUS_LABELS[s.from]} ←</span>

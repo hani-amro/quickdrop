@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, type ReactNode } from "react";
+import { useT } from "@/lib/i18n";
 
 // غلاف modal بسيط بلا مكتبات: خلفية معتمة + Esc يغلق (§10.1 اختصارات) + نقر خارجي يغلق.
 export function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) {
+  const t = useT();
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === "Escape") onClose();
@@ -30,7 +32,7 @@ export function Modal({ title, onClose, children }: { title: string; onClose: ()
           <button
             type="button"
             onClick={onClose}
-            aria-label="إغلاق"
+            aria-label={t("modal.close")}
             className="rounded-md px-2 py-1 text-slate-500 hover:bg-slate-100"
           >
             ✕

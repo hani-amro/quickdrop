@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { SupportThreadStatus } from "@quickdrop/shared";
 import { api, describeError } from "@/lib/api";
 import type { SupportThreadDetailResponse, SupportThreadSummary } from "@/lib/types";
+import { useT } from "@/lib/i18n";
 import { useToast } from "./Toast";
 
 // §9 — صندوق الدعم: قائمة الخيوط يمين + محادثة الخيط المحدَّد يسار. polling كل 5 ثوانٍ
@@ -15,12 +16,15 @@ const REPLY_MAX = 2000;
 
 type StatusFilter = SupportThreadStatus | "all";
 
-const STATUS_LABELS: Record<SupportThreadStatus, string> = { open: "مفتوح", closed: "مغلق" };
+const STATUS_LABEL_KEYS: Record<SupportThreadStatus, string> = {
+  open: "support.statusOpen",
+  closed: "support.statusClosed",
+};
 
-const FILTER_TABS: { value: StatusFilter; label: string }[] = [
-  { value: "open", label: "المفتوحة" },
-  { value: "closed", label: "المغلقة" },
-  { value: "all", label: "الكل" },
+const FILTER_TABS: { value: StatusFilter; labelKey: string }[] = [
+  { value: "open", labelKey: "support.filterOpen" },
+  { value: "closed", labelKey: "support.filterClosed" },
+  { value: "all", labelKey: "support.filterAll" },
 ];
 
 // §9 — إخفاء جزئي لرقم الهاتف باللوحة (لا نعرض الرقم كاملاً بلا داعٍ)
@@ -41,6 +45,7 @@ function formatTime(iso: string | null): string {
 }
 
 export function SupportInbox() {
+  const tr = useT();
   const toast = useToast();
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("open");
   const [threads, setThreads] = useState<SupportThreadSummary[] | null>(null);
@@ -105,18 +110,18 @@ export function SupportInbox() {
     if (detail === null) return;
     const text = replyText.trim();
     if (text === "") {
-      toast.error("اكتب نص الرد");
+      toast.error(tr("support.replyEmpty"));
       return;
     }
     if (text.length > REPLY_MAX) {
-      toast.error(`الرد طويل جداً — الحد ${REPLY_MAX} حرف`);
+      toast.error(tr("support.replyTooLong", { max: REPLY_MAX }));
       return;
     }
     setSending(true);
     try {
       await api.supportReply(detail.thread.id, text);
       setReplyText("");
-      toast.success("أُرسل الرد");
+      toast.success(tr("support.replySent"));
       const [d] = await Promise.all([api.getSupportThread(detail.thread.id), loadThreads()]);
       if (aliveRef.current) setDetail(d);
     } catch (err) {
@@ -131,7 +136,7 @@ export function SupportInbox() {
     setClosing(true);
     try {
       await api.supportClose(detail.thread.id);
-      toast.success("أُغلق الخيط");
+      toast.success(tr("support.threadClosed"));
       const [d] = await Promise.all([api.getSupportThread(detail.thread.id), loadThreads()]);
       if (aliveRef.current) setDetail(d);
     } catch (err) {
@@ -161,24 +166,24 @@ export function SupportInbox() {
                   : "text-slate-600 hover:bg-slate-100"
               }`}
             >
-              {tab.label}
+              {tr(tab.labelKey)}
             </button>
           ))}
         </div>
 
         {listFailed && (
           <p className="rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-700" role="alert">
-            تعذّر تحميل الخيوط —{" "}
+            {tr("support.loadFailed")}{" "}
             <button type="button" onClick={() => void loadThreads()} className="underline">
-              أعد المحاولة
+              {tr("support.retry")}
             </button>
           </p>
         )}
 
-        {threads === null && !listFailed && <p className="text-sm text-slate-400">جارٍ التحميل…</p>}
+        {threads === null && !listFailed && <p className="text-sm text-slate-400">{tr("support.loading")}</p>}
         {threads !== null && threads.length === 0 && (
           <p className="rounded-xl border border-slate-200 bg-white p-4 text-center text-sm text-slate-400">
-            لا خيوط دعم في هذا التصنيف
+            {tr("support.emptyList")}
           </p>
         )}
 
@@ -197,14 +202,14 @@ export function SupportInbox() {
               >
                 <div className="flex items-center justify-between gap-2">
                   <span className="truncate font-semibold text-slate-900">
-                    <bdi>{t.userName ?? "زبون"}</bdi>
+                    <bdi>{t.userName ?? tr("support.customer")}</bdi>
                   </span>
                   <span
                     className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${
                       t.status === "open" ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-500"
                     }`}
                   >
-                    {STATUS_LABELS[t.status]}
+                    {tr(STATUS_LABEL_KEYS[t.status])}
                   </span>
                 </div>
                 {t.userPhone !== null && (
@@ -217,7 +222,7 @@ export function SupportInbox() {
                 )}
                 <div className="mt-1 flex items-center justify-between text-[11px] text-slate-400">
                   <span>{formatTime(t.lastMessageAt)}</span>
-                  <span>{t.messageCount} رسالة</span>
+                  <span>{tr("support.messagesCount", { count: t.messageCount })}</span>
                 </div>
               </button>
             </li>
@@ -229,7 +234,7 @@ export function SupportInbox() {
       <div className="flex flex-col">
         {detail === null ? (
           <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-400">
-            اختر خيطاً من القائمة لعرض المحادثة والرد
+            {tr("support.selectThreadPrompt")}
           </div>
         ) : (
           <div className="flex min-h-[28rem] flex-col rounded-2xl border border-slate-200 bg-white">
@@ -237,7 +242,7 @@ export function SupportInbox() {
             <div className="flex items-center justify-between gap-2 border-b border-slate-200 p-4">
               <div className="min-w-0">
                 <h2 className="truncate text-sm font-bold text-slate-800">
-                  <bdi>{detail.thread.userName ?? "زبون"}</bdi>
+                  <bdi>{detail.thread.userName ?? tr("support.customer")}</bdi>
                 </h2>
                 {detail.thread.userPhone !== null && (
                   <p className="text-xs text-slate-500" dir="ltr">
@@ -253,7 +258,7 @@ export function SupportInbox() {
                       : "bg-slate-100 text-slate-500"
                   }`}
                 >
-                  {STATUS_LABELS[detail.thread.status]}
+                  {tr(STATUS_LABEL_KEYS[detail.thread.status])}
                 </span>
                 {detail.thread.status === "open" && (
                   <button
@@ -262,7 +267,7 @@ export function SupportInbox() {
                     disabled={closing}
                     className="rounded-lg border border-slate-300 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
                   >
-                    {closing ? "…" : "إغلاق الخيط"}
+                    {closing ? "…" : tr("support.closeThread")}
                   </button>
                 )}
               </div>
@@ -271,7 +276,7 @@ export function SupportInbox() {
             {/* الرسائل — in (زبون) رمادي بادئة، out (مكتب) أزرق نهاية */}
             <div className="flex flex-1 flex-col gap-2 overflow-y-auto p-4">
               {detail.messages.length === 0 && (
-                <p className="my-auto text-center text-sm text-slate-400">لا رسائل بعد</p>
+                <p className="my-auto text-center text-sm text-slate-400">{tr("support.noMessagesYet")}</p>
               )}
               {detail.messages.map((m) => (
                 <div key={m.id} className={`flex ${m.direction === "out" ? "justify-end" : "justify-start"}`}>
@@ -295,7 +300,7 @@ export function SupportInbox() {
             <div className="border-t border-slate-200 p-3">
               {detail.thread.status === "closed" ? (
                 <p className="rounded-lg bg-slate-50 p-3 text-center text-xs text-slate-500">
-                  هذا الخيط مغلق — يُفتح خيط جديد تلقائياً عند مراسلة الزبون من جديد.
+                  {tr("support.threadClosedNotice")}
                 </p>
               ) : (
                 <form
@@ -310,7 +315,7 @@ export function SupportInbox() {
                     onChange={(e) => setReplyText(e.target.value)}
                     maxLength={REPLY_MAX}
                     rows={2}
-                    placeholder="اكتب ردّك للزبون…"
+                    placeholder={tr("support.replyPlaceholder")}
                     className="min-h-[2.5rem] flex-1 resize-y rounded-lg border border-slate-300 p-2 text-sm focus:border-sky-500 focus:outline-none"
                   />
                   <button
@@ -318,7 +323,7 @@ export function SupportInbox() {
                     disabled={sending || replyText.trim() === ""}
                     className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-bold text-white hover:bg-sky-700 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    {sending ? "…" : "إرسال"}
+                    {sending ? "…" : tr("support.send")}
                   </button>
                 </form>
               )}

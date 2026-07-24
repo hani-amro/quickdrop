@@ -1,12 +1,12 @@
 "use client";
 
-import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { useT } from "@/lib/i18n";
 
 // §10.2 — نموذج دخول الطاقم. يرسل بريداً وكلمة سر لـ /api/auth-proxy/login؛ الجلسة
 // تعود كوكي HttpOnly (لا يلمسها JS). رسائل الفشل عامة (§11 — لا نكشف السبب).
 export function LoginForm() {
-  const router = useRouter();
+  const t = useT();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -23,13 +23,14 @@ export function LoginForm() {
         body: JSON.stringify({ email, password }),
       });
       if (!res.ok) {
-        setError("بيانات الدخول غير صحيحة");
+        setError(t("login2.invalidCredentials"));
         return;
       }
-      router.push("/");
-      router.refresh();
+      // تنقّل كامل يضمن أن الخادم يقرأ كوكي الجلسة الجديد ويعيد رسم التخطيط المصادَق.
+      // (router.push("/") متبوعاً بـ router.refresh() كان يتسابقان فيبقى المستخدم على /login.)
+      window.location.assign("/");
     } catch {
-      setError("تعذّر الاتصال بالخادم");
+      setError(t("login2.connectFailed"));
     } finally {
       setBusy(false);
     }
@@ -42,10 +43,10 @@ export function LoginForm() {
       dir="rtl"
     >
       <h1 className="mb-1 text-xl font-bold text-slate-900">QuickDrop</h1>
-      <p className="mb-6 text-sm text-slate-500">تسجيل دخول الطاقم</p>
+      <p className="mb-6 text-sm text-slate-500">{t("login2.staffLogin")}</p>
 
       <label className="mb-1 block text-sm font-medium text-slate-700" htmlFor="email">
-        البريد الإلكتروني
+        {t("login2.email")}
       </label>
       <input
         id="email"
@@ -58,7 +59,7 @@ export function LoginForm() {
       />
 
       <label className="mb-1 block text-sm font-medium text-slate-700" htmlFor="password">
-        كلمة السر
+        {t("login2.password")}
       </label>
       <input
         id="password"
@@ -81,7 +82,7 @@ export function LoginForm() {
         disabled={busy}
         className="w-full rounded-lg bg-slate-900 py-2 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-50"
       >
-        {busy ? "جارٍ الدخول…" : "دخول"}
+        {busy ? t("login2.signingIn") : t("login2.signIn")}
       </button>
     </form>
   );

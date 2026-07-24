@@ -5,8 +5,11 @@ import Link from "next/link";
 import { useEffect, useState, type ReactNode } from "react";
 import type { Service } from "@quickdrop/shared";
 import { api, describeError } from "@/lib/api";
+import { serviceLabel } from "@/lib/format";
+import { useT } from "@/lib/i18n";
 import { normalizePhoneE164 } from "@/lib/phone";
 import type { CreateOrderRequest, Point, QuoteResponse } from "@/lib/types";
+import { tenantCurrencyConfig } from "@/lib/tenant";
 import { PriceBreakdown } from "./PriceBreakdown";
 import { useToast } from "./Toast";
 import type { PickTarget } from "./MapPicker";
@@ -20,16 +23,14 @@ const MapPicker = dynamic(() => import("./MapPicker"), {
 // D15 — شاشة إنشاء طلب يدوي (زبون التلفون/الواتساب): البحث/الإنشاء بالهاتف يتولاه
 // الـ API (telegram_user_id NULL)، التسعير بنفس محرك البوت، والسعر يُعرض مفصلاً
 // قبل الحفظ (§4.4 إلزامي). الخدمة بهالشاشة: توصيل (food) أو طرد (parcel).
-const FORM_SERVICES: { value: Service; label: string }[] = [
-  { value: "food", label: "توصيل" },
-  { value: "parcel", label: "طرد" },
-];
+const FORM_SERVICES: { value: Service }[] = [{ value: "food" }, { value: "parcel" }];
 
 const inputCls =
   "mt-1 w-full rounded-lg border border-slate-300 p-2 text-sm focus:border-sky-500 focus:outline-none";
 
 export function NewOrderForm() {
   const toast = useToast();
+  const tr = useT();
 
   // حقول D15
   const [customerPhone, setCustomerPhone] = useState("");
@@ -67,9 +68,9 @@ export function NewOrderForm() {
 
   // تحقق نقاط/وزن مع تضييق الأنواع — يعيد المدخلات الجاهزة أو رسالة عربية
   function pricingInputs(): { pickup: Point; dropoff: Point; weightG?: number } | string {
-    if (pickup === null) return "حدد نقطة الاستلام على الخريطة";
-    if (dropoff === null) return "حدد نقطة التسليم على الخريطة";
-    if (weightG === null) return "الوزن غير صالح — عدد صحيح بالغرام حتى 1,000,000";
+    if (pickup === null) return tr("newOrder.setPickupPoint");
+    if (dropoff === null) return tr("newOrder.setDropoffPoint");
+    if (weightG === null) return tr("newOrder.invalidWeight");
     return { pickup, dropoff, ...(weightG !== undefined ? { weightG } : {}) };
   }
 
@@ -99,21 +100,21 @@ export function NewOrderForm() {
     }
     const phone = normalizePhoneE164(customerPhone);
     if (phone === null) {
-      setFormError("رقم هاتف الزبون غير صالح — أدخله بصيغة دولية مثل ‎+963 9xx xxx xxx");
+      setFormError(tr("newOrder.invalidCustomerPhone", { example: tenantCurrencyConfig().phonePlaceholder }));
       return;
     }
     let recipient: string | undefined;
     if (recipientPhone.trim() !== "") {
       const normalized = normalizePhoneE164(recipientPhone);
       if (normalized === null) {
-        setFormError("رقم هاتف المستلم غير صالح — أدخله بصيغة دولية أو اتركه فارغاً");
+        setFormError(tr("newOrder.invalidRecipientPhone"));
         return;
       }
       recipient = normalized;
     }
     if (quote === null) {
       // §4.4: ممنوع الحفظ قبل عرض السعر
-      setFormError("احسب السعر واعرضه قبل إنشاء الطلب");
+      setFormError(tr("newOrder.quoteBeforeCreate"));
       return;
     }
 
@@ -131,7 +132,7 @@ export function NewOrderForm() {
     try {
       const res = await api.createOrder(body);
       setCreated({ publicCode: res.order.publicCode });
-      toast.success(`أُنشئ الطلب ${res.order.publicCode}`);
+      toast.success(tr("newOrder.orderCreatedToast", { code: res.order.publicCode }));
     } catch (error) {
       setFormError(describeError(error));
     } finally {
@@ -158,24 +159,24 @@ export function NewOrderForm() {
   if (created !== null) {
     return (
       <div className="mx-auto max-w-lg rounded-2xl border border-emerald-300 bg-emerald-50 p-6 text-center">
-        <p className="text-sm text-emerald-800">أُنشئ الطلب بنجاح — كود التتبع:</p>
+        <p className="text-sm text-emerald-800">{tr("newOrder.createdSuccess")}</p>
         <p className="my-3 text-3xl font-black text-emerald-900">
           <bdi>{created.publicCode}</bdi>
         </p>
-        <p className="mb-4 text-xs text-slate-500">يُملى هذا الكود للزبون هاتفياً لمتابعة طلبه</p>
+        <p className="mb-4 text-xs text-slate-500">{tr("newOrder.dictateCodeHint")}</p>
         <div className="flex items-center justify-center gap-3">
           <Link
             href="/"
             className="rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-700"
           >
-            إلى لوحة الإرسال
+            {tr("newOrder.toDispatchBoard")}
           </Link>
           <button
             type="button"
             onClick={resetAll}
             className="rounded-lg border border-slate-300 px-4 py-2 text-sm text-slate-700 hover:bg-slate-50"
           >
-            طلب جديد آخر
+            {tr("newOrder.anotherNewOrder")}
           </button>
         </div>
       </div>
@@ -206,19 +207,19 @@ export function NewOrderForm() {
       {/* عمود الحقول */}
       <div className="flex flex-col gap-3">
         <label className="block text-sm text-slate-700">
-          هاتف الزبون <span className="text-red-600">*</span>
+          {tr("newOrder.customerPhone")} <span className="text-red-600">*</span>
           <input
             value={customerPhone}
             onChange={(e) => setCustomerPhone(e.target.value)}
             inputMode="tel"
             dir="ltr"
-            placeholder="+963 9xx xxx xxx"
+            placeholder={tenantCurrencyConfig().phonePlaceholder}
             className={`${inputCls} text-start`}
           />
         </label>
 
         <label className="block text-sm text-slate-700">
-          اسم الزبون (اختياري)
+          {tr("newOrder.customerNameOptional")}
           <input
             value={customerName}
             onChange={(e) => setCustomerName(e.target.value)}
@@ -228,7 +229,7 @@ export function NewOrderForm() {
         </label>
 
         <fieldset className="text-sm text-slate-700">
-          <legend>الخدمة</legend>
+          <legend>{tr("newOrder.service")}</legend>
           <div className="mt-1 flex items-center gap-2">
             {FORM_SERVICES.map((s) => (
               <button
@@ -242,40 +243,40 @@ export function NewOrderForm() {
                     : "border-slate-300 bg-white text-slate-600 hover:bg-slate-50"
                 }`}
               >
-                {s.label}
+                {serviceLabel(tr, s.value)}
               </button>
             ))}
           </div>
         </fieldset>
 
         <label className="block text-sm text-slate-700">
-          هاتف المستلم (اختياري — إن كان الطلب لشخص آخر)
+          {tr("newOrder.recipientPhoneOptional")}
           <input
             value={recipientPhone}
             onChange={(e) => setRecipientPhone(e.target.value)}
             inputMode="tel"
             dir="ltr"
-            placeholder="+963 9xx xxx xxx"
+            placeholder={tenantCurrencyConfig().phonePlaceholder}
             className={`${inputCls} text-start`}
           />
         </label>
 
         {service === "parcel" && (
           <label className="block text-sm text-slate-700">
-            الوزن بالغرام (اختياري)
+            {tr("newOrder.weightGramsOptional")}
             <input
               value={weightText}
               onChange={(e) => setWeightText(e.target.value)}
               inputMode="numeric"
               dir="ltr"
-              placeholder="مثال: 2500"
+              placeholder={tr("newOrder.weightExample")}
               className={`${inputCls} text-start`}
             />
           </label>
         )}
 
         <label className="block text-sm text-slate-700">
-          ملاحظات (اختياري)
+          {tr("newOrder.notesOptional")}
           <textarea
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
@@ -300,16 +301,16 @@ export function NewOrderForm() {
             disabled={quoting || pickup === null || dropoff === null}
             className="rounded-lg border border-sky-500 px-4 py-2 text-sm font-semibold text-sky-700 hover:bg-sky-50 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {quoting ? "جارٍ الحساب…" : "احسب السعر"}
+            {quoting ? tr("newOrder.calculating") : tr("newOrder.calculatePrice")}
           </button>
           {/* §4.4 — الإنشاء لا يتاح إلا بعد عرض السعر مفصلاً */}
           <button
             type="submit"
             disabled={creating || quote === null}
-            title={quote === null ? "احسب السعر أولاً" : undefined}
+            title={quote === null ? tr("newOrder.calculatePriceFirst") : undefined}
             className="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-bold text-white hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {creating ? "جارٍ الإنشاء…" : "أنشئ الطلب"}
+            {creating ? tr("newOrder.creating") : tr("newOrder.createOrder")}
           </button>
         </div>
       </div>
@@ -317,9 +318,9 @@ export function NewOrderForm() {
       {/* عمود الخريطة */}
       <div className="flex flex-col gap-2">
         <div className="flex flex-wrap items-center gap-2">
-          {targetBtn("pickup", "حدد الاستلام", "border-emerald-500 bg-emerald-100 text-emerald-800")}
-          {targetBtn("dropoff", "حدد التسليم", "border-red-500 bg-red-100 text-red-800")}
-          <span className="text-xs text-slate-500">انقر على الخريطة لوضع الدبوس المحدد</span>
+          {targetBtn("pickup", tr("newOrder.setPickup"), "border-emerald-500 bg-emerald-100 text-emerald-800")}
+          {targetBtn("dropoff", tr("newOrder.setDropoff"), "border-red-500 bg-red-100 text-red-800")}
+          <span className="text-xs text-slate-500">{tr("newOrder.clickMapHint")}</span>
         </div>
         <MapPicker
           pickup={pickup}
@@ -337,12 +338,12 @@ export function NewOrderForm() {
         />
         <div className="flex items-center gap-4 text-xs text-slate-600">
           <span>
-            <span className="inline-block size-2.5 rounded-full bg-emerald-600" /> استلام:{" "}
-            {pickup !== null ? <bdi>{pickup.lat.toFixed(5)}, {pickup.lng.toFixed(5)}</bdi> : "غير محدد"}
+            <span className="inline-block size-2.5 rounded-full bg-emerald-600" /> {tr("newOrder.pickupLabel")}{" "}
+            {pickup !== null ? <bdi>{pickup.lat.toFixed(5)}, {pickup.lng.toFixed(5)}</bdi> : tr("newOrder.notSet")}
           </span>
           <span>
-            <span className="inline-block size-2.5 rounded-full bg-red-600" /> تسليم:{" "}
-            {dropoff !== null ? <bdi>{dropoff.lat.toFixed(5)}, {dropoff.lng.toFixed(5)}</bdi> : "غير محدد"}
+            <span className="inline-block size-2.5 rounded-full bg-red-600" /> {tr("newOrder.dropoffLabel")}{" "}
+            {dropoff !== null ? <bdi>{dropoff.lat.toFixed(5)}, {dropoff.lng.toFixed(5)}</bdi> : tr("newOrder.notSet")}
           </span>
         </div>
       </div>

@@ -3,7 +3,8 @@
 import { useMemo, useState, type ReactNode } from "react";
 import type { OrderStatus } from "@quickdrop/shared";
 import { api, describeError } from "@/lib/api";
-import { STATUS_LABELS, isToday, minutesSince } from "@/lib/format";
+import { statusLabel, isToday, minutesSince } from "@/lib/format";
+import { useT } from "@/lib/i18n";
 import type { DriverRow, OrderRow } from "@/lib/types";
 import { usePolling } from "@/lib/use-polling";
 import { useRealtime } from "@/lib/useRealtime";
@@ -36,6 +37,7 @@ function withoutKey<T>(record: Record<string, T>, key: string): Record<string, T
 }
 
 export function DispatchBoard() {
+  const t = useT();
   const toast = useToast();
   const { data, failed, lastUpdated, refresh } = usePolling(api.listOrders, 3000);
 
@@ -88,7 +90,7 @@ export function DispatchBoard() {
       setPatches((p) => withoutKey(p, order.id));
     } catch (error) {
       setPatches((p) => withoutKey(p, order.id)); // §10.1: تراجع صريح — عودة الحالة
-      toast.error(`${failMsg} — أُعيدت الحالة. ${describeError(error)}`);
+      toast.error(t("board.actionReverted", { msg: failMsg, error: describeError(error) }));
     } finally {
       setBusyIds((b) => withoutKey(b, order.id));
     }
@@ -99,8 +101,8 @@ export function DispatchBoard() {
       order,
       { status: "confirmed" },
       () => api.confirmOrder(order.id),
-      `تم تأكيد الطلب ${order.publicCode}`,
-      `فشل تأكيد الطلب ${order.publicCode}`,
+      t("board.orderConfirmed", { code: order.publicCode }),
+      t("board.orderConfirmFailed", { code: order.publicCode }),
     );
 
   const cancelOrder = (order: OrderRow, reason: string): Promise<void> =>
@@ -108,8 +110,8 @@ export function DispatchBoard() {
       order,
       { status: "cancelled_by_office" },
       () => api.cancelOrder(order.id, reason),
-      `أُلغي الطلب ${order.publicCode}`,
-      `فشل إلغاء الطلب ${order.publicCode}`,
+      t("board.orderCancelled", { code: order.publicCode }),
+      t("board.orderCancelFailed", { code: order.publicCode }),
     );
 
   const assignOrder = (order: OrderRow, driver: DriverRow): Promise<void> =>
@@ -117,8 +119,8 @@ export function DispatchBoard() {
       order,
       { status: "assigned", driverName: driver.name },
       () => api.assignOrder(order.id, driver.id),
-      `أُسند ${order.publicCode} إلى ${driver.name}`,
-      `فشل إسناد الطلب ${order.publicCode}`,
+      t("board.orderAssigned", { code: order.publicCode, name: driver.name }),
+      t("board.orderAssignFailed", { code: order.publicCode }),
     );
 
   const actionBtn =
@@ -127,13 +129,13 @@ export function DispatchBoard() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-lg font-bold text-slate-900">لوحة الإرسال</h1>
+        <h1 className="text-lg font-bold text-slate-900">{t("board.title")}</h1>
         <ConnectionBadge failed={failed} lastUpdated={lastUpdated} wsAlive={wsAlive} onRefresh={() => void refresh()} />
       </div>
 
       <section className="grid items-start gap-4 md:grid-cols-2 xl:grid-cols-4">
         {/* 1 — بانتظار التأكيد (pending): تأكيد أو إلغاء بسبب */}
-        <BoardColumn title="بانتظار التأكيد" count={columns.pending.length} tone="bg-amber-100 text-amber-800">
+        <BoardColumn title={t("board.pending")} count={columns.pending.length} tone="bg-amber-100 text-amber-800">
           {columns.pending.map((order) => (
             <OrderCard
               key={order.id}
@@ -147,7 +149,7 @@ export function DispatchBoard() {
                     onClick={() => void confirmOrder(order)}
                     className={`${actionBtn} bg-emerald-600 text-white hover:bg-emerald-700`}
                   >
-                    تأكيد
+                    {t("board.confirm")}
                   </button>
                   <button
                     type="button"
@@ -155,7 +157,7 @@ export function DispatchBoard() {
                     onClick={() => setCancelFor(order)}
                     className={`${actionBtn} border border-red-300 text-red-700 hover:bg-red-50`}
                   >
-                    إلغاء بسبب
+                    {t("board.cancelWithReason")}
                   </button>
                 </>
               }
@@ -165,7 +167,7 @@ export function DispatchBoard() {
         </BoardColumn>
 
         {/* 2 — بحاجة سائق (confirmed): SLA نابض + إسناد يدوي أو إلغاء */}
-        <BoardColumn title="بحاجة سائق" count={columns.confirmed.length} tone="bg-red-100 text-red-800">
+        <BoardColumn title={t("board.needsDriver")} count={columns.confirmed.length} tone="bg-red-100 text-red-800">
           {columns.confirmed.map((order) => (
             <OrderCard
               key={order.id}
@@ -181,7 +183,7 @@ export function DispatchBoard() {
                     onClick={() => setAssignFor(order)}
                     className={`${actionBtn} bg-sky-600 text-white hover:bg-sky-700`}
                   >
-                    إسناد يدوي
+                    {t("board.manualAssign")}
                   </button>
                   <button
                     type="button"
@@ -189,7 +191,7 @@ export function DispatchBoard() {
                     onClick={() => setCancelFor(order)}
                     className={`${actionBtn} border border-red-300 text-red-700 hover:bg-red-50`}
                   >
-                    إلغاء بسبب
+                    {t("board.cancelWithReason")}
                   </button>
                 </>
               }
@@ -199,7 +201,7 @@ export function DispatchBoard() {
         </BoardColumn>
 
         {/* 3 — جارية (assigned..arrived): اسم السائق + الحالة بالعربي */}
-        <BoardColumn title="جارية" count={columns.ongoing.length} tone="bg-sky-100 text-sky-800">
+        <BoardColumn title={t("board.ongoing")} count={columns.ongoing.length} tone="bg-sky-100 text-sky-800">
           {columns.ongoing.map((order) => (
             <OrderCard
               key={order.id}
@@ -207,7 +209,7 @@ export function DispatchBoard() {
               onOpen={() => setDetailFor(order)}
               meta={
                 <p className="mt-1 text-xs text-slate-600">
-                  <bdi>{order.driverName ?? "سائق غير محدد"}</bdi> — {STATUS_LABELS[order.status]}
+                  <bdi>{order.driverName ?? t("board.unknownDriver")}</bdi> — {statusLabel(t, order.status)}
                 </p>
               }
             />
@@ -217,7 +219,7 @@ export function DispatchBoard() {
 
         {/* 4 — منتهية اليوم (delivered/cancelled/failed): مطوية افتراضياً */}
         <BoardColumn
-          title="منتهية اليوم"
+          title={t("board.finishedToday")}
           count={columns.finished.length}
           tone="bg-slate-200 text-slate-700"
           headerExtra={
@@ -226,7 +228,7 @@ export function DispatchBoard() {
               onClick={() => setShowFinished((v) => !v)}
               className="rounded-md px-2 py-0.5 text-xs text-slate-500 hover:bg-slate-200"
             >
-              {showFinished ? "طيّ" : "عرض"}
+              {showFinished ? t("board.collapse") : t("board.show")}
             </button>
           }
         >
@@ -236,7 +238,7 @@ export function DispatchBoard() {
                 key={order.id}
                 order={order}
                 onOpen={() => setDetailFor(order)}
-                meta={<p className="mt-1 text-xs text-slate-500">{STATUS_LABELS[order.status]}</p>}
+                meta={<p className="mt-1 text-xs text-slate-500">{statusLabel(t, order.status)}</p>}
               />
             ))}
           {showFinished && columns.finished.length === 0 && <EmptyHint />}
@@ -304,5 +306,6 @@ function BoardColumn({
 }
 
 function EmptyHint() {
-  return <p className="rounded-xl border border-dashed border-slate-300 p-3 text-center text-xs text-slate-400">لا طلبات</p>;
+  const t = useT();
+  return <p className="rounded-xl border border-dashed border-slate-300 p-3 text-center text-xs text-slate-400">{t("board.noOrders")}</p>;
 }

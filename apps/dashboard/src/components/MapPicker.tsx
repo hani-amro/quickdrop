@@ -4,13 +4,16 @@ import { useEffect, useRef, useState } from "react";
 import type { Map as MapLibreMap, Marker, StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import type { Point } from "@/lib/types";
+import { tenantCurrencyConfig } from "@/lib/tenant";
+import { useT } from "@/lib/i18n";
 
 // D15 — نقطتا الاستلام والتسليم بنقرة على الخريطة. MapLibre GL يُحمَّل ديناميكياً
 // داخل useEffect (client-only + lazy — روحية §10.3: الخريطة لا تدخل الحزمة الأولية)،
 // والبلاطات raster OSM بلا مفاتيح.
 // الفخ 6 — MapLibre يتكلم (lng, lat)؛ التحويل من/إلى Point{lat,lng} هنا حصراً.
 
-const DAMASCUS_CENTER: Point = { lat: 33.5138, lng: 36.2765 }; // مركز مبدئي: دمشق
+// مركز مبدئي بحسب عملة المستأجر (بدل ثابت دمشق) — MYR→كوالالمبور، SYP→دمشق.
+const INITIAL_CENTER: Point = tenantCurrencyConfig().mapCenter;
 const INITIAL_ZOOM = 12;
 
 const OSM_RASTER_STYLE: StyleSpecification = {
@@ -42,6 +45,7 @@ export default function MapPicker({
   target: PickTarget;
   onPick: (target: PickTarget, point: Point) => void;
 }) {
+  const t = useT();
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   // maplibre-gl v5: أنواع الحزمة namespace بلا عضو default — النوع هو الوحدة نفسها،
@@ -68,7 +72,7 @@ export default function MapPicker({
         const map = new maplibregl.Map({
           container: containerRef.current,
           style: OSM_RASTER_STYLE,
-          center: [DAMASCUS_CENTER.lng, DAMASCUS_CENTER.lat], // الفخ 6: (lng, lat)
+          center: [INITIAL_CENTER.lng, INITIAL_CENTER.lat], // الفخ 6: (lng, lat)
           zoom: INITIAL_ZOOM,
           attributionControl: { compact: true },
         });
@@ -119,7 +123,7 @@ export default function MapPicker({
   if (loadFailed) {
     return (
       <div className="flex h-80 items-center justify-center rounded-xl border border-red-200 bg-red-50 text-sm text-red-700">
-        تعذر تحميل الخريطة — تحقق من الاتصال ثم أعد تحميل الصفحة
+        {t("mapPicker.loadError")}
       </div>
     );
   }
@@ -130,7 +134,7 @@ export default function MapPicker({
       <div ref={containerRef} dir="ltr" className="h-80 w-full rounded-xl border border-slate-300" />
       {!ready && (
         <div className="absolute inset-0 flex items-center justify-center rounded-xl bg-slate-100 text-sm text-slate-500">
-          جارٍ تحميل الخريطة…
+          {t("mapPicker.loading")}
         </div>
       )}
     </div>

@@ -1,7 +1,11 @@
 import type { Metadata } from "next";
 import { TrackingView } from "@/components/TrackingView";
+import { getServerT } from "@/lib/i18n/server-t";
 
-export const metadata: Metadata = { title: "تتبع الطلب — QuickDrop" };
+export async function generateMetadata(): Promise<Metadata> {
+  const t = await getServerT();
+  return { title: `${t("page.trackTitle")} — QuickDrop` };
+}
 
 // §7 — رابط التتبع العام /t/{token}: صفحة عامة لزائر مجهول (الزبون/المستلم — الفخ 16)
 // بلا تنقّل الداشبورد (NavBar يخفي نفسه على /t/*) وبلا أي API آخر: كل البيانات من

@@ -2,6 +2,7 @@
 
 import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { useT } from "@/lib/i18n";
 import { useToast } from "./Toast";
 
 // §10.2 — "الدخول كمكتب" للدعم: جلسة طاقم مقيّدة القراءة (readonly) يُصدِرها المشرف من
@@ -26,6 +27,7 @@ export function ImpersonationBanner() {
   const pathname = usePathname();
   const router = useRouter();
   const toast = useToast();
+  const t = useT();
   const [readonly, setReadonly] = useState(false);
   const [ending, setEnding] = useState(false);
 
@@ -62,7 +64,7 @@ export function ImpersonationBanner() {
       router.push("/admin");
       router.refresh();
     } catch {
-      toast.error("تعذّر إنهاء المشاهدة — أعد المحاولة");
+      toast.error(t("impersonation.endError"));
       setEnding(false);
     }
   }
@@ -71,7 +73,7 @@ export function ImpersonationBanner() {
     <div className="sticky top-0 z-30 bg-orange-600 text-white shadow-sm" role="alert">
       <div className="mx-auto flex max-w-screen-2xl flex-wrap items-center justify-between gap-2 px-4 py-2">
         <span className="text-sm font-semibold">
-          👁 أنت تشاهد كمكتب — جلسة مشاهدة للقراءة فقط (دعم)
+          👁 {t("impersonation.banner")}
         </span>
         <button
           type="button"
@@ -79,7 +81,7 @@ export function ImpersonationBanner() {
           disabled={ending}
           className="rounded-lg bg-white px-3 py-1 text-xs font-bold text-orange-700 hover:bg-orange-50 disabled:opacity-60"
         >
-          {ending ? "جارٍ الإنهاء…" : "إنهاء المشاهدة"}
+          {ending ? t("impersonation.ending") : t("impersonation.endBtn")}
         </button>
       </div>
     </div>

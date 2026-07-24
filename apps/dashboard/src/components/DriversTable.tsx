@@ -2,13 +2,15 @@
 
 import { useMemo } from "react";
 import { api } from "@/lib/api";
-import { DRIVER_STATUS_LABELS, agoLabel } from "@/lib/format";
+import { driverStatusLabel, agoLabel } from "@/lib/format";
+import { useT } from "@/lib/i18n";
 import { usePolling } from "@/lib/use-polling";
 import { ConnectionBadge } from "./ConnectionBadge";
 
 // §10.1 — قائمة السائقين (قراءة فقط v1): الاسم، الحالة بالعربي، النشِطة/السعة
 // (D14)، وآخر موقع منذ متى. polling نفسه 3 ثوانٍ + مؤشر اتصال.
 export function DriversTable() {
+  const t = useT();
   const { data, failed, lastUpdated, refresh } = usePolling(api.listDrivers, 3000);
 
   const drivers = useMemo(() => {
@@ -22,7 +24,7 @@ export function DriversTable() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <h1 className="text-lg font-bold text-slate-900">السائقون</h1>
+        <h1 className="text-lg font-bold text-slate-900">{t("driversTable.title")}</h1>
         <ConnectionBadge failed={failed} lastUpdated={lastUpdated} onRefresh={() => void refresh()} />
       </div>
 
@@ -30,10 +32,10 @@ export function DriversTable() {
         <table className="w-full min-w-[36rem] text-sm">
           <thead>
             <tr className="border-b border-slate-200 bg-slate-50 text-start text-xs text-slate-500">
-              <th className="p-3 text-start font-semibold">الاسم</th>
-              <th className="p-3 text-start font-semibold">الحالة</th>
-              <th className="p-3 text-start font-semibold">النشِطة / السعة</th>
-              <th className="p-3 text-start font-semibold">آخر موقع</th>
+              <th className="p-3 text-start font-semibold">{t("driversTable.colName")}</th>
+              <th className="p-3 text-start font-semibold">{t("driversTable.colStatus")}</th>
+              <th className="p-3 text-start font-semibold">{t("driversTable.colActiveCapacity")}</th>
+              <th className="p-3 text-start font-semibold">{t("driversTable.colLastLocation")}</th>
             </tr>
           </thead>
           <tbody>
@@ -50,7 +52,7 @@ export function DriversTable() {
                         : "bg-slate-100 text-slate-500"
                     }`}
                   >
-                    {DRIVER_STATUS_LABELS[driver.status]}
+                    {driverStatusLabel(t, driver.status)}
                   </span>
                 </td>
                 <td className="p-3 text-slate-700">
@@ -59,20 +61,20 @@ export function DriversTable() {
                     : "—"}
                 </td>
                 {/* الفخ 19 — يُعرض عمر آخر نقطة، لا خريطة/حالة تكذب */}
-                <td className="p-3 text-slate-600">{agoLabel(driver.lastPointAt)}</td>
+                <td className="p-3 text-slate-600">{agoLabel(t, driver.lastPointAt)}</td>
               </tr>
             ))}
             {data !== null && drivers.length === 0 && (
               <tr>
                 <td colSpan={4} className="p-6 text-center text-slate-400">
-                  لا سائقين مسجّلين بعد
+                  {t("driversTable.empty")}
                 </td>
               </tr>
             )}
             {data === null && !failed && (
               <tr>
                 <td colSpan={4} className="p-6 text-center text-slate-400">
-                  جارٍ التحميل…
+                  {t("driversTable.loading")}
                 </td>
               </tr>
             )}

@@ -2,7 +2,7 @@
 
 import { useMemo } from "react";
 import { api } from "@/lib/api";
-import { STATUS_LABELS, formatMoney } from "@/lib/format";
+import { statusLabel, formatMoney } from "@/lib/format";
 import { useT } from "@/lib/i18n";
 import type { AnalyticsResponse } from "@/lib/types";
 import { usePolling } from "@/lib/use-polling";
@@ -118,7 +118,7 @@ export function AnalyticsDashboard() {
                 <ul className="flex flex-col gap-1.5">
                   {statusRows.map((row) => (
                     <li key={row.status} className="flex items-center justify-between text-sm">
-                      <span className="text-slate-600">{STATUS_LABELS[row.status]}</span>
+                      <span className="text-slate-600">{statusLabel(t, row.status)}</span>
                       <span className="font-semibold tabular-nums text-slate-900">{row.count}</span>
                     </li>
                   ))}

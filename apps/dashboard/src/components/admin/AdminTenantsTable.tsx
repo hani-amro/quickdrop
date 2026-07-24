@@ -9,6 +9,7 @@ import { adminApi } from "@/lib/admin-api";
 import { TENANT_PLAN_LABELS, trialDaysLeft } from "@/lib/admin-format";
 import type { AdminTenantRow } from "@/lib/admin-types";
 import { agoLabel } from "@/lib/format";
+import { useT } from "@/lib/i18n";
 import { usePolling } from "@/lib/use-polling";
 import { AdminPaymentModal } from "./AdminPaymentModal";
 import { TenantStatusBadge } from "./TenantStatusBadge";
@@ -18,6 +19,7 @@ import { TenantStatusBadge } from "./TenantStatusBadge";
 export function AdminTenantsTable() {
   const { data, failed, lastUpdated, refresh } = usePolling(adminApi.listTenants, 10000);
   const actions = useAdminTenantActions(refresh);
+  const tr = useT();
 
   // تعليق مكتب فعل مؤثّر (البوت يدخل وضع اعتذار §14) — تأكيد صريح بسبب اختياري
   const [suspending, setSuspending] = useState<AdminTenantRow | null>(null);
@@ -81,7 +83,7 @@ export function AdminTenantsTable() {
                       </div>
                     )}
                   </td>
-                  <td className="p-3 text-slate-600">{agoLabel(t.lastOrderAt)}</td>
+                  <td className="p-3 text-slate-600">{agoLabel(tr, t.lastOrderAt)}</td>
                   <td className="p-3 tabular-nums text-slate-700">{t.ordersToday ?? "—"}</td>
                   <td className="p-3 tabular-nums text-slate-700">{t.driverCount ?? "—"}</td>
                   <td className="p-3">
