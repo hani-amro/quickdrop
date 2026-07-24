@@ -3,7 +3,8 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
-      "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
+      "outputs": ["dist/**", ".next/**", "!.next/cache/**"],
+      "env": ["BUILD_STANDALONE", "NEXT_PUBLIC_API_URL", "NEXT_PUBLIC_TENANT_CURRENCY", "VITE_API_BASE", "VITE_TENANT_SLUG"]
     },
     "typecheck": {
       "dependsOn": ["^build"]
