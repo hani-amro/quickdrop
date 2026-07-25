@@ -15,3 +15,4 @@ export * from "./crm.js";
 export * from "./conversations.js";
 export * from "./journeys.js";
 export * from "./ai.js";
+export * from "./whatsapp-outbound.js";
