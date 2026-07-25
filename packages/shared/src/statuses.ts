@@ -158,3 +158,32 @@ export type JourneyStepType = (typeof JOURNEY_STEP_TYPES)[number];
 // أي مُطلِّق خارجها لا يُسجّل أبداً، فيُرفض عند الإنشاء (§11) لا أن يُخزَّن ميتاً.
 export const JOURNEY_TRIGGERS = ["contact.created", "order.delivered", "payment.paid", "crm.lifecycle_changed"] as const;
 export type JourneyTrigger = (typeof JOURNEY_TRIGGERS)[number];
+
+// ——— Task A (D1) — نافذة واتساب 24 ساعة + قوالب HSM (كله additive عند حدّ الإرسال) ———
+// فئة الرسالة الصادرة تحدّد سلوك النافذة: service_reply = ردّ داخل محادثة (داخل النافذة
+// بحكم أنّ الزبون راسل توّاً — يُرسَل حرّاً)؛ notification = تحديث حالة/إيصال قد يُطلَق أيّ
+// وقت (خارج النافذة يجب قالب HSM معتمد، وإلا degraded — لا إسقاط صامت).
+export const WA_SEND_CATEGORIES = ["service_reply", "notification"] as const;
+export type WaSendCategory = (typeof WA_SEND_CATEGORIES)[number];
+
+// المفاتيح الداخلية للإشعارات → قوالب Meta (الربط فقط؛ نصوص القوالب تُسجَّل عند Meta).
+export const WA_TEMPLATE_KEYS = [
+  "order_confirmed",
+  "order_dispatched",
+  "driver_arriving",
+  "order_delivered",
+  "payment_receipt",
+] as const;
+export type WaTemplateKey = (typeof WA_TEMPLATE_KEYS)[number];
+
+// حالة اعتماد القالب لدى Meta (لا نرسل إلا approved).
+export const WA_TEMPLATE_STATUSES = ["approved", "pending", "rejected"] as const;
+export type WaTemplateStatus = (typeof WA_TEMPLATE_STATUSES)[number];
+
+// سجلّ تسليم واتساب لكل صفّ outbox (مفتاح exactly-once + سجلّ النتيجة المرئي):
+// mode = كيف أُرسِلت (حرّ/قالب) أو أنها تعذّرت (degraded)؛ status = طور الادّعاء/النتيجة.
+export const WA_DELIVERY_MODES = ["free_form", "template", "degraded"] as const;
+export type WaDeliveryMode = (typeof WA_DELIVERY_MODES)[number];
+
+export const WA_DELIVERY_STATUSES = ["claimed", "sent", "degraded"] as const;
+export type WaDeliveryStatus = (typeof WA_DELIVERY_STATUSES)[number];

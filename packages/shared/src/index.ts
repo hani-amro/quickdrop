@@ -6,6 +6,7 @@ export * from "./geo.js";
 export * from "./crypto.js";
 export * from "./env.js";
 export * from "./statuses.js";
+export * from "./whatsapp-window.js";
 export * from "./queues.js";
 export * from "./redact.js";
 export * from "./realtime.js";
