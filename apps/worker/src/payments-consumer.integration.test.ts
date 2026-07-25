@@ -3,8 +3,10 @@ import {
   createDriver,
   createMerchant,
   createOrder,
+  getOrCreateConversation,
   orders,
   pricingRules,
+  recordInboundMessage,
   tenants,
   transition,
   upsertCatalogItem,
@@ -81,6 +83,10 @@ describe.skipIf(!hasDb)("مستهلك الدفع (تكامل، قاعدة حية
         phoneNumberId: `pnid-${Date.now().toString(36)}`,
         accessTokenEnc: encryptSecret("wa-token-test", MASTER_KEY),
       });
+      // Task A (D1) — رسالة واردة عبر واتساب حديثاً → داخل نافذة الـ24 ساعة (إشعارات الدفع
+      // تُرسَل نصاً حرّاً كما السابق؛ بلا وارد كان يصير خارج النافذة → قالب/degraded).
+      const conv = await getOrCreateConversation(tx, tenantId, customerId);
+      await recordInboundMessage(tx, { tenantId, conversationId: conv.id, channel: "whatsapp", type: "text", content: "hi", externalId: `wa-in-${customerId}` });
       // تسعير food (لطلب التوصيل بالاختبار 2)
       await tx.insert(pricingRules).values({ tenantId, service: "food", base: 5_000n, perKm: 1_000n, perKg: 0n, minTotal: 0n, surgeMultiplierBp: 10_000, priority: 0 });
     });

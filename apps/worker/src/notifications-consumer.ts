@@ -1,31 +1,43 @@
 import {
+  claimWaDelivery,
   conversations,
   drivers,
+  finalizeWaDeliverySent,
+  getApprovedTemplate,
+  getLastWhatsAppInboundAt,
   getOrCreateConversation,
   InvalidTransitionError,
   listOperatorChatsForMerchant,
+  markWaDeliveryDegraded,
   offers,
   orderItems,
   orders,
   recordOutboundMessage,
+  releaseWaDelivery,
   tenants,
   trackingTokens,
   transition,
   users,
   waAccounts,
   withTenant,
+  type ApprovedTemplate,
   type Db,
 } from "@quickdrop/db";
 import {
   decryptSecret,
+  isWithinServiceWindow,
   ORDER_STATUSES,
   publishRt,
   RT_EVENTS,
   type DispatchJob,
   type NotificationJob,
   type RtPublishClient,
+  type WaDeliveryMode,
+  type WaSendCategory,
+  type WaTemplateKey,
 } from "@quickdrop/shared";
-import { WaClient } from "@quickdrop/whatsapp";
+import { WaApiError, WaClient } from "@quickdrop/whatsapp";
+import { publishSpineEvent } from "@quickdrop/spine";
 import {
   decryptBotToken,
   escapeHtml,
@@ -251,7 +263,13 @@ async function sendOrMarkBlocked(
 // رسالة WA الصادرة تُسجَّل بالمخزن الموحّد (conversations/messages) قبل الإرسال —
 // الكتابة داخل ترانزاكشن والإرسال بعدها (D6: لا نداء شبكي داخل ترانزاكشن).
 
-type CustomerSendOutcome = "sent_telegram" | "sent_whatsapp" | "skipped_no_channel" | "skipped_blocked";
+type CustomerSendOutcome =
+  | "sent_telegram"
+  | "sent_whatsapp"
+  | "skipped_no_channel"
+  | "skipped_blocked"
+  | "skipped_already_handled" // Task A — ادّعاء exactly-once لم يُربَح (محاولة سابقة)
+  | "degraded_no_template"; // Task A — خارج النافذة بلا قالب معتمد (سُجِّل + حدث spine)
 
 interface CustomerChannelRow {
   userId: string;
@@ -290,11 +308,175 @@ async function getTenantWaClient(deps: NotificationsConsumerDeps, tenantId: stri
   });
 }
 
+// ——— Task A (D1) — نافذة واتساب 24 ساعة + قوالب HSM عند حدّ الإرسال الصادر ———
+
+/** عدم تطابق متغيّرات القالب (المُرسِل لم يوفّر متغيّراً يطلبه variable_map) — باغ منتِج، صاخب. */
+class WaTemplateVarError extends Error {
+  constructor(key: string, variable: string) {
+    super(`wa template "${key}": missing required variable "${variable}"`);
+    this.name = "WaTemplateVarError";
+  }
+}
+
+// خريطة حالة الطلب → مفتاح قالب الإشعار (للحالات التي لها قالب v1؛ غيرها → null → degrade خارج النافذة).
+const WA_STATUS_TEMPLATE_KEY: Partial<Record<string, WaTemplateKey>> = {
+  confirmed: "order_confirmed",
+  assigned: "order_dispatched",
+  arrived: "driver_arriving",
+  delivered: "order_delivered",
+};
+
+/** سياق إرسال واتساب (يمرَّر من المستدعي عبر outboxId/topic). */
+interface WaSendContext {
+  outboxId: string;
+  category: WaSendCategory;
+  internalKey: WaTemplateKey | null;
+  templateVars: Record<string, string>;
+}
+
+type WaSendOutcome = "sent_whatsapp" | "skipped_no_channel" | "skipped_already_handled" | "degraded_no_template";
+
+/** تسجيل الرسالة الصادرة بالمخزن الموحّد + بثّ RT (أفضل جهد — فشله لا يُرمى؛ الإرسال نجح سلفاً). */
+async function recordWaOutbound(
+  deps: NotificationsConsumerDeps,
+  tenantId: string,
+  conversationId: string,
+  content: string,
+  type: "text" | "template",
+  metadata: Record<string, unknown>,
+): Promise<void> {
+  try {
+    await withTenant(deps.appDb, tenantId, (tx) =>
+      recordOutboundMessage(tx, { tenantId, conversationId, channel: "whatsapp", type, content, metadata }),
+    );
+    await publishRt(deps.rtRedis, { tenantId, event: RT_EVENTS.conversationChanged, payload: { conversationId, direction: "out" } });
+  } catch (error) {
+    console.error(JSON.stringify({ action: "wa_outbound_record_failed", tenantId, conversationId, message: error instanceof Error ? error.message : String(error) }));
+  }
+}
+
 /**
- * إرسال نص لزبون عبر قناته: TG إن وُجد (403→blocked_at)، وإلا WA. رسالة WA تُسجَّل
- * بالمخزن الموحّد **بعد نجاح الإرسال** (تسجيلٌ قبله يزدوج صفوفاً عند retry بلا إرسال؛
- * الصادر سجلّ عرض لا مصدر حقيقة — فقدان صف عند crash بين الإرسال والتسجيل مقبول).
- * فشل شبكة WA يُرمى (retry عبر BullMQ §16.12).
+ * إرسال واتساب واعٍ بالنافذة (D1): داخل نافذة الـ24 ساعة أو service_reply → نص حرّ؛ خارجها
+ * (notification) → قالب HSM معتمد، وإلا **degraded مرئي** (سجلّ + حدث spine) لا إسقاط صامت.
+ * exactly-once بادّعاء على صفّ الـoutbox (لا شحن مزدوج للقوالب). الإرسال الفعلي خارج أي
+ * ترانزاكشن (D6). المصدر = getLastWhatsAppInboundAt (خاص بواتساب، من messages).
+ */
+async function sendCustomerWhatsApp(
+  deps: NotificationsConsumerDeps,
+  tenantId: string,
+  args: { userId: string; waId: string; freeFormText: string } & WaSendContext,
+): Promise<WaSendOutcome> {
+  const wa = await getTenantWaClient(deps, tenantId);
+  if (!wa) return "skipped_no_channel";
+
+  const conversationId = await withTenant(deps.appDb, tenantId, async (tx) => {
+    const { id } = await getOrCreateConversation(tx, tenantId, args.userId);
+    return id;
+  });
+
+  const inWindow = await withTenant(deps.appDb, tenantId, async (tx) => {
+    const last = await getLastWhatsAppInboundAt(tx, tenantId, conversationId);
+    return isWithinServiceWindow(last, new Date());
+  });
+  const useFreeForm = args.category === "service_reply" || inWindow;
+
+  // خارج النافذة (notification): يلزم قالب معتمد؛ غيابه → degraded (لا إرسال حرّ)
+  let template: ApprovedTemplate | null = null;
+  if (!useFreeForm) {
+    if (args.internalKey !== null) {
+      template = await withTenant(deps.appDb, tenantId, (tx) => getApprovedTemplate(tx, tenantId, args.internalKey as WaTemplateKey));
+    }
+    if (template === null) {
+      const reason = args.internalKey === null ? "no_template_key_for_notification" : `no_approved_template:${args.internalKey}`;
+      const won = await withTenant(deps.appDb, tenantId, async (tx) => {
+        const c = await claimWaDelivery(tx, tenantId, args.outboxId, { mode: "degraded", status: "degraded", internalKey: args.internalKey, reason });
+        if (c.won) {
+          await publishSpineEvent(tx, tenantId, "notification.undeliverable", { outboxId: args.outboxId, userId: args.userId, internalKey: args.internalKey, reason });
+        }
+        return c.won;
+      });
+      if (won) console.warn(JSON.stringify({ action: "wa_notification_undeliverable", tenantId, userId: args.userId, internalKey: args.internalKey, reason }));
+      return "degraded_no_template";
+    }
+  }
+
+  // ادّعاء exactly-once على صفّ الـoutbox قبل مكالمة Meta (يمنع التكرار عبر إعادات المحاولة/التزامن)
+  const mode: WaDeliveryMode = useFreeForm ? "free_form" : "template";
+  const claim = await withTenant(deps.appDb, tenantId, (tx) =>
+    claimWaDelivery(tx, tenantId, args.outboxId, { mode, status: "claimed", internalKey: useFreeForm ? null : args.internalKey }),
+  );
+  if (!claim.won) {
+    if (claim.existing?.status === "claimed") {
+      // ادّعاء سابق لم يُنهَ (انهيار نادر بين الادّعاء والإرسال) — لا نعيد الإرسال (تفادي الشحن
+      // المزدوج للحالة الغامضة)، لكن نلوّج بصوت عالٍ كي لا يكون الفقد النادر صامتاً.
+      console.warn(JSON.stringify({ action: "wa_delivery_claim_stuck", tenantId, outboxId: args.outboxId }));
+    }
+    return "skipped_already_handled"; // sent/degraded → تخطٍّ نظيف (at-most-once)
+  }
+
+  try {
+    let metaMessageId: string | null;
+    let recordContent: string;
+    let recordType: "text" | "template";
+    let recordMeta: Record<string, unknown>;
+    if (useFreeForm) {
+      const res = await wa.sendText(args.waId, args.freeFormText);
+      metaMessageId = res.messageId;
+      recordContent = args.freeFormText;
+      recordType = "text";
+      recordMeta = { system: true };
+    } else {
+      const t = template as ApprovedTemplate;
+      const bodyParams = t.variableMap.map((name) => {
+        const v = args.templateVars[name];
+        if (v === undefined) throw new WaTemplateVarError(args.internalKey ?? "?", name);
+        return v;
+      });
+      const res = await wa.sendTemplate(args.waId, t.metaTemplateName, t.language, bodyParams);
+      metaMessageId = res.messageId;
+      recordContent = `[HSM:${args.internalKey}]`;
+      recordType = "template";
+      recordMeta = { system: true, template: t.metaTemplateName, internalKey: args.internalKey };
+    }
+    await withTenant(deps.appDb, tenantId, (tx) => finalizeWaDeliverySent(tx, tenantId, args.outboxId, metaMessageId));
+    await recordWaOutbound(deps, tenantId, conversationId, recordContent, recordType, recordMeta);
+    return "sent_whatsapp";
+  } catch (error) {
+    if (error instanceof WaTemplateVarError) {
+      // خطأ إعداد **دائم** (variable_map يطلب متغيّراً لا يوفّره المُرسِل) — الإعادة لن تصلحه؛
+      // فالرمي = عاصفة إعادة حتى DLQ (فخّ DoS ذاتي). نحوّله degraded مرئياً (سجلّ + حدث spine)
+      // بدل ذلك — لا شيء أُرسِل بعد (الخطأ قبل مكالمة Meta)، فالتحويل آمن ولا إسقاط صامت.
+      const reason = `template_var_mismatch:${error.message}`;
+      await withTenant(deps.appDb, tenantId, async (tx) => {
+        await markWaDeliveryDegraded(tx, tenantId, args.outboxId, reason);
+        await publishSpineEvent(tx, tenantId, "notification.undeliverable", { outboxId: args.outboxId, userId: args.userId, internalKey: args.internalKey, reason });
+      });
+      console.warn(JSON.stringify({ action: "wa_template_var_mismatch", tenantId, outboxId: args.outboxId, internalKey: args.internalKey }));
+      return "degraded_no_template";
+    }
+    if (error instanceof WaApiError) {
+      // Meta ردّت خطأً = لم تُرسِل (فشل مؤكَّد) → حرّر الادّعاء وارمِ لإعادة المحاولة (لا شحن مزدوج)
+      await withTenant(deps.appDb, tenantId, (tx) => releaseWaDelivery(tx, tenantId, args.outboxId));
+      throw error;
+    }
+    // فشل شبكي غامض (لا ردّ من Meta) — السياسة تختلف حسب الوضع:
+    if (useFreeForm) {
+      // نص حرّ = بلا كلفة ولا خطر شحن مزدوج → حرّر الادّعاء وارمِ لإعادة المحاولة.
+      // (at-least-once للحرّ: تكرار نادر مقبول، أما الإسقاط الصامت فلا — يخالف "NOT silent drop".)
+      await withTenant(deps.appDb, tenantId, (tx) => releaseWaDelivery(tx, tenantId, args.outboxId));
+      throw error;
+    }
+    // قالب مدفوع: قد تكون Meta استلمت → at-most-once (علّم 'sent'، تفادي الشحن المزدوج)؛ الفقد النادر مرئي بالسجلّ
+    await withTenant(deps.appDb, tenantId, (tx) => finalizeWaDeliverySent(tx, tenantId, args.outboxId, null));
+    console.error(JSON.stringify({ action: "wa_send_ambiguous_marked_sent", tenantId, outboxId: args.outboxId, message: error instanceof Error ? error.message : String(error) }));
+    return "sent_whatsapp";
+  }
+}
+
+/**
+ * إرسال نص لزبون عبر قناته: TG إن وُجد (403→blocked_at)، وإلا WA (عبر sendCustomerWhatsApp
+ * الواعي بالنافذة/القوالب — Task A). سياق واتساب (outboxId/category/internalKey/templateVars)
+ * يمرَّر من المستدعي؛ مسار TG يتجاهله.
  */
 async function sendTextToCustomer(
   deps: NotificationsConsumerDeps,
@@ -302,6 +484,7 @@ async function sendTextToCustomer(
   tenantId: string,
   customer: CustomerChannelRow,
   text: string,
+  wa: WaSendContext,
 ): Promise<CustomerSendOutcome> {
   if (customer.blockedAt !== null) return "skipped_blocked";
   if (customer.telegramUserId !== null) {
@@ -311,32 +494,17 @@ async function sendTextToCustomer(
     return "sent_telegram";
   }
   if (customer.waId !== null) {
-    const wa = await getTenantWaClient(deps, tenantId);
-    if (!wa) return "skipped_no_channel"; // زبون WA بلا حساب WA مهيأ — لوغ عند المستدعي
-    await wa.sendText(customer.waId, text);
-    // سجلّ المحادثة الموحّد (§4.4): الرسالة الصادرة تُسجَّل بعد نجاح الإرسال. مراجعة Phase 3
-    // (idem-F3): فشل التسجيل **لا يُرمى** — الإرسال نجح سلفاً، ورمي الخطأ يعيد المهمة فيُرسَل
-    // النص ثانيةً (رسالة WA مكرّرة، لا dedup مثل تعديل تيليغرام). التسجيل سجلّ عرض لا مصدر حقيقة.
-    let recordedConversationId: string | null = null;
-    try {
-      recordedConversationId = await withTenant(deps.appDb, tenantId, async (tx) => {
-        const { id: conversationId } = await getOrCreateConversation(tx, tenantId, customer.userId);
-        await recordOutboundMessage(tx, { tenantId, conversationId, channel: "whatsapp", type: "text", content: text, metadata: { system: true } });
-        return conversationId;
-      });
-    } catch (error) {
-      console.error(JSON.stringify({ action: "wa_outbound_record_failed", tenantId, userId: customer.userId, message: error instanceof Error ? error.message : String(error) }));
-    }
-    // §25 — بثّ conversation.changed (صادر) بعد التسجيل الناجح: يحدّث الوارد الموحّد فوراً
-    // (رد وكيل/رحلة/دفع يظهر حياً). أفضل جهد فوق polling؛ فشل التسجيل → لا بث (convId=null).
-    if (recordedConversationId !== null) {
-      await publishRt(deps.rtRedis, {
-        tenantId,
-        event: RT_EVENTS.conversationChanged,
-        payload: { conversationId: recordedConversationId, direction: "out" },
-      });
-    }
-    return "sent_whatsapp";
+    // Task A (D1) — المسار الواعي بالنافذة/القوالب + exactly-once + degraded مرئي. يتولّى
+    // getTenantWaClient والتسجيل الموحّد وبثّ RT داخله.
+    return sendCustomerWhatsApp(deps, tenantId, {
+      userId: customer.userId,
+      waId: customer.waId,
+      freeFormText: text,
+      outboxId: wa.outboxId,
+      category: wa.category,
+      internalKey: wa.internalKey,
+      templateVars: wa.templateVars,
+    });
   }
   return "skipped_no_channel";
 }
@@ -417,16 +585,21 @@ async function handleOrderStatusChanged(deps: NotificationsConsumerDeps, job: No
     // R-11 (خطوة 21) — زبون واتساب: رسالة حالة نصية عبر Graph للحالات المرئية للزبون؛
     // زبون تلفون (لا قناة): تتبعه بالهاتف/رابط /t/{token} — تخطٍّ بلوغ (D15).
     if (row.customerWaId !== null && row.customerBlockedAt === null && WA_STATUS_NOTIFY.has(row.status)) {
-      const wa = await getTenantWaClient(deps, job.tenantId);
-      if (wa) {
-        const text = `📦 طلبك #${row.publicCode}: ${ORDER_STATUS_LABELS_AR[row.status]}`;
-        await wa.sendText(row.customerWaId, text);
-        await withTenant(deps.appDb, job.tenantId, async (tx) => {
-          const { id: conversationId } = await getOrCreateConversation(tx, job.tenantId, row.customerUserId);
-          await recordOutboundMessage(tx, { tenantId: job.tenantId, conversationId, channel: "whatsapp", type: "text", content: text, metadata: { system: true, orderStatus: row.status } });
-        });
-        return;
+      // Task A (D1) — واعٍ بالنافذة: داخلها نص حرّ؛ خارجها قالب حالة معتمد (confirmed/assigned/
+      // arrived/delivered)، وإلا degraded مرئي. exactly-once + تسجيل داخل sendCustomerWhatsApp.
+      const outcome = await sendCustomerWhatsApp(deps, job.tenantId, {
+        userId: row.customerUserId,
+        waId: row.customerWaId,
+        freeFormText: `📦 طلبك #${row.publicCode}: ${ORDER_STATUS_LABELS_AR[row.status]}`,
+        outboxId: job.outboxId,
+        category: "notification",
+        internalKey: WA_STATUS_TEMPLATE_KEY[row.status] ?? null,
+        templateVars: { code: row.publicCode },
+      });
+      if (outcome === "skipped_no_channel") {
+        console.log(JSON.stringify({ action: "notification_wa_skipped_no_channel", tenantId: job.tenantId, orderId: row.orderId }));
       }
+      return;
     }
     console.log(
       JSON.stringify({ action: "notification_skipped_no_telegram", tenantId: job.tenantId, orderId: row.orderId }),
@@ -858,7 +1031,12 @@ async function handlePaymentPaid(deps: NotificationsConsumerDeps, job: Notificat
   // إشعار الزبون بقناته (R-11) — فشل الإرسال يعيد المهمة؛ التأكيد أعلاه idempotent
   const customer = await loadCustomerChannel(deps, job.tenantId, row.customerId);
   if (customer) {
-    const outcome = await sendTextToCustomer(deps, tenant, job.tenantId, customer, `✅ استلمنا دفعتك لطلب #${row.publicCode} — شكراً لك!`);
+    const outcome = await sendTextToCustomer(deps, tenant, job.tenantId, customer, `✅ استلمنا دفعتك لطلب #${row.publicCode} — شكراً لك!`, {
+      outboxId: job.outboxId,
+      category: "notification",
+      internalKey: "payment_receipt",
+      templateVars: { code: row.publicCode },
+    });
     if (outcome !== "sent_telegram" && outcome !== "sent_whatsapp") {
       console.log(JSON.stringify({ action: "payment_paid_notify_skipped", tenantId: job.tenantId, orderId, outcome }));
     }
@@ -911,7 +1089,12 @@ async function handlePaymentLink(deps: NotificationsConsumerDeps, job: Notificat
   if (!customer) {
     throw new Error(`payment.link: user ${payload.userId} not found`); // §16.12
   }
-  const outcome = await sendTextToCustomer(deps, tenant, job.tenantId, customer, `💳 رابط الدفع لطلبك:\n${payload.url}`);
+  const outcome = await sendTextToCustomer(deps, tenant, job.tenantId, customer, `💳 رابط الدفع لطلبك:\n${payload.url}`, {
+    outboxId: job.outboxId,
+    category: "notification",
+    internalKey: null, // لا قالب v1 لرابط الدفع → خارج النافذة degrade (مرئي)
+    templateVars: {},
+  });
   if (outcome !== "sent_telegram" && outcome !== "sent_whatsapp") {
     console.log(JSON.stringify({ action: "payment_link_notify_skipped", tenantId: job.tenantId, orderId: payload.orderId, outcome }));
   }
@@ -931,8 +1114,15 @@ async function handleJourneyMessage(deps: NotificationsConsumerDeps, job: Notifi
     // §16.12 — رسالة رحلة لزبون غير موجود = فساد بيانات — فشل صاخب
     throw new Error(`notifications: user ${payload.userId} not found for journey.message`);
   }
-  // R-11 (اكتمل بـ Phase 3): النقل الموحّد — TG أولاً وإلا WA؛ لا قناة/محظور → تخطٍّ بلوغ
-  const outcome = await sendTextToCustomer(deps, tenant, job.tenantId, row, payload.text);
+  // R-11 (اكتمل بـ Phase 3): النقل الموحّد — TG أولاً وإلا WA؛ لا قناة/محظور → تخطٍّ بلوغ.
+  // Task A — agent.reply = ردّ داخل محادثة (service_reply، حرّ)؛ journey.message = تسويق
+  // (notification: خارج النافذة يلزم قالب — لا قالب v1 → degrade مرئي).
+  const outcome = await sendTextToCustomer(deps, tenant, job.tenantId, row, payload.text, {
+    outboxId: job.outboxId,
+    category: job.topic === "agent.reply" ? "service_reply" : "notification",
+    internalKey: null,
+    templateVars: {},
+  });
   if (outcome === "skipped_no_channel" || outcome === "skipped_blocked") {
     console.log(JSON.stringify({ action: "journey_message_skipped", tenantId: job.tenantId, userId: row.userId, outcome }));
   }
