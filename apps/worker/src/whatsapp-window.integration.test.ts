@@ -16,8 +16,8 @@ import {
 } from "@quickdrop/db";
 import { encryptSecret, makePoint, newId, type DispatchJob, type NotificationJob, type WaTemplateKey } from "@quickdrop/shared";
 import type { Queue } from "bullmq";
-import { and, eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { and, eq, sql } from "drizzle-orm";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { createNotificationsProcessor, type NotificationsConsumerDeps } from "./notifications-consumer.js";
 
 // Task A (D1) — نافذة واتساب 24 ساعة + قوالب HSM عبر معالج الإشعارات الحقيقي (fetch محقون):
@@ -194,5 +194,46 @@ describe.skipIf(!hasDb)("Task A — نافذة واتساب/قوالب/degraded/
       waFail = false;
     }
     expect(await waDeliveryOf(outboxId)).toMatchObject({ status: "sent", metaMessageId: null });
+  });
+
+  // ——— من مراجعة سدّ-الثغرات: ثغرتا إسقاط صامت D7 على مسارات مسّها Task A ———
+
+  it("(gap-1) variable_map مشوّه (شكل خاطئ) → degrade مرئي، لا إرسال مُعلَّم sent بصمت", async () => {
+    // إدراج قالب "معتمد" لكن variable_map ليس مصفوفة (خطأ إدراج يدوي: '\"code\"' بدل '[\"code\"]')
+    await withTenant(app.db, tenantId, async (tx) => {
+      await tx.delete(whatsappTemplates).where(and(eq(whatsappTemplates.tenantId, tenantId), eq(whatsappTemplates.internalKey, "payment_receipt")));
+      await tx.execute(
+        sql`INSERT INTO whatsapp_templates (id, tenant_id, internal_key, meta_template_name, language, status, variable_map)
+            VALUES (gen_random_uuid(), ${tenantId}::uuid, 'payment_receipt', 'pr_bad', 'ms', 'approved', '"code"'::jsonb)`,
+      );
+    });
+    const { orderId } = await seedOrder(false); // خارج النافذة → مسار القالب
+    const outboxId = newId();
+    const before = waSends.length;
+    const beforeUndeliv = await undeliverableCount();
+    await createNotificationsProcessor(deps())({ outboxId, tenantId, topic: "payment.paid", payload: { orderId, paymentRef: `bill_${newId()}` } });
+    expect(waSends.length).toBe(before); // لا إرسال (لا يُعلَّم sent كاذباً)
+    expect(await waDeliveryOf(outboxId)).toMatchObject({ mode: "degraded", status: "degraded" });
+    expect(await undeliverableCount()).toBe(beforeUndeliv + 1); // حدث spine مرئي
+  });
+
+  it("(gap-2) مسار degrade + ادّعاء 'claimed' عالق → يلوّج wa_delivery_claim_stuck (لا تخطٍّ صامت)", async () => {
+    const { orderId, customerId } = await seedOrder(false); // خارج النافذة
+    const outboxId = newId();
+    // ادّعاء عالق سابق (انهيار بين الادّعاء والإرسال) لنفس صفّ الـoutbox
+    await withTenant(app.db, tenantId, (tx) => tx.insert(waDeliveries).values({ tenantId, outboxId, mode: "free_form", status: "claimed", internalKey: null }));
+    const beforeUndeliv = await undeliverableCount();
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    let loggedStuck = false;
+    try {
+      // payment.link (internalKey=null) → مسار degrade؛ claimWaDelivery(degraded) يخسر (won=false, existing='claimed')
+      await createNotificationsProcessor(deps())({ outboxId, tenantId, topic: "payment.link", payload: { orderId, userId: customerId, url: "https://billplz.test/x" } });
+      // اقرأ mock.calls قبل mockRestore (mockRestore يمسح السجلّ)
+      loggedStuck = warnSpy.mock.calls.some((c) => String(c[0]).includes("wa_delivery_claim_stuck"));
+    } finally {
+      warnSpy.mockRestore();
+    }
+    expect(loggedStuck).toBe(true); // مرئي، لا صامت
+    expect(await undeliverableCount()).toBe(beforeUndeliv); // won=false → لا حدث مكرّر
   });
 });

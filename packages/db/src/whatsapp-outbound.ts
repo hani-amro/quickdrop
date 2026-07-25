@@ -63,7 +63,15 @@ export async function getApprovedTemplate(
     .limit(1);
   const row = rows[0];
   if (!row) return null;
-  return { metaTemplateName: row.metaTemplateName, language: row.language, variableMap: row.variableMap ?? [] };
+  // حدّ DB→app (D9): variable_map مُعلَن string[] لكن jsonb يقبل أي شكل (قد يُدرَج يدوياً بخطأ
+  // مثل '"code"'::jsonb بدل '["code"]'). شكل فاسد = لا قالب صالح → null → degrade مرئي، بدل
+  // أن يرمي .map() لاحقاً TypeError يُصنَّف خطأً كغموض شبكي فيُعلَّم 'sent' (إسقاط صامت — D7).
+  const vm = row.variableMap;
+  if (!Array.isArray(vm) || !vm.every((v) => typeof v === "string")) {
+    console.warn(JSON.stringify({ action: "wa_template_variable_map_malformed", tenantId, internalKey }));
+    return null;
+  }
+  return { metaTemplateName: row.metaTemplateName, language: row.language, variableMap: vm };
 }
 
 export interface WaDeliveryClaim {

@@ -388,14 +388,20 @@ async function sendCustomerWhatsApp(
     }
     if (template === null) {
       const reason = args.internalKey === null ? "no_template_key_for_notification" : `no_approved_template:${args.internalKey}`;
-      const won = await withTenant(deps.appDb, tenantId, async (tx) => {
+      const claim = await withTenant(deps.appDb, tenantId, async (tx) => {
         const c = await claimWaDelivery(tx, tenantId, args.outboxId, { mode: "degraded", status: "degraded", internalKey: args.internalKey, reason });
         if (c.won) {
           await publishSpineEvent(tx, tenantId, "notification.undeliverable", { outboxId: args.outboxId, userId: args.userId, internalKey: args.internalKey, reason });
         }
-        return c.won;
+        return c;
       });
-      if (won) console.warn(JSON.stringify({ action: "wa_notification_undeliverable", tenantId, userId: args.userId, internalKey: args.internalKey, reason }));
+      if (claim.won) {
+        console.warn(JSON.stringify({ action: "wa_notification_undeliverable", tenantId, userId: args.userId, internalKey: args.internalKey, reason }));
+      } else if (claim.existing?.status === "claimed") {
+        // تناظر مع مسار الادّعاء العادي: ادّعاء عالق (انهيار بين الادّعاء والإرسال ثم انقضت النافذة)
+        // خسر ادّعاء degrade → لا نتركه صامتاً؛ نلوّج بصوت عالٍ كي يبقى الفقد النادر مرئياً (D7).
+        console.warn(JSON.stringify({ action: "wa_delivery_claim_stuck", tenantId, outboxId: args.outboxId }));
+      }
       return "degraded_no_template";
     }
   }
