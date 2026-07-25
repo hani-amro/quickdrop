@@ -40,6 +40,16 @@ export const SPINE_TOPIC_SCHEMAS = {
     to: z.string(),
   }),
   "csat.submitted": z.object({ conversationId: uuid, rating: z.number().int().min(1).max(5) }),
+
+  // Task A (D1) — إشعار زبون تعذّر تسليمه عبر واتساب: خارج نافذة الـ24 ساعة وبلا قالب HSM
+  // معتمد. يُطلَق بدل الإسقاط الصامت (رصد/تصعيد لاحقاً). internalKey قد يكون null إذا لم
+  // يُربَط نوع الإشعار بمفتاح قالب أصلاً. tenantId على صفّ الـoutbox لا بالحمولة.
+  "notification.undeliverable": z.object({
+    outboxId: uuid,
+    userId: uuid,
+    internalKey: z.string().nullable(),
+    reason: z.string().min(1),
+  }),
 } as const;
 
 export type SpineTopic = keyof typeof SPINE_TOPIC_SCHEMAS;
