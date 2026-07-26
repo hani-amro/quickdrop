@@ -1,4 +1,4 @@
-import { Inject, Injectable, UnauthorizedException, type CanActivate, type ExecutionContext } from "@nestjs/common";
+import { ForbiddenException, Inject, Injectable, UnauthorizedException, type CanActivate, type ExecutionContext } from "@nestjs/common";
 import { secretsEqual } from "@quickdrop/shared";
 import type { Request } from "express";
 import { ADMIN_SESSION_VERIFIED_AUTHORIZATION } from "../common/admin-http.js";
@@ -29,11 +29,22 @@ export function isAdminGuardedPath(rawPath: string): boolean {
   if (
     path === "/api/admin/auth/login" ||
     path === "/api/admin/auth/logout" ||
-    path === "/api/admin/auth/session"
+    path === "/api/admin/auth/session" ||
+    path === "/api/admin/auth/totp/verify" // E1 — إكمال دخول mid-login (بلا جلسة بعد)
   ) {
     return false;
   }
   return true;
+}
+
+/**
+ * E1 — المسارات المسموحة لجلسة **مقيّدة بالتفعيل** (pendingEnroll). enroll/confirm يبقيان
+ * محروسَين (كي يحمّل الحارس الجلسة) لكن يُسمح بهما هنا؛ أي مسار admin آخر → 403 حتى التفعيل.
+ * نفس تطبيع isAdminGuardedPath حرفياً (حالة + شرطة أخيرة) — التطابق حمّال أمنياً.
+ */
+export function isEnrollWhitelistedPath(rawPath: string): boolean {
+  const path = rawPath.toLowerCase().replace(/\/+$/, "") || "/";
+  return path === "/api/admin/auth/totp/enroll" || path === "/api/admin/auth/totp/enroll/confirm";
 }
 
 /** الطلب بعد نجاح جلسة المشرف يحمل هويتها — لِمَن يحتاج الفاعل (impersonate). */
@@ -73,6 +84,11 @@ export class AdminGuard implements CanActivate {
     }
 
     request.adminSession = session;
+    // E1 — بوّابة التفعيل: جلسة pendingEnroll لا تصل إلا مسارات التفعيل (403 على ما عداها).
+    // مسار Bearer رجع أعلاه (لا جلسة → لا بوّابة)؛ login/logout/session/totp/verify معفاة أصلاً.
+    if (session.pendingEnroll === true && !isEnrollWhitelistedPath(request.path)) {
+      throw new ForbiddenException(); // §11 — يجب تفعيل 2FA أولاً
+    }
     request.headers.authorization = ADMIN_SESSION_VERIFIED_AUTHORIZATION; // طبقة الخدمة تقبلها
     return true;
   }

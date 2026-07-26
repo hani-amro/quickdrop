@@ -45,6 +45,7 @@ describe("classifyRoute — تصنيف المسار لطبقة الحدّ", () =
   it("POST مسارات إثبات الهوية الأخرى (TOTP + دخول المشرف) → طبقة login", () => {
     expect(classifyRoute("POST", "/api/auth/totp/verify")).toBe(RATE_TIERS.login);
     expect(classifyRoute("POST", "/api/admin/auth/login")).toBe(RATE_TIERS.login);
+    expect(classifyRoute("POST", "/api/admin/auth/totp/verify")).toBe(RATE_TIERS.login); // E1
   });
   it("انحدار: شرطة زائدة على مسار الدخول تبقى بطبقة login (لا تنزلق للعامة الواسعة)", () => {
     expect(classifyRoute("POST", "/api/auth/login/")).toBe(RATE_TIERS.login);

@@ -94,7 +94,8 @@ export function classifyRoute(method: string, rawPath: string): RateTier | null 
     method === "POST" &&
     (path === "/api/auth/login" ||
       path === "/api/auth/totp/verify" ||
-      path === "/api/admin/auth/login")
+      path === "/api/admin/auth/login" ||
+      path === "/api/admin/auth/totp/verify") // E1 — تخمين رمز TOTP للمشرف بنفس الخنق
   ) {
     return RATE_TIERS.login;
   }
