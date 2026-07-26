@@ -2,12 +2,25 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { getAdminEnv } from "@/env";
 
-// §10.2 — proxy مصادقة المشرف (منفصل عن مصادقة الطاقم): يمرّر login/logout/session إلى
+// §10.2 + E1 — proxy مصادقة المشرف (منفصل عن مصادقة الطاقم): يمرّر أفعال المصادقة إلى
 // ${API_URL}/api/admin/auth/* وينقل Set-Cookie (جلسة qd_admin HttpOnly) من الـ API إلى
-// المتصفح. لا يحقن ADMIN_API_TOKEN أبداً — الجلسة هي السلطة (يستبدل الوصول بلا مصادقة).
+// المتصفح. لا يحقن ADMIN_API_TOKEN أبداً — الجلسة هي السلطة. أسماء مسطّحة (segment واحد)
+// تُخطَّط لمسارات upstream المائلة (totp/verify …).
 export const dynamic = "force-dynamic";
 
-const actionSchema = z.enum(["login", "logout", "session"]);
+const actionSchema = z.enum(["login", "logout", "session", "totp-verify", "totp-enroll", "totp-enroll-confirm"]);
+type Action = z.infer<typeof actionSchema>;
+
+// خريطة الفعل المسطّح → مسار upstream. وأفعال POST التي تحمل جسم JSON.
+const UPSTREAM: Record<Action, string> = {
+  login: "login",
+  logout: "logout",
+  session: "session",
+  "totp-verify": "totp/verify",
+  "totp-enroll": "totp/enroll",
+  "totp-enroll-confirm": "totp/enroll/confirm",
+};
+const JSON_BODY_ACTIONS = new Set<Action>(["login", "totp-verify", "totp-enroll-confirm"]);
 
 interface Ctx {
   params: Promise<{ action: string }>;
@@ -29,12 +42,12 @@ export async function GET(req: NextRequest, ctx: Ctx): Promise<NextResponse> {
   return forward(req, "session", "GET");
 }
 
-async function forward(req: NextRequest, action: string, method: "GET" | "POST"): Promise<NextResponse> {
+async function forward(req: NextRequest, action: Action, method: "GET" | "POST"): Promise<NextResponse> {
   const env = getAdminEnv();
-  const target = `${env.API_URL.replace(/\/+$/, "")}/api/admin/auth/${action}`;
+  const target = `${env.API_URL.replace(/\/+$/, "")}/api/admin/auth/${UPSTREAM[action]}`;
 
   let body: string | undefined;
-  if (method === "POST" && action === "login") {
+  if (method === "POST" && JSON_BODY_ACTIONS.has(action)) {
     const raw = await req.text();
     let json: unknown = {};
     if (raw.trim() !== "") {

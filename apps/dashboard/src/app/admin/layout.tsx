@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { AdminEnrollGuard } from "@/components/admin/AdminEnrollGuard";
 import { AdminNav } from "@/components/admin/AdminNav";
 
 export const metadata: Metadata = {
@@ -13,6 +14,7 @@ export const metadata: Metadata = {
 export default function AdminLayout({ children }: { children: ReactNode }) {
   return (
     <div className="flex flex-col gap-4">
+      <AdminEnrollGuard />
       <header className="rounded-2xl bg-orange-600 text-white shadow-sm">
         <div className="flex flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3">
           <span className="text-lg font-bold">
