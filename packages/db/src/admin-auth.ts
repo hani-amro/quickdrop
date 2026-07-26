@@ -13,6 +13,7 @@ export interface AdminUserAuthRow {
   email: string;
   passwordHash: string;
   totpSecret: string | null;
+  totpSecretEnc: Buffer | null; // E1 — قراءة مزدوجة (المشفّر مقدَّم؛ ترحيل 0013)
   isActive: boolean;
 }
 
@@ -24,12 +25,48 @@ export async function findAdminUserByEmail(db: Db, email: string): Promise<Admin
       email: adminUsers.email,
       passwordHash: adminUsers.passwordHash,
       totpSecret: adminUsers.totpSecret,
+      totpSecretEnc: adminUsers.totpSecretEnc,
       isActive: adminUsers.isActive,
     })
     .from(adminUsers)
     .where(eq(adminUsers.email, email))
     .limit(1);
   return rows[0];
+}
+
+/** E1 — إعادة جلب مادّة TOTP + علم الفعالية بالمعرّف (عند التحقق من دخول 2FA). */
+export async function getAdminTotpForVerify(
+  db: Db,
+  adminId: string,
+): Promise<{ totpSecret: string | null; totpSecretEnc: Buffer | null; isActive: boolean } | undefined> {
+  const rows = await db
+    .select({
+      totpSecret: adminUsers.totpSecret,
+      totpSecretEnc: adminUsers.totpSecretEnc,
+      isActive: adminUsers.isActive,
+    })
+    .from(adminUsers)
+    .where(eq(adminUsers.id, adminId))
+    .limit(1);
+  return rows[0];
+}
+
+/**
+ * E1 — حفظ سرّ TOTP المؤكَّد مشفّراً + تصفير النصّي الانتقالي. (admin_users بلا عمود
+ * updated_at — لا نضبطه.) جدول منصة معفى من RLS → المقبض الخام بلا withTenant.
+ */
+export async function setAdminTotpSecret(db: Db, adminId: string, enc: Buffer): Promise<void> {
+  await db.update(adminUsers).set({ totpSecretEnc: enc, totpSecret: null }).where(eq(adminUsers.id, adminId));
+}
+
+/** E1 — تصفير سرّ TOTP للمشرف (استرداد قفل عبر create-admin --reset-totp): يفرض إعادة التفعيل. */
+export async function clearAdminTotpSecret(db: Db, email: string): Promise<boolean> {
+  const rows = await db
+    .update(adminUsers)
+    .set({ totpSecretEnc: null, totpSecret: null })
+    .where(eq(adminUsers.email, email))
+    .returning({ id: adminUsers.id });
+  return rows.length > 0;
 }
 
 /**
