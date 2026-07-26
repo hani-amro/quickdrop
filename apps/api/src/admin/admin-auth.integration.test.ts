@@ -123,4 +123,29 @@ describe.skipIf(!hasDeps)("AdminAuthService — 2FA إلزامي + جلسة مق
   it("كلمة سر خاطئة → فشل عام (لا تسريب، لا جلسة)", async () => {
     await expect(service.login({ email, password: "wrong-password" })).rejects.toThrow();
   });
+
+  it("قفل على مستوى الحساب: إعادة الدخول لا تصفّر الميزانية (تحدٍّ جديد لا يُلتَفّ على القفل)", async () => {
+    const acctKey = `admin_mfa:acct_att:${adminId}`;
+    await redis.del(acctKey); // صفّر (اختبارات سابقة قد تكون ضمن نافذة القفل)
+    const good = totpToken(secret);
+    const bad = good === "000000" ? "111111" : "000000";
+
+    // 10 محاولات خاطئة عبر تحدّيَين (5 لكل تحدٍّ قبل حرقه) → عدّاد الحساب = 10
+    for (let round = 0; round < 2; round++) {
+      const r = await service.login({ email, password: PASSWORD });
+      if (r.kind !== "mfa_required") throw new Error("unreachable");
+      for (let i = 0; i < 5; i++) {
+        await expect(service.verifyLoginTotp({ challenge: r.challenge, token: bad })).rejects.toThrow();
+      }
+    }
+
+    // تحدٍّ جديد + الكود **الصحيح** → مرفوض: الحساب مقفول (11 > 10) رغم صحّة الكود وجِدّة التحدّي
+    const fresh = await service.login({ email, password: PASSWORD });
+    if (fresh.kind !== "mfa_required") throw new Error("unreachable");
+    await expect(
+      service.verifyLoginTotp({ challenge: fresh.challenge, token: totpToken(secret) }),
+    ).rejects.toThrow();
+
+    await redis.del(acctKey); // تنظيف — لا نُبقي القفل
+  });
 });

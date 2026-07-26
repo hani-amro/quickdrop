@@ -24,7 +24,12 @@ const ADMIN_SESSION_KEY_PREFIX = "asess:";
 const ADMIN_MFA_CHALLENGE_PREFIX = "admin_mfa:";
 const ADMIN_MFA_CHALLENGE_TTL_S = 5 * 60; // مهلة إدخال الكود
 const ADMIN_MFA_ATTEMPTS_PREFIX = "admin_mfa:att:";
-const ADMIN_MAX_MFA_ATTEMPTS = 5; // قفل على مستوى التحدّي (فوق حدّ IP) — يمنع تخمين 6 أرقام
+const ADMIN_MAX_MFA_ATTEMPTS = 5; // قفل على مستوى التحدّي (يحرق التحدّي بعد 5)
+// قفل على مستوى **الحساب** (مراجعة عدائية major): مفتاحه adminId لا challenge، فتحدٍّ جديد
+// لا يصفّره — يمنع تخمين TOTP الموزّع عبر إعادة الدخول (الذي يبطل ضمان العامل الثاني).
+const ADMIN_MFA_ACCT_ATTEMPTS_PREFIX = "admin_mfa:acct_att:";
+const ADMIN_MAX_ACCT_MFA_ATTEMPTS = 10; // فشل TOTP للحساب (عبر تحدّيات متعددة) قبل القفل
+const ADMIN_MFA_ACCT_LOCK_TTL_S = 15 * 60; // نافذة قفل الحساب (تنتهي ذاتياً)
 const ADMIN_TOTP_ENROLL_PREFIX = "admin_mfa_enroll:";
 const ADMIN_TOTP_ENROLL_TTL_S = 10 * 60; // سرّ معلّق بـ Redis حتى التأكيد
 
@@ -146,14 +151,28 @@ export class AdminAuthService {
     }
     const challenge = adminMfaChallengeSchema.safeParse(parsed);
     if (!challenge.success) return this.failTotp("corrupt_challenge_shape");
+    const adminId = challenge.data.adminId;
 
-    const row = await getAdminTotpForVerify(this.handle.db, challenge.data.adminId);
+    // قفل على مستوى الحساب (مفتاحه adminId): تحدٍّ جديد لا يصفّره فلا يُلتَفّ عليه بإعادة
+    // الدخول. incr-first (قبل verifyTotp) يغلق أيضاً TOCTOU التزامن على التحدّي الواحد.
+    // الوصول هنا يتطلّب أصلاً كلمة سر صحيحة (تحدٍّ صالح) — فلا قفل بلا مصادقة كلمة سر.
+    const acctKey = ADMIN_MFA_ACCT_ATTEMPTS_PREFIX + adminId;
+    const acctAttempts = await this.redis.incr(acctKey);
+    if (acctAttempts === 1) await this.redis.expire(acctKey, ADMIN_MFA_ACCT_LOCK_TTL_S);
+    if (acctAttempts > ADMIN_MAX_ACCT_MFA_ATTEMPTS) return this.failTotp("account_locked");
+
+    const row = await getAdminTotpForVerify(this.handle.db, adminId);
     if (!row || !row.isActive) return this.failTotp("admin_gone_or_inactive");
-    const secret = this.resolveTotpSecret(row);
+    let secret: string | null;
+    try {
+      secret = this.resolveTotpSecret(row); // فشل الفكّ (مفتاح مدوَّر/تالف) → 401 نظيف لا 500
+    } catch {
+      return this.failTotp("decrypt_error");
+    }
     if (secret === null) return this.failTotp("no_secret");
 
     if (!verifyTotp(secret, input.token)) {
-      // قفل على مستوى التحدّي: يمنع تخمين 6 أرقام موزّعاً فوق حدّ الـ IP
+      // قفل على مستوى التحدّي: يحرق التحدّي بعد 5 (إضافةً لقفل الحساب أعلاه)
       const attemptsKey = ADMIN_MFA_ATTEMPTS_PREFIX + input.challenge;
       const attempts = await this.redis.incr(attemptsKey);
       if (attempts === 1) await this.redis.expire(attemptsKey, ADMIN_MFA_CHALLENGE_TTL_S);
@@ -166,8 +185,9 @@ export class AdminAuthService {
 
     await this.redis.del(challengeKey);
     await this.redis.del(ADMIN_MFA_ATTEMPTS_PREFIX + input.challenge);
-    const sessionId = await this.issueSession({ adminId: challenge.data.adminId, email: challenge.data.email });
-    console.log(JSON.stringify({ action: "admin_login", outcome: "ok_mfa", actor: challenge.data.adminId }));
+    await this.redis.del(acctKey); // نجاح → صفّر عدّاد فشل الحساب
+    const sessionId = await this.issueSession({ adminId, email: challenge.data.email });
+    console.log(JSON.stringify({ action: "admin_login", outcome: "ok_mfa", actor: adminId }));
     return { sessionId };
   }
 
@@ -199,6 +219,7 @@ export class AdminAuthService {
       JSON.stringify({ adminId: session.adminId, email: session.email }),
       "EX",
       ADMIN_SESSION_TTL_S,
+      "XX", // ترقية فقط إن كانت الجلسة قائمة (لا تُحيي جلسة أُبطلت بخروج متزامن)
     );
     console.log(JSON.stringify({ action: "admin_totp_enrolled", actor: session.adminId }));
     return { ok: true };
