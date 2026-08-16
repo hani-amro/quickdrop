@@ -16,3 +16,7 @@ WhatsApp_SASS/
 
 # One-off deploy-time debug script (throwaway; hardcodes a demo password). Kept local only.
 apps/e2e/debug-login.mjs
+
+# 12MB binary, not needed to build or review
+postgis.zip
+postgis.status

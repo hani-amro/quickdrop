@@ -16,4 +16,8 @@ regexes = [
   # كلمات مرور dev الثابتة بسكربتات الـ CI وأمثلة compose (postgres://user:*_dev_password@…)
   '''_dev_password''',
   '''POSTGRES_PASSWORD: postgres''',
+  # متجه اختبار RFC 6238 الملحق B: ASCII "12345678901234567890" بترميز base32.
+  # ثابت منشور في المعيار نفسه، وليس سرّاً — يُستثنى بقيمته الحرفية لا بمسار الملف،
+  # حتى يبقى apps/api/src/auth/ مفحوصاً بالكامل.
+  '''GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ''',
 ]
