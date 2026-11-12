@@ -68,7 +68,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Dockerfiles ملك وكيل آخر (apps/*/Dockerfile). السياق = جذر المونوريبو (pnpm workspace).
+      # Dockerfiles في apps/*/Dockerfile. السياق = جذر المونوريبو (pnpm workspace).
       - name: Build & push ${{ matrix.app }}
         uses: docker/build-push-action@v6
         with:
@@ -108,7 +108,7 @@ jobs:
             echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
 
             export IMAGE_TAG
-            # نفس استدعاء compose كسكربتات prod:up/prod:down بجذر package.json (اتفاقية مع وكيل الـ compose).
+            # نفس استدعاء compose كسكربتات prod:up/prod:down بجذر package.json.
             COMPOSE="docker compose --env-file infra/compose/.env.prod -f infra/compose/docker-compose.prod.yml"
 
             echo "→ سحب صور الوسم ${IMAGE_TAG}"

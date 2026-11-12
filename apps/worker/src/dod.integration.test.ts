@@ -35,7 +35,7 @@ import { dispatchOrderJobId } from "./dispatch-worker.js";
 import { createNotificationsProcessor, type NotificationsConsumerDeps } from "./notifications-consumer.js";
 import { processWaUpdate, type AgentTrigger } from "./wa-update-processor.js";
 
-// ═══════════ Tier-1 (تعريف الإنجاز — CLAUDE.md/قائمة المالك البند 4) ═══════════
+// ═══════════ Tier-1 (تعريف الإنجاز — قائمة المالك البند 4) ═══════════
 // مستأجر واحد، فرع واحد، على الكود المدموج، من طرف لطرف:
 // زبون يطلب على واتساب (وكيل AI بنموذج مبرمَج) ← يدفع (test عبر طبقة Billplz) ←
 // order.ready_for_dispatch (مرة واحدة بالضبط) ← الإسناد يعيّن سائقاً على **نفس صف

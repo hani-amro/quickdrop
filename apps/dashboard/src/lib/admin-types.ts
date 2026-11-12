@@ -2,7 +2,7 @@ import type { TenantPlan, TenantStatus } from "@quickdrop/shared";
 
 // ═══════════════════════════════════════════════════════════════════════════
 // عقد /api/admin/* (مسارات platform بلا tenantSlug — §10.2) الذي يستهلكه كونسول
-// المشرف. يبنيه فريق الـ API (agent 3). المسارات المتوقَّعة (نُسّق معها):
+// المشرف. المسارات المتوقَّعة:
 //
 //   GET  /api/admin/tenants                       → AdminTenantsResponse
 //   POST /api/admin/tenants                        {name,nameAr,slug,timezone} → CreateTenantResponse
