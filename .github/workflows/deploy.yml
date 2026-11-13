@@ -22,15 +22,17 @@ concurrency:
 jobs:
   # ── بوابة + متغيّرات مشتركة ─────────────────────────────────────────────
   # البوابة: على مسار workflow_run نمرّ فقط إن نجح CI على main بعد push على هذا المستودع نفسه (لا من fork). اليدوي يمر دائماً.
+  # ولا بناء ولا نشر إطلاقاً قبل ضبط متغيّر المستودع DEPLOY_ENABLED=true مع أسرار SERVER_* و GHCR_*.
   # تخطّي هذه الوظيفة يُخطّي كل التالي عبر needs (سلوك GitHub الافتراضي).
   prepare:
     runs-on: ubuntu-latest
     if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.head_branch == 'main' &&
-       github.event.workflow_run.event == 'push' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
+      vars.DEPLOY_ENABLED == 'true' &&
+      (github.event_name == 'workflow_dispatch' ||
+       (github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.head_branch == 'main' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository))
     outputs:
       sha: ${{ steps.vars.outputs.sha }}
       image_prefix: ${{ steps.vars.outputs.image_prefix }}
